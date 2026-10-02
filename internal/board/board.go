@@ -173,7 +173,7 @@ func (b *Board) changed() { b.version++ }
 // --- validation -----------------------------------------------------------
 
 func cleanWhere(w Where) (Where, error) {
-	w.Repo = ident(w.Repo, 200)
+	w.Repo = RepoID(w.Repo)
 	w.Host = Clean(w.Host, 100)
 	w.Worktree = Clean(w.Worktree, 500)
 	w.Branch = ident(w.Branch, maxBranchLen)

@@ -60,6 +60,10 @@ func ident(s string, max int) string {
 	return b.String()
 }
 
+// RepoID normalises a repository id the way the board stores it; readers that
+// take a repository from a request use it too, so the two always agree.
+func RepoID(s string) string { return ident(s, 200) }
+
 // quote presents untrusted text as an obviously quoted value.
 func quote(s string) string { return strconv.Quote(s) }
 

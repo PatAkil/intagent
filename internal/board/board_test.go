@@ -617,6 +617,23 @@ func TestTeammateTextStaysOnItsLine(t *testing.T) {
 	}
 }
 
+// Repository ids are normalised on the way in; readers asking with the raw
+// id (a local path with a space, say) still find the claims.
+func TestRepoIDsAgreeBetweenWritersAndReaders(t *testing.T) {
+	h := newHarness(t)
+	raw := "file/Users/Jo Smith/mono"
+	w := Where{Repo: raw, Host: "h", Worktree: "/w", Branch: "main"}
+	if _, err := h.b.Hook(h.now, HookEvent{Kind: KindSessionStart, Member: "alice", Agent: AgentCodex, SessionID: "s", Where: w}); err != nil {
+		t.Fatal(err)
+	}
+	if v := h.b.View(h.now, raw); len(v.Claims) != 1 {
+		t.Fatalf("view by the raw id: %+v", v)
+	}
+	if acts := h.b.Since(raw, 0); len(acts) == 0 {
+		t.Fatal("no activities by the raw id")
+	}
+}
+
 func TestClean(t *testing.T) {
 	for in, want := range map[string]string{
 		"  a\n\tb  ":         "a b",

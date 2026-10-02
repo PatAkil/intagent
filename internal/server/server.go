@@ -427,7 +427,7 @@ func (s *Server) handleNote(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleBoard(w http.ResponseWriter, r *http.Request) {
-	repo := r.URL.Query().Get("repo")
+	repo := board.RepoID(r.URL.Query().Get("repo"))
 	if repo == "" {
 		writeError(w, http.StatusBadRequest, "repo is required")
 		return
@@ -453,7 +453,7 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "streaming unsupported")
 		return
 	}
-	repo := r.URL.Query().Get("repo")
+	repo := board.RepoID(r.URL.Query().Get("repo"))
 	sub := s.hub.subscribe(repo)
 	defer s.hub.unsubscribe(sub)
 

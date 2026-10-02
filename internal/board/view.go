@@ -66,6 +66,7 @@ type RepoSummary struct {
 
 // View returns a repository's claims, most recently active first.
 func (b *Board) View(now time.Time, repo string) View {
+	repo = RepoID(repo)
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	v := View{Repo: repo, At: now, Policy: b.cfg.Policy, LastSeq: b.seq, Claims: []ClaimView{}, Recent: []Activity{}}
@@ -159,6 +160,9 @@ func (b *Board) Repos(now time.Time) []RepoSummary {
 
 // Since returns activities after seq for a repository ("" for all).
 func (b *Board) Since(repo string, seq uint64) []Activity {
+	if repo != "" {
+		repo = RepoID(repo)
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	var out []Activity
