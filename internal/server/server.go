@@ -43,6 +43,8 @@ type Options struct {
 	SweepEvery time.Duration
 	// Dashboard serves the web UI. Nil serves no UI.
 	Dashboard http.Handler
+	// Webhook sends selected activities to an endpoint. Zero sends nothing.
+	Webhook WebhookConfig
 }
 
 // Server serves one team's board.
@@ -57,6 +59,7 @@ type Server struct {
 	sweepEvery time.Duration
 	dashboard  http.Handler
 	saved      uint64
+	notifier   *notifier
 	closing    chan struct{}
 	closeOnce  sync.Once
 }
@@ -103,7 +106,15 @@ func New(o Options) (*Server, error) {
 	if len(s.members) == 0 {
 		return nil, errors.New("no members configured: add one with 'intagent token add <name>'")
 	}
-	s.board = board.New(o.Board, board.WithNotify(s.hub.publish))
+	publish := s.hub.publish
+	if o.Webhook.URL != "" {
+		s.notifier = newNotifier(o.Webhook, s.log)
+		publish = func(acts []board.Activity) {
+			s.hub.publish(acts)
+			s.notifier.enqueue(acts)
+		}
+	}
+	s.board = board.New(o.Board, board.WithNotify(publish))
 	if err := s.load(); err != nil {
 		return nil, err
 	}
@@ -147,6 +158,9 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	maintainCtx, stopMaintain := context.WithCancel(context.WithoutCancel(ctx))
 	maintained := make(chan struct{})
 	go func() { defer close(maintained); s.maintain(maintainCtx) }()
+	if s.notifier != nil {
+		go s.notifier.run(maintainCtx)
+	}
 
 	errc := make(chan error, 1)
 	go func() { errc <- srv.Serve(ln) }()

@@ -278,6 +278,11 @@ func renderView(v View) string {
 		return fmt.Sprintf("No agents have work in %s right now.", v.Repo)
 	}
 	lines := []string{fmt.Sprintf("%s: %s, %s %s", v.Repo, plural(len(v.Claims), "claim"), plural(v.Sessions, "live session"), dataNotice)}
+	if st := v.Stats; st.Checks > 0 {
+		lines = append(lines, fmt.Sprintf("Since %s: %s checked, %s caught before the edit (%d refused, %d bumped), %d asked, %d warned, %s, %s.",
+			st.Since.Format("Jan 2 15:04"), plural(st.Checks, "edit"), plural(st.Refused+st.Bumped, "collision"), st.Refused, st.Bumped, st.Asked, st.Warned,
+			plural(st.Alerts, "overlap alert"), plural(st.Notes, "note")))
+	}
 	for _, c := range v.Claims {
 		state := "active"
 		if !c.Active {

@@ -634,7 +634,7 @@ func TestViewAndStats(t *testing.T) {
 	if v.Stats.Checks != 3 || v.Stats.Bumped != 1 || v.Stats.Overlaps != 2 || v.Stats.Alerts != 1 {
 		t.Fatalf("stats = %+v", v.Stats)
 	}
-	mustContain(t, v.Text(), "2 claims, 1 live session ", "bob on feat/bob (active", "alice on feat/alice (not running", "changed 1 file: a/b.go")
+	mustContain(t, v.Text(), "2 claims, 1 live session ", "3 edits checked, 1 collision caught before the edit (0 refused, 1 bumped)", "bob on feat/bob (active", "alice on feat/alice (not running", "changed 1 file: a/b.go")
 	if rs := h.b.Repos(h.now); len(rs) != 1 || rs[0].Claims != 2 || rs[0].ActiveClaims != 1 || rs[0].LiveSessions != 1 {
 		t.Fatalf("repos = %+v", rs)
 	}

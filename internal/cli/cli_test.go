@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/patakil/intagent/internal/board"
 	"github.com/patakil/intagent/internal/server"
@@ -452,5 +453,16 @@ func TestTokenAndLogin(t *testing.T) {
 	}
 	if fi, err := os.Stat(filepath.Join(tm.dir, "alice.json")); err != nil || fi.Mode().Perm() != 0o600 {
 		t.Fatalf("user config: %v %v", err, fi)
+	}
+}
+
+func TestDemoStoryCollides(t *testing.T) {
+	b := board.New(board.DefaultConfig())
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	simulate(ctx, b, time.Millisecond)
+	v := b.View(time.Now(), demoRepo)
+	if len(v.Claims) != 4 || v.Stats.Refused == 0 || v.Stats.Bumped == 0 || v.Stats.Notes == 0 {
+		t.Fatalf("demo did not play its story: %d claims, stats %+v", len(v.Claims), v.Stats)
 	}
 }

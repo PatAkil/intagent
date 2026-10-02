@@ -40,7 +40,7 @@ func (a *App) serve(ctx context.Context, args []string) error {
 	server.Version = a.Version
 	srv, err := server.New(server.Options{
 		Members: fc.Members, Board: fc.BoardConfig(), DataDir: *data, PublicRead: *public,
-		Logger: logger, Dashboard: web.Handler(),
+		Logger: logger, Dashboard: web.Handler(), Webhook: fc.Webhook,
 	})
 	if err != nil {
 		return err

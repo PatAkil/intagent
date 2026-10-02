@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/patakil/intagent/internal/board"
@@ -46,6 +47,8 @@ type FileConfig struct {
 	DormantFor     Duration     `json:"dormant_for,omitempty"`
 	ForgetAfter    Duration     `json:"forget_after,omitempty"`
 	NotesPerMinute int          `json:"notes_per_minute,omitempty"`
+	// Webhook sends stalls, silent agents and refused collisions to an endpoint.
+	Webhook WebhookConfig `json:"webhook,omitzero"`
 }
 
 var memberName = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,39}$`)
@@ -79,6 +82,9 @@ func (fc FileConfig) validate() error {
 		if b, err := hex.DecodeString(m.TokenSHA256); err != nil || len(b) != sha256.Size {
 			return fmt.Errorf("member %q: token_sha256 must be 64 hex characters", m.Name)
 		}
+	}
+	if u := fc.Webhook.URL; u != "" && !strings.HasPrefix(u, "https://") && !strings.HasPrefix(u, "http://") {
+		return fmt.Errorf("webhook.url %q must be an http or https URL", u)
 	}
 	for _, a := range []board.Action{fc.Policy.Block, fc.Policy.Overlap, fc.Policy.Nearby} {
 		if a == "" {

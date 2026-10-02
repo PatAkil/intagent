@@ -24,6 +24,9 @@ type App struct {
 const usage = `intagent: intent for agents. Every coding agent on your team sees what the
 others are changing, before it writes the same file.
 
+Try it in ten seconds:
+  intagent demo                            a dashboard with four simulated agents
+
 Run the team server (one per team):
   intagent serve --config team.json        start the server and dashboard
   intagent token add <name>                add a member and print their token
@@ -105,6 +108,7 @@ func (a *App) commands() map[string]func(context.Context, []string) error {
 		"mcp":     a.mcp,
 		"watch":   a.watch,
 		"guard":   a.guard,
+		"demo":    a.demo,
 	}
 }
 
