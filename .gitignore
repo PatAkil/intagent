@@ -1,0 +1,5 @@
+/intagent
+/dist/
+*.test
+*.out
+coverage.*
