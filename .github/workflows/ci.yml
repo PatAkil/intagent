@@ -35,14 +35,14 @@ jobs:
         with:
           version: v2.5
 
-  # The real Copilot CLI and Gemini CLI, at pinned versions, against a scripted
-  # model: offline, free and deterministic, so they run on every change.
+  # The real Codex, Copilot CLI and Gemini CLI, at pinned versions, against a
+  # scripted model: offline, free and deterministic, so they run on every change.
   agents:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        agent: [copilot, gemini]
+        agent: [codex, copilot, gemini]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

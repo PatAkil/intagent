@@ -204,6 +204,7 @@ each other, at the moment it matters.
 ```sh
 make check         # golangci-lint and go test -race
 make e2e           # two real Claude Code agents against a local server (needs an authenticated claude CLI)
+make e2e-codex     # the real Codex CLI against a scripted model: offline, free (needs npm and jq)
 make e2e-copilot   # the real GitHub Copilot CLI against a scripted model: offline, free (needs npm)
 make e2e-gemini    # the real Gemini CLI against a scripted model: offline, free (needs npm)
 ```

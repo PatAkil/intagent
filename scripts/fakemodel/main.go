@@ -1,15 +1,17 @@
-// Command fakemodel is a scripted stand-in for an OpenAI-compatible chat
-// completions API and for the Gemini API, so that agents which accept a custom
-// model endpoint (GitHub Copilot CLI, Gemini CLI) can be driven through
-// intagent's hooks offline, deterministically and for free.
+// Command fakemodel is a scripted stand-in for three model APIs: OpenAI chat
+// completions, the OpenAI Responses API and the Gemini API. Agents that accept
+// a custom model endpoint (GitHub Copilot CLI, Codex, Gemini CLI) can then be
+// driven through intagent's hooks offline, deterministically and for free.
 //
-// The script is a JSON file of turns, picked by the number of assistant
-// (or model) messages already in the conversation:
+// The script is a JSON file of turns, picked by how many model turns (or tool
+// results, for the Responses API) the conversation already holds:
 //
 //	{"turns": [{"tool": ["edit"], "args": {"edit": {"path": "a.go"}}}, {"text": "done"}]}
 //
-// A tool turn calls the first listed tool the agent offers. Every request body
-// is saved under -log, so a test can read what the agent told the model.
+// A tool turn calls the first listed tool the agent offers, with "args" for a
+// function tool or "input" for a freeform one such as Codex's apply_patch.
+// Every request body is saved under -log, so a test can read what the agent
+// told the model.
 package main
 
 import (
@@ -20,159 +22,135 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
 )
 
 type turn struct {
-	Tool []string                  `json:"tool"`
-	Args map[string]map[string]any `json:"args"`
-	Text string                    `json:"text"`
+	Tool  []string                  `json:"tool"`
+	Args  map[string]map[string]any `json:"args"`
+	Input map[string]string         `json:"input"`
+	Text  string                    `json:"text"`
 }
 
-// request is an OpenAI chat completions request.
-type request struct {
-	Model    string `json:"model"`
-	Stream   bool   `json:"stream"`
-	Messages []struct {
-		Role string `json:"role"`
-	} `json:"messages"`
-	Tools []struct {
-		Function struct {
-			Name string `json:"name"`
-		} `json:"function"`
-	} `json:"tools"`
+// call is the tool call a turn resolved to.
+type call struct {
+	name, kind string // kind is "function" or "custom"
+	args       map[string]any
+	input      string
 }
 
-// geminiRequest is a Gemini generateContent request.
-type geminiRequest struct {
-	Contents []struct {
-		Role string `json:"role"`
-	} `json:"contents"`
-	Tools []struct {
-		FunctionDeclarations []struct {
-			Name string `json:"name"`
-		} `json:"functionDeclarations"`
-	} `json:"tools"`
-}
-
-type toolCall struct {
-	Index    int    `json:"index"`
-	ID       string `json:"id"`
-	Type     string `json:"type"`
-	Function struct {
-		Name      string `json:"name"`
-		Arguments string `json:"arguments"`
-	} `json:"function"`
+type fake struct {
+	script, logDir string
+	n              atomic.Int64
 }
 
 func main() {
 	addr := flag.String("addr", "127.0.0.1:18090", "address to listen on")
-	script := flag.String("script", "script.json", "the turns to play")
-	logDir := flag.String("log", ".", "directory for the request log")
+	f := &fake{}
+	flag.StringVar(&f.script, "script", "script.json", "the turns to play")
+	flag.StringVar(&f.logDir, "log", ".", "directory for the request log")
 	flag.Parse()
-	var n atomic.Int64
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, map[string]any{"object": "list", "data": []any{map[string]string{"id": "fake-model", "object": "model"}}})
-	})
-	mux.HandleFunc("POST /", func(w http.ResponseWriter, r *http.Request) {
-		i := n.Add(1)
-		var raw json.RawMessage
-		if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		if err := os.WriteFile(filepath.Join(*logDir, fmt.Sprintf("req-%03d.json", i)), raw, 0o600); err != nil {
-			log.Print(err)
-		}
-		if strings.HasSuffix(r.URL.Path, ":countTokens") {
-			writeJSON(w, map[string]int{"totalTokens": 10})
-			return
-		}
-		if strings.Contains(r.URL.Path, "enerateContent") {
-			var req geminiRequest
-			_ = json.Unmarshal(raw, &req)
-			turns, offered := 0, []string{}
-			for _, c := range req.Contents {
-				if c.Role == "model" {
-					turns++
-				}
-			}
-			for _, t := range req.Tools {
-				for _, f := range t.FunctionDeclarations {
-					offered = append(offered, f.Name)
-				}
-			}
-			t, err := pick(*script, turns, offered)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			answerGemini(w, t, strings.HasSuffix(r.URL.Path, ":streamGenerateContent"))
-			return
-		}
-		var req request
-		_ = json.Unmarshal(raw, &req)
-		turns, offered := 0, []string{}
-		for _, m := range req.Messages {
-			if m.Role == "assistant" {
-				turns++
-			}
-		}
-		for _, tool := range req.Tools {
-			offered = append(offered, tool.Function.Name)
-		}
-		t, err := pick(*script, turns, offered)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		answer(w, req, t, fmt.Sprintf("call_%d", i))
-	})
-	srv := &http.Server{Addr: *addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	srv := &http.Server{Addr: *addr, Handler: f, ReadHeaderTimeout: 5 * time.Second}
 	log.Fatal(srv.ListenAndServe())
 }
 
-// pick chooses the turn after the given number of model turns and resolves
-// its tool call against the tools the agent offered.
-func pick(script string, turns int, offered []string) (turn, error) {
-	data, err := os.ReadFile(script)
+func (f *fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, map[string]any{"object": "list", "data": []any{map[string]string{"id": "fake-model", "object": "model"}}})
+		return
+	}
+	i := f.n.Add(1)
+	var raw json.RawMessage
+	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := os.WriteFile(filepath.Join(f.logDir, fmt.Sprintf("req-%03d.json", i)), raw, 0o600); err != nil {
+		log.Print(err)
+	}
+	id := fmt.Sprintf("call_%d", i)
+	var err error
+	switch p := r.URL.Path; {
+	case strings.HasSuffix(p, ":countTokens"):
+		writeJSON(w, map[string]int{"totalTokens": 10})
+	case strings.Contains(p, "enerateContent"):
+		err = f.gemini(w, raw, strings.HasSuffix(p, ":streamGenerateContent"))
+	case strings.HasSuffix(p, "/responses"):
+		err = f.responses(w, raw, id)
+	default:
+		err = f.chat(w, raw, id)
+	}
 	if err != nil {
-		return turn{}, err
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+// pick chooses the turn after the given number of model turns and resolves
+// its tool call against the tools the agent offered (name to kind).
+func (f *fake) pick(turns int, offered map[string]string) (call, string, error) {
+	data, err := os.ReadFile(f.script)
+	if err != nil {
+		return call{}, "", err
 	}
 	var s struct{ Turns []turn }
 	if err := json.Unmarshal(data, &s); err != nil {
-		return turn{}, fmt.Errorf("script %s: %w", script, err)
+		return call{}, "", fmt.Errorf("script %s: %w", f.script, err)
 	}
 	if len(s.Turns) == 0 {
-		return turn{}, fmt.Errorf("script %s has no turns", script)
+		return call{}, "", fmt.Errorf("script %s has no turns", f.script)
 	}
 	t := s.Turns[min(turns, len(s.Turns)-1)]
 	if len(t.Tool) == 0 {
-		return t, nil
+		return call{}, t.Text, nil
 	}
 	for _, name := range t.Tool {
-		if slices.Contains(offered, name) {
-			return turn{Tool: []string{name}, Args: map[string]map[string]any{name: t.Args[name]}}, nil
+		if kind, ok := offered[name]; ok {
+			return call{name: name, kind: kind, args: t.Args[name], input: t.Input[name]}, "", nil
 		}
 	}
-	return turn{Text: fmt.Sprintf("NO MATCHING TOOL; offered: %v", offered)}, nil
+	return call{}, fmt.Sprintf("NO MATCHING TOOL; offered: %v", offered), nil
 }
 
-func answer(w http.ResponseWriter, req request, t turn, id string) {
-	msg := map[string]any{"role": "assistant", "content": nil}
+// chat answers an OpenAI chat completions request.
+func (f *fake) chat(w http.ResponseWriter, raw []byte, id string) error {
+	var req struct {
+		Model    string `json:"model"`
+		Stream   bool   `json:"stream"`
+		Messages []struct {
+			Role string `json:"role"`
+		} `json:"messages"`
+		Tools []struct {
+			Function struct {
+				Name string `json:"name"`
+			} `json:"function"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return err
+	}
+	turns, offered := 0, map[string]string{}
+	for _, m := range req.Messages {
+		if m.Role == "assistant" {
+			turns++
+		}
+	}
+	for _, t := range req.Tools {
+		offered[t.Function.Name] = "function"
+	}
+	c, text, err := f.pick(turns, offered)
+	if err != nil {
+		return err
+	}
+	msg := map[string]any{"role": "assistant", "content": text}
 	finish := "stop"
-	if len(t.Tool) > 0 {
-		args, _ := json.Marshal(t.Args[t.Tool[0]])
-		var c toolCall
-		c.ID, c.Type, c.Function.Name, c.Function.Arguments = id, "function", t.Tool[0], string(args)
-		msg["tool_calls"] = []toolCall{c}
+	if c.name != "" {
+		args, _ := json.Marshal(c.args)
+		msg["content"] = nil
+		msg["tool_calls"] = []any{map[string]any{"index": 0, "id": id, "type": "function",
+			"function": map[string]string{"name": c.name, "arguments": string(args)}}}
 		finish = "tool_calls"
-	} else {
-		msg["content"] = t.Text
 	}
 	usage := map[string]int{"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
 	base := map[string]any{"id": "chatcmpl-" + id, "created": time.Now().Unix(), "model": req.Model}
@@ -181,45 +159,147 @@ func answer(w http.ResponseWriter, req request, t turn, id string) {
 		base["choices"] = []any{map[string]any{"index": 0, "message": msg, "finish_reason": finish}}
 		base["usage"] = usage
 		writeJSON(w, base)
-		return
+		return nil
 	}
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	event := func(choice map[string]any, extra map[string]any) {
-		chunk := map[string]any{"object": "chat.completion.chunk", "choices": []any{choice}}
+	chunk := func(choice, extra map[string]any) map[string]any {
+		out := map[string]any{"object": "chat.completion.chunk", "choices": []any{choice}}
 		for k, v := range base {
-			chunk[k] = v
+			out[k] = v
 		}
 		for k, v := range extra {
-			chunk[k] = v
+			out[k] = v
 		}
-		b, _ := json.Marshal(chunk)
-		fmt.Fprintf(w, "data: %s\n\n", b)
+		return out
 	}
-	event(map[string]any{"index": 0, "delta": msg, "finish_reason": nil}, nil)
-	event(map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": finish}, map[string]any{"usage": usage})
+	writeSSE(w, "data: %s\n\n",
+		chunk(map[string]any{"index": 0, "delta": msg, "finish_reason": nil}, nil),
+		chunk(map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": finish}, map[string]any{"usage": usage}))
 	fmt.Fprint(w, "data: [DONE]\n\n")
+	return nil
 }
 
-// answerGemini answers a generateContent request, streamed as server-sent
+// rtool is a Responses API tool; a namespace holds more tools.
+type rtool struct {
+	Type  string  `json:"type"`
+	Name  string  `json:"name"`
+	Tools []rtool `json:"tools"`
+}
+
+func collect(offered map[string]string, tools []rtool) {
+	for _, t := range tools {
+		if t.Type == "namespace" {
+			collect(offered, t.Tools)
+		} else if t.Name != "" {
+			offered[t.Name] = t.Type
+		}
+	}
+}
+
+// responses answers an OpenAI Responses API request, as Codex streams it.
+// Codex offers its tools in the request or in an "additional_tools" input item.
+func (f *fake) responses(w http.ResponseWriter, raw []byte, id string) error {
+	var req struct {
+		Input []struct {
+			Type  string  `json:"type"`
+			Tools []rtool `json:"tools"`
+		} `json:"input"`
+		Tools []rtool `json:"tools"`
+	}
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return err
+	}
+	turns, offered := 0, map[string]string{}
+	collect(offered, req.Tools)
+	for _, it := range req.Input {
+		if strings.HasSuffix(it.Type, "_call_output") {
+			turns++
+		}
+		collect(offered, it.Tools)
+	}
+	c, text, err := f.pick(turns, offered)
+	if err != nil {
+		return err
+	}
+	item := map[string]any{"type": "message", "role": "assistant", "id": "msg_" + id,
+		"content": []any{map[string]string{"type": "output_text", "text": text}}}
+	switch {
+	case c.kind == "custom":
+		item = map[string]any{"type": "custom_tool_call", "call_id": id, "name": c.name, "input": c.input}
+	case c.name != "":
+		args, _ := json.Marshal(c.args)
+		item = map[string]any{"type": "function_call", "call_id": id, "name": c.name, "arguments": string(args)}
+	}
+	usage := map[string]any{"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+	w.Header().Set("Content-Type", "text/event-stream")
+	for _, ev := range []map[string]any{
+		{"type": "response.created", "response": map[string]string{"id": "resp_" + id}},
+		{"type": "response.output_item.done", "item": item},
+		{"type": "response.completed", "response": map[string]any{"id": "resp_" + id, "usage": usage}},
+	} {
+		writeSSE(w, "event: "+ev["type"].(string)+"\ndata: %s\n\n", ev)
+	}
+	return nil
+}
+
+// gemini answers a Gemini generateContent request, streamed as server-sent
 // events when the agent asked for streamGenerateContent.
-func answerGemini(w http.ResponseWriter, t turn, stream bool) {
-	part := map[string]any{"text": t.Text}
-	if len(t.Tool) > 0 {
-		part = map[string]any{"functionCall": map[string]any{"name": t.Tool[0], "args": t.Args[t.Tool[0]]}}
+func (f *fake) gemini(w http.ResponseWriter, raw []byte, stream bool) error {
+	var req struct {
+		Contents []struct {
+			Role string `json:"role"`
+		} `json:"contents"`
+		Tools []struct {
+			FunctionDeclarations []struct {
+				Name string `json:"name"`
+			} `json:"functionDeclarations"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return err
+	}
+	turns, offered := 0, map[string]string{}
+	for _, c := range req.Contents {
+		if c.Role == "model" {
+			turns++
+		}
+	}
+	for _, t := range req.Tools {
+		for _, d := range t.FunctionDeclarations {
+			offered[d.Name] = "function"
+		}
+	}
+	c, text, err := f.pick(turns, offered)
+	if err != nil {
+		return err
+	}
+	part := map[string]any{"text": text}
+	if c.name != "" {
+		part = map[string]any{"functionCall": map[string]any{"name": c.name, "args": c.args}}
 	}
 	resp := map[string]any{
-		"candidates":    []any{map[string]any{"content": map[string]any{"role": "model", "parts": []any{part}}, "finishReason": "STOP", "index": 0}},
+		"candidates": []any{map[string]any{"content": map[string]any{"role": "model", "parts": []any{part}},
+			"finishReason": "STOP", "index": 0}},
 		"usageMetadata": map[string]int{"promptTokenCount": 10, "candidatesTokenCount": 5, "totalTokenCount": 15},
 		"modelVersion":  "fake",
 	}
 	if !stream {
 		writeJSON(w, resp)
-		return
+		return nil
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
-	b, _ := json.Marshal(resp)
-	fmt.Fprintf(w, "data: %s\r\n\r\n", b)
+	writeSSE(w, "data: %s\r\n\r\n", resp)
+	return nil
+}
+
+func writeSSE(w http.ResponseWriter, format string, events ...map[string]any) {
+	if w.Header().Get("Content-Type") == "" {
+		w.Header().Set("Content-Type", "text/event-stream")
+	}
+	w.Header().Set("Cache-Control", "no-cache")
+	for _, ev := range events {
+		b, _ := json.Marshal(ev)
+		fmt.Fprintf(w, format, b)
+	}
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

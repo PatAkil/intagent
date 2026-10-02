@@ -54,6 +54,9 @@ What matters:
 ## Codex
 
 Verified against the Codex CLI 0.160.0, with `codex exec` driven against a local mock of the model API.
+`make e2e-codex` repeats it through intagent's own wiring: the team context arrives at session start, and an edit of
+a teammate's reserved file is refused both as `apply_patch` and as a patch piped through the shell, from code mode.
+With the hooks trusted but intagent not installed, Codex fails open and the edit goes through.
 
 **Installed by `intagent init`:** `.codex/hooks.json` and an `[mcp_servers.intagent]` table in
 `.codex/config.toml`. **`intagent init --trust-codex`** also appends, to your `~/.codex/config.toml`, the project
