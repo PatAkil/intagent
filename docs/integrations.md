@@ -23,13 +23,15 @@ permission `mcp__intagent__*`.
 What matters:
 
 - **One command, in shell form.** Every handler is
-  `command -v intagent >/dev/null && intagent hook || true`, without `args`. Shell form, because Cursor and Copilot
-  CLI run these hooks too and Cursor keeps only the `command` string. Guarded, because the file is committed:
-  for a teammate without intagent the hook does nothing, where a missing binary would otherwise make Copilot CLI
-  refuse every edit. A non-interactive `sh -c` reads no profile, and intagent prints nothing but the answer JSON.
-  `intagent init` replaces the exec form (`"args": ["hook", "claude-code"]`) that earlier versions wrote.
-- **intagent never exits 2.** Exit 2 is a refusal in Claude Code, Cursor and Copilot CLI, so a usage error exits 1
-  and the hook itself always exits 0.
+  `{ command -v intagent >/dev/null && intagent hook || true; }`, without `args`. Shell form, because Cursor and
+  Copilot CLI run these hooks too and Cursor keeps only the `command` string. Guarded, because the file is
+  committed: for a teammate without intagent the hook does nothing, where a missing binary would otherwise make
+  Copilot CLI refuse every edit. Grouped in braces, because Cursor passes the payload as a here-document appended to
+  the command, which would otherwise feed `true`. A non-interactive `sh -c` reads no profile, and intagent prints
+  nothing but the answer JSON. `intagent init` replaces the exec form (`"args": ["hook", "claude-code"]`) that
+  earlier versions wrote.
+- **intagent never exits 2.** Exit 2 is a refusal in Claude Code, Cursor, Copilot CLI and Codex, so a usage error
+  exits 1, and the hook always exits 0, even if it panics (Go's own exit code for a panic is 2).
 - **Paths.** `Edit` and `Write` carry `tool_input.file_path`; `NotebookEdit` carries `tool_input.notebook_path`.
   Paths are absolute. Writes outside the worktree (Claude's scratchpad) are ignored.
 - **A refusal reaches the model** as a failed tool call: `PreToolUse:Edit hook error: <reason>`. Models adapt to it.
@@ -86,7 +88,9 @@ What matters:
 ## Cursor
 
 Verified against the agent runtime of `@cursor/sdk` 1.0.35, which runs Cursor's hooks; the editor itself was not
-driven.
+driven. intagent's own wiring was run through that runtime against a live server: a write to a teammate's reserved
+file was refused, an unrelated write allowed, and each edit checked once although `.claude/settings.json` carries
+the same hooks.
 
 **Installed by `intagent init`:** `.cursor/hooks.json` and `.cursor/mcp.json`. Each hook runs the same command as
 Claude Code's, with a 10 s timeout.
@@ -121,7 +125,9 @@ What matters:
 
 ## GitHub Copilot CLI
 
-Verified against GitHub Copilot CLI 1.0.91.
+Verified against GitHub Copilot CLI 1.0.91, driven offline against a scripted model. Through the committed
+`.claude/settings.json`, an edit of a teammate's reserved file was refused with intagent's reason, and in a clone
+without intagent on the `PATH` an edit went through untouched.
 
 **Installed by `intagent init`:** nothing of its own. Copilot CLI runs the hooks in `.claude/settings.json` and the
 MCP server in `.mcp.json` (in a folder you have trusted).

@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"time"
 
 	"github.com/patakil/intagent/internal/board"
@@ -21,7 +22,15 @@ const maxHookInput = 32 << 20
 // hook handles one agent hook event. It never blocks an agent because of its
 // own failure: any error is logged and the hook exits 0 with no output, unless
 // INTAGENT_FAIL=closed asks for edits to be refused while the server is unreachable.
-func (a *App) hook(ctx context.Context, args []string) error {
+func (a *App) hook(ctx context.Context, args []string) (err error) {
+	// A crash must not become a refusal: Go exits 2 on a panic, and exit 2
+	// refuses the tool call in Claude Code, Cursor, Copilot CLI and Codex.
+	defer func() {
+		if r := recover(); r != nil {
+			hookLog("panic: %v\n%s", r, debug.Stack())
+			err = nil
+		}
+	}()
 	fs := a.flags("hook", "hook [claude-code|codex|cursor|copilot] < event.json")
 	agentFlag := fs.String("agent", "", "the agent (alternative to the positional argument)")
 	if err := fs.Parse(args); err != nil {

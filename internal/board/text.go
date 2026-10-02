@@ -47,8 +47,8 @@ func ago(now, t time.Time) string {
 	switch {
 	case t.IsZero():
 		return "a while"
-	case d < 0:
-		return "just now"
+	case d < time.Second:
+		return "under a second"
 	case d < time.Minute:
 		return fmt.Sprintf("%ds", int(d.Seconds()))
 	case d < time.Hour:

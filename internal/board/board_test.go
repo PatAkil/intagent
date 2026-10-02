@@ -68,6 +68,18 @@ func (h *harness) hook(kind Kind, member, session string, paths ...string) HookR
 	return res
 }
 
+// toolOf is the tool a member's only session is in, as the board shows it.
+func (h *harness) toolOf(member string) string {
+	h.t.Helper()
+	for _, c := range h.b.View(h.now, repo).Claims {
+		if c.Member == member && len(c.Sessions) == 1 {
+			return c.Sessions[0].Tool
+		}
+	}
+	h.t.Fatalf("%s has no single session on the board", member)
+	return ""
+}
+
 // edit runs the pre and post hooks of a successful edit.
 func (h *harness) edit(member, session string, paths ...string) {
 	h.t.Helper()
@@ -132,8 +144,16 @@ func TestExclusiveIntentRefusesOtherAgentsEveryTime(t *testing.T) {
 		}
 		mustContain(t, res.Reason, "alice's agent", "exclusive intent services/payments/**", "Move retry policy", "reserved", "send_note")
 	}
+	// A refused edit never runs, so bob's agent is not left inside a tool,
+	// where it would be given the longer stall threshold.
+	if tool := h.toolOf("bob"); tool != "" {
+		t.Fatalf("after a refusal bob's agent is in %q", tool)
+	}
 	if res := h.hook(KindPreEdit, "bob", "b1", "services/billing/invoice.go"); res.Decision != Allow {
 		t.Fatalf("unrelated path: decision %s, want allow", res.Decision)
+	}
+	if tool := h.toolOf("bob"); tool != "Edit" {
+		t.Fatalf("during an allowed edit bob's agent is in %q", tool)
 	}
 	if got := h.activities("conflict"); len(got) != 2 || got[0].Severity != Block || got[0].Decision != Refuse {
 		t.Fatalf("conflict activities = %+v", got)

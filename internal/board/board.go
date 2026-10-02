@@ -356,6 +356,10 @@ func (b *Board) Hook(now time.Time, ev HookEvent) (HookResult, error) {
 		b.setWorking(now, s, ev.Tool)
 		res = b.decide(now, c, s, ev.Paths)
 		res.ClaimID = c.ID
+		if res.Decision != Allow {
+			// The edit does not run (yet), so no tool end will follow it.
+			b.setWorking(now, s, "")
+		}
 	case KindPostEdit:
 		b.setWorking(now, s, "")
 		b.touch(now, c, s, ev.Paths)

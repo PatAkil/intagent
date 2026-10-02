@@ -617,6 +617,14 @@ func TestCommittedHooksAreHarmlessWithoutIntagent(t *testing.T) {
 	if out, code := run(with, `{"x":1}`, "-c", hookCommand); out != "ran hook\n{\"x\":1}\n" || code != 0 {
 		t.Fatalf("with intagent: %q, exit %d", out, code)
 	}
+	// Cursor appends the payload to the command as a here-document.
+	heredoc := hookCommand + " <<'CURSOR_HOOK_EOF'\n{\"x\":2}\nCURSOR_HOOK_EOF"
+	if out, code := run(with, "", "-c", heredoc); out != "ran hook\n{\"x\":2}\n" || code != 0 {
+		t.Fatalf("payload as a here-document: %q, exit %d", out, code)
+	}
+	if out, code := run(without, "", "-c", heredoc); out != "" || code != 0 {
+		t.Fatalf("here-document without intagent: %q, exit %d", out, code)
+	}
 
 	hooks := t.TempDir()
 	script, err := installGitHook(hooks)
@@ -629,5 +637,24 @@ func TestCommittedHooksAreHarmlessWithoutIntagent(t *testing.T) {
 	writeFile(t, fake, "#!/bin/sh\necho \"ran $*\"\nexit 1\n")
 	if out, code := run(with, "", script); out != "ran guard\n" || code != 1 {
 		t.Fatalf("pre-commit with intagent: %q, exit %d", out, code)
+	}
+}
+
+type panicReader struct{}
+
+func (panicReader) Read([]byte) (int, error) { panic("stdin exploded") }
+
+// Go exits 2 on a panic, which every agent reads as a refusal.
+func TestHookRecoversFromAPanic(t *testing.T) {
+	cache := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", cache)
+	var out, errb bytes.Buffer
+	app := &App{In: panicReader{}, Out: &out, Err: &errb, Version: "test", Dir: t.TempDir()}
+	if code := app.Run(context.Background(), []string{"hook"}); code != 0 || out.Len() != 0 {
+		t.Fatalf("exit %d, stdout %q", code, out.String())
+	}
+	logged, _ := os.ReadFile(filepath.Join(cache, "intagent", "hook.log"))
+	if !strings.Contains(string(logged), "panic: stdin exploded") {
+		t.Fatalf("hook log: %s", logged)
 	}
 }

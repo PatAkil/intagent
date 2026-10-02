@@ -50,7 +50,11 @@ var codexWiring = []hookWire{
 // The files are committed, so the hook also runs for teammates who have not
 // installed intagent. It then does nothing: GitHub Copilot CLI, which runs
 // these hooks too, refuses every edit when a pre-tool hook fails.
-const hookCommand = "command -v intagent >/dev/null && intagent hook || true"
+//
+// The braces matter: Cursor passes the payload by appending a here-document
+// to the command, which binds to the last simple command, so without the
+// group it would feed 'true' rather than intagent.
+const hookCommand = "{ command -v intagent >/dev/null && intagent hook || true; }"
 
 const codexCommand = "intagent hook codex"
 
