@@ -74,17 +74,16 @@ func (ac actor) prompt(b *board.Board, text string) {
 	_, _ = b.Hook(time.Now(), ev)
 }
 
-// edit tries a write like an agent would: on a bump it retries once.
-func (ac actor) edit(b *board.Board, paths ...string) bool {
+// edit tries a write like an agent would: on a bump it retries once, and on a
+// refusal it leaves the file alone.
+func (ac actor) edit(b *board.Board, paths ...string) {
 	res := ac.hook(b, board.KindPreEdit, "Edit", paths...)
 	if res.Decision == board.Refuse && len(res.Conflicts) > 0 && res.Conflicts[0].Severity != board.Block {
 		res = ac.hook(b, board.KindPreEdit, "Edit", paths...)
 	}
-	if res.Decision != board.Allow {
-		return false
+	if res.Decision == board.Allow {
+		ac.hook(b, board.KindPostEdit, "Edit", paths...)
 	}
-	ac.hook(b, board.KindPostEdit, "Edit", paths...)
-	return true
 }
 
 func demoArea(p string) string {
@@ -113,7 +112,10 @@ func simulate(ctx context.Context, b *board.Board, every time.Duration) {
 		},
 		func() { alice.edit(b, "services/payments/retry/policy.go") },
 		func() { alice.edit(b, "services/payments/client.go") },
-		func() { bob.hook(b, board.KindSessionStart, ""); bob.prompt(b, "Raise the payment client timeout to 30s") },
+		func() {
+			bob.hook(b, board.KindSessionStart, "")
+			bob.prompt(b, "Raise the payment client timeout to 30s")
+		},
 		func() { bob.edit(b, "services/payments/client.go") }, // refused: alice holds it
 		func() {
 			_, _ = b.Note(time.Now(), board.NoteRequest{Member: "bob", Where: where(bob), To: "alice", Text: "I need client.go for the timeout fix; can you take it in your change?"})
@@ -126,7 +128,7 @@ func simulate(ctx context.Context, b *board.Board, every time.Duration) {
 		func() {
 			_, _ = b.Declare(time.Now(), board.DeclareRequest{Member: "dana", Where: where(dana), Summary: "Upgrade the shared HTTP client", Patterns: []string{"libs/http/**"}, Mode: board.Shared})
 		},
-		func() { dana.edit(b, "libs/http/client.ts") }, // bumped: carol changed it
+		func() { dana.edit(b, "libs/http/client.ts") },      // bumped: carol changed it
 		func() { alice.hook(b, board.KindToolEnd, "Bash") }, // alice reads bob's note
 		func() { alice.hook(b, board.KindToolStart, "Bash") },
 		func() { dana.hook(b, board.KindToolStart, "Bash") }, // dana's agent will stall in this tool call
@@ -153,6 +155,6 @@ func simulate(ctx context.Context, b *board.Board, every time.Duration) {
 			steps[i]()
 			continue
 		}
-		idle[rand.IntN(len(idle))]()
+		idle[rand.IntN(len(idle))]() //nolint:gosec // picking a demo step needs no secure randomness
 	}
 }
