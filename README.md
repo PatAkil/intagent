@@ -78,6 +78,14 @@ intagent token add bob   --config team.json
 intagent serve --config team.json --addr :7400 --data ./intagent-data
 ```
 
+Or as a container, with everything it keeps in one volume:
+
+```sh
+docker build -t intagent .
+docker run --rm -v intagent:/data intagent token add alice --config /data/team.json
+docker run -d --name intagent -p 7400:7400 -v intagent:/data intagent
+```
+
 Open `http://<server>:7400/` for the live dashboard and sign in with any member's token. Beyond a trusted
 network, serve HTTPS: `--tls-cert cert.pem --tls-key key.pem`, or a reverse proxy that terminates TLS and sets
 `X-Forwarded-Proto: https`.
@@ -210,6 +218,11 @@ make e2e           # two real Claude Code agents against a local server (needs a
 make e2e-codex     # the real Codex CLI against a scripted model: offline, free (needs npm and jq)
 make e2e-copilot   # the real GitHub Copilot CLI against a scripted model: offline, free (needs npm)
 make e2e-gemini    # the real Gemini CLI against a scripted model: offline, free (needs npm)
+make dist VERSION=v0.1.0    # release archives for Linux, macOS and Windows, with SHA256SUMS
+make image VERSION=v0.1.0   # the server's container image
 ```
+
+Pushing a tag `vX.Y.Z` runs the release workflow: it tests, publishes a GitHub release with those archives, and
+pushes the server image to `ghcr.io/<owner>/intagent` for amd64 and arm64.
 
 The design is in [docs/design.md](docs/design.md).

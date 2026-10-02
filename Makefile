@@ -1,7 +1,7 @@
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: build test race lint check e2e e2e-codex e2e-copilot e2e-gemini install
+.PHONY: build test race lint check e2e e2e-codex e2e-copilot e2e-gemini install dist image
 
 build:
 	go build -trimpath -ldflags "$(LDFLAGS)" -o intagent ./cmd/intagent
@@ -17,6 +17,14 @@ race:
 
 lint:
 	golangci-lint run ./...
+
+# dist builds the release archives into dist/, as the release workflow does.
+dist:
+	./scripts/release.sh $(VERSION)
+
+# image builds the server's container image.
+image:
+	docker build --build-arg VERSION=$(VERSION) -t intagent:$(VERSION) .
 
 # check is what CI runs.
 check: lint race

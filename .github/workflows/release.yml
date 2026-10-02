@@ -1,0 +1,40 @@
+name: release
+
+# Pushing a tag such as v0.1.0 publishes a GitHub release with archives for
+# Linux, macOS and Windows, and the server image at ghcr.io/<owner>/intagent.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Test
+        run: go test -race -count=1 ./...
+      - name: Build the archives
+        run: ./scripts/release.sh "$GITHUB_REF_NAME"
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --generate-notes --verify-tag
+      - uses: docker/setup-buildx-action@v3
+      - name: Publish the server image
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          tags=(-t "$image:$GITHUB_REF_NAME")
+          # Pre-releases (v1.2.0-rc.1) do not move :latest.
+          [[ "$GITHUB_REF_NAME" == *-* ]] || tags+=(-t "$image:latest")
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker buildx build --push --platform linux/amd64,linux/arm64 \
+            --build-arg VERSION="$GITHUB_REF_NAME" "${tags[@]}" .

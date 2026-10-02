@@ -35,6 +35,14 @@ jobs:
         with:
           version: v2.5
 
+  # The server image still builds.
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the image
+        run: docker build --build-arg VERSION=ci -t intagent:ci . && docker run --rm intagent:ci version
+
   # The real Codex, Copilot CLI and Gemini CLI, at pinned versions, against a
   # scripted model: offline, free and deterministic, so they run on every change.
   agents:
