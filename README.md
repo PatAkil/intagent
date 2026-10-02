@@ -78,8 +78,9 @@ intagent token add bob   --config team.json
 intagent serve --config team.json --addr :7400 --data ./intagent-data
 ```
 
-Open `http://<server>:7400/` for the live dashboard and sign in with any member's token. Put it behind TLS
-(a reverse proxy) for anything beyond a trusted network.
+Open `http://<server>:7400/` for the live dashboard and sign in with any member's token. Beyond a trusted
+network, serve HTTPS: `--tls-cert cert.pem --tls-key key.pem`, or a reverse proxy that terminates TLS and sets
+`X-Forwarded-Proto: https`.
 
 **Each member, once:**
 
@@ -186,8 +187,10 @@ off, `INTAGENT_FAIL=closed` refuses edits while the server is unreachable (the d
 
 - Tokens are stored on the server only as SHA-256 hashes and compared in constant time. The member is always taken
   from the token, never from the request.
-- Writes accept only bearer tokens. The dashboard's HttpOnly, `SameSite=Strict` cookie can only read, so a page in
-  another tab cannot act on your behalf.
+- Writes accept only bearer tokens. Signing in to the dashboard exchanges the token for a session cookie (HttpOnly,
+  `SameSite=Strict`, `Secure` over HTTPS) that can only read, so a page in another tab cannot act on your behalf.
+  The cookie is a MAC of the token's hash under a key kept in the data directory: it is not the token, cannot be
+  forged from the team file, survives a restart and ends when the token is rotated.
 - Text from one member's agent reaches another's only quoted, stripped of control characters, collapsed to one line,
   capped in length, and introduced as information rather than instructions. Notes are rate-limited.
 - The hook fails open with a short timeout: intagent never stops an agent because intagent is down, unless a team

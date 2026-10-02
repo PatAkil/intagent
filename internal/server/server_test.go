@@ -109,23 +109,50 @@ func TestAuth(t *testing.T) {
 	if resp, _ := http.DefaultClient.Do(req); resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("wrong token: %d", resp.StatusCode)
 	}
-	// A cookie never authorises a write, even a valid one.
-	req, _ = http.NewRequest(http.MethodPost, ts.url+"/v1/hook", strings.NewReader(`{}`))
-	req.AddCookie(&http.Cookie{Name: cookieName, Value: ts.tokens["alice"]})
-	if resp, _ := http.DefaultClient.Do(req); resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("cookie write: %d", resp.StatusCode)
+	// A dashboard session authorises reads...
+	session := ts.login(t, "bob", nil)
+	do := func(method, path, cookie, token string) int {
+		t.Helper()
+		req, _ := http.NewRequest(method, ts.url+path, strings.NewReader(`{}`))
+		if cookie != "" {
+			req.AddCookie(&http.Cookie{Name: cookieName, Value: cookie})
+		}
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode
 	}
-	// ...but it does authorise reads.
 	req, _ = http.NewRequest(http.MethodGet, ts.url+"/v1/whoami", nil)
-	req.AddCookie(&http.Cookie{Name: cookieName, Value: ts.tokens["bob"]})
+	req.AddCookie(&http.Cookie{Name: cookieName, Value: session})
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil || resp.StatusCode != http.StatusOK {
-		t.Fatalf("cookie read: %v %d", err, resp.StatusCode)
+		t.Fatalf("session read: %v %d", err, resp.StatusCode)
 	}
 	var who map[string]any
 	_ = json.NewDecoder(resp.Body).Decode(&who)
 	if who["member"] != "bob" {
 		t.Fatalf("whoami = %v", who)
+	}
+	// ...never a write, it is not a token, and a token is not a session.
+	if code := do(http.MethodPost, "/v1/hook", session, ""); code != http.StatusUnauthorized {
+		t.Fatalf("session write: %d", code)
+	}
+	if code := do(http.MethodGet, "/v1/whoami", "", session); code != http.StatusUnauthorized {
+		t.Fatalf("session as a token: %d", code)
+	}
+	if session == ts.tokens["bob"] || strings.Contains(session, ts.tokens["bob"]) {
+		t.Fatal("the session cookie holds the token")
+	}
+	if code := do(http.MethodGet, "/v1/whoami", ts.tokens["bob"], ""); code != http.StatusUnauthorized {
+		t.Fatalf("token as a session: %d", code)
+	}
+	if code := do(http.MethodGet, "/v1/whoami", "00"+session[2:], ""); code != http.StatusUnauthorized {
+		t.Fatalf("forged session: %d", code)
 	}
 	if code := ts.do(t, "GET", "/healthz", "", nil, nil); code != http.StatusOK {
 		t.Fatalf("healthz: %d", code)
@@ -142,6 +169,54 @@ func TestPublicRead(t *testing.T) {
 	}
 }
 
+// login signs a member in to the dashboard and returns the session cookie.
+func (ts *testServer) login(t *testing.T, member string, header http.Header) string {
+	t.Helper()
+	form := strings.NewReader("token=" + ts.tokens[member])
+	req, _ := http.NewRequest(http.MethodPost, ts.url+"/ui/login", form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	for k, v := range header {
+		req.Header[k] = v
+	}
+	resp, err := (&http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}).Do(req)
+	if err != nil || len(resp.Cookies()) != 1 {
+		t.Fatalf("login %s: %v %v", member, err, resp)
+	}
+	return resp.Cookies()[0].Value
+}
+
+func TestSessionsSurviveARestartAndEndWithTheToken(t *testing.T) {
+	dir := t.TempDir()
+	ts := newTestServer(t, func(o *Options) { o.DataDir = dir })
+	session := ts.login(t, "alice", nil)
+	whoami := func(s *Server) int {
+		req := httptest.NewRequest(http.MethodGet, "/v1/whoami", nil)
+		req.AddCookie(&http.Cookie{Name: cookieName, Value: session})
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if info, err := os.Stat(filepath.Join(dir, "ui.key")); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("ui.key: %v %v", info, err)
+	}
+	members := []Member{{Name: "alice", TokenSHA256: HashToken(ts.tokens["alice"])}}
+	again, err := New(Options{Members: members, Board: board.DefaultConfig(), DataDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := whoami(again); code != http.StatusOK {
+		t.Fatalf("after a restart: %d", code)
+	}
+	_, rotated, _ := NewToken()
+	again, err = New(Options{Members: []Member{{Name: "alice", TokenSHA256: rotated}}, Board: board.DefaultConfig(), DataDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := whoami(again); code != http.StatusUnauthorized {
+		t.Fatalf("after rotating the token: %d", code)
+	}
+}
+
 func TestLoginSetsCookie(t *testing.T) {
 	ts := newTestServer(t)
 	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
@@ -149,8 +224,15 @@ func TestLoginSetsCookie(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.StatusCode != http.StatusSeeOther || len(resp.Cookies()) != 1 || !resp.Cookies()[0].HttpOnly {
+	if resp.StatusCode != http.StatusSeeOther || len(resp.Cookies()) != 1 || !resp.Cookies()[0].HttpOnly || resp.Cookies()[0].Secure {
 		t.Fatalf("login: %d %v", resp.StatusCode, resp.Cookies())
+	}
+	// Behind a proxy that terminates TLS the cookie is Secure.
+	req, _ := http.NewRequest(http.MethodPost, ts.url+"/ui/login", strings.NewReader("token="+ts.tokens["alice"]))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-Forwarded-Proto", "https")
+	if resp, err := client.Do(req); err != nil || len(resp.Cookies()) != 1 || !resp.Cookies()[0].Secure {
+		t.Fatalf("login behind TLS: %v %v", err, resp.Cookies())
 	}
 	resp, _ = client.PostForm(ts.url+"/ui/login", map[string][]string{"token": {"nope"}})
 	if loc := resp.Header.Get("Location"); !strings.Contains(loc, "failed") || len(resp.Cookies()) != 0 {

@@ -4,6 +4,9 @@ package server
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
@@ -13,6 +16,8 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -62,6 +67,8 @@ type Server struct {
 	notifier   *notifier
 	closing    chan struct{}
 	closeOnce  sync.Once
+	// uiKey signs dashboard sessions, so a session cookie is never a token.
+	uiKey []byte
 }
 
 type memberHash struct {
@@ -71,7 +78,7 @@ type memberHash struct {
 
 const (
 	maxBody     = 1 << 20
-	cookieName  = "intagent_token"
+	cookieName  = "intagent_session"
 	sseKeepAway = 20 * time.Second
 )
 
@@ -118,7 +125,67 @@ func New(o Options) (*Server, error) {
 	if err := s.load(); err != nil {
 		return nil, err
 	}
+	key, err := loadUIKey(s.dataDir)
+	if err != nil {
+		return nil, err
+	}
+	s.uiKey = key
 	return s, nil
+}
+
+// loadUIKey reads the key that signs dashboard sessions from the data
+// directory, creating it on first start, so sessions survive a restart. Without
+// a data directory the key lives as long as the process.
+func loadUIKey(dir string) ([]byte, error) {
+	if dir == "" {
+		return randomKey()
+	}
+	p := filepath.Join(dir, "ui.key")
+	if b, err := os.ReadFile(p); err == nil && len(b) == 32 {
+		return b, nil
+	}
+	key, err := randomKey()
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, err
+	}
+	return key, os.WriteFile(p, key, 0o600)
+}
+
+func randomKey() ([]byte, error) {
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		return nil, err
+	}
+	return key, nil
+}
+
+// session is a member's dashboard cookie: a MAC of their token's hash. It
+// grants reading only, ends when the token is rotated, and cannot be used as a
+// token or derived from the team file.
+func (s *Server) session(m memberHash) string {
+	mac := hmac.New(sha256.New, s.uiKey)
+	mac.Write([]byte("intagent dashboard session\x00"))
+	mac.Write(m.hash)
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// sessionMember finds the member a dashboard cookie belongs to.
+func (s *Server) sessionMember(cookie string) (string, bool) {
+	got, err := hex.DecodeString(cookie)
+	if err != nil || len(got) != sha256.Size {
+		return "", false
+	}
+	name := ""
+	for _, m := range s.members {
+		want, _ := hex.DecodeString(s.session(m))
+		if hmac.Equal(got, want) {
+			name = m.name
+		}
+	}
+	return name, name != ""
 }
 
 // Board exposes the board, for tests and embedding.
@@ -228,13 +295,10 @@ func (s *Server) write(h http.HandlerFunc) http.Handler {
 // read admits a bearer token or the dashboard cookie, or anyone with PublicRead.
 func (s *Server) read(h http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		token := bearer(r)
-		if token == "" {
-			if c, err := r.Cookie(cookieName); err == nil {
-				token = c.Value
-			}
+		name, ok := s.authenticate(bearer(r))
+		if c, err := r.Cookie(cookieName); !ok && err == nil {
+			name, ok = s.sessionMember(c.Value)
 		}
-		name, ok := s.authenticate(token)
 		if !ok && !s.publicRead {
 			writeError(w, http.StatusUnauthorized, "missing or unknown token")
 			return
@@ -245,14 +309,23 @@ func (s *Server) read(h http.HandlerFunc) http.Handler {
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 4096)
-	token := strings.TrimSpace(r.FormValue("token"))
-	if _, ok := s.authenticate(token); !ok {
+	name, ok := s.authenticate(strings.TrimSpace(r.FormValue("token")))
+	if !ok {
 		http.Redirect(w, r, "/?login=failed", http.StatusSeeOther)
 		return
 	}
+	var session string
+	for _, m := range s.members {
+		if m.name == name {
+			session = s.session(m)
+		}
+	}
+	// Behind a proxy that terminates TLS, the proxy says so; a client that
+	// claims it can only make its own cookie stricter.
+	secure := r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 	http.SetCookie(w, &http.Cookie{
-		Name: cookieName, Value: token, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode,
-		Secure: r.TLS != nil, MaxAge: 30 * 24 * 3600,
+		Name: cookieName, Value: session, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode,
+		Secure: secure, MaxAge: 30 * 24 * 3600,
 	})
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }

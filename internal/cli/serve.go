@@ -3,6 +3,7 @@ package cli
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -16,14 +17,19 @@ import (
 )
 
 func (a *App) serve(ctx context.Context, args []string) error {
-	fs := a.flags("serve", "serve --config team.json [--addr :7400] [--data DIR]")
+	fs := a.flags("serve", "serve --config team.json [--addr :7400] [--data DIR] [--tls-cert FILE --tls-key FILE]")
 	addr := fs.String("addr", ":7400", "address to listen on")
 	cfgPath := fs.String("config", "team.json", "team configuration: members and policy")
 	data := fs.String("data", "intagent-data", "directory for the board snapshot (\"\" keeps it in memory)")
 	public := fs.Bool("public-read", false, "let anyone who can reach the server see the board without a token")
 	level := fs.String("log-level", "info", "debug, info, warn or error")
+	tlsCert := fs.String("tls-cert", "", "serve HTTPS with this certificate chain (PEM), with --tls-key")
+	tlsKey := fs.String("tls-key", "", "the certificate's private key (PEM)")
 	if err := fs.Parse(args); err != nil {
 		return errUsage
+	}
+	if (*tlsCert == "") != (*tlsKey == "") {
+		return errors.New("--tls-cert and --tls-key go together")
 	}
 	var lvl slog.Level
 	if err := lvl.UnmarshalText([]byte(*level)); err != nil {
@@ -45,12 +51,24 @@ func (a *App) serve(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	var tlsConfig *tls.Config
+	if *tlsCert != "" {
+		cert, err := tls.LoadX509KeyPair(*tlsCert, *tlsKey)
+		if err != nil {
+			return fmt.Errorf("TLS: %w", err)
+		}
+		tlsConfig = &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}
+	}
 	ln, err := new(net.ListenConfig).Listen(ctx, "tcp", *addr)
 	if err != nil {
 		return err
 	}
+	url := "http://" + ln.Addr().String()
+	if tlsConfig != nil {
+		ln, url = tls.NewListener(ln, tlsConfig), "https://"+ln.Addr().String()
+	}
 	policy := fc.BoardConfig().Policy
-	logger.Info("intagent server listening", "addr", ln.Addr().String(), "members", len(fc.Members),
+	logger.Info("intagent server listening", "url", url, "members", len(fc.Members),
 		"policy", fmt.Sprintf("block=%s overlap=%s nearby=%s", policy.Block, policy.Overlap, policy.Nearby), "data", *data)
 	err = srv.Serve(ctx, ln)
 	logger.Info("intagent server stopped", "err", err)

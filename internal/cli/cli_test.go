@@ -3,9 +3,19 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
+	"math/big"
+	"net"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
@@ -657,4 +667,69 @@ func TestHookRecoversFromAPanic(t *testing.T) {
 	if !strings.Contains(string(logged), "panic: stdin exploded") {
 		t.Fatalf("hook log: %s", logged)
 	}
+}
+
+func TestServeHTTPS(t *testing.T) {
+	dir := t.TempDir()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "intagent test"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+		IPAddresses: []net.IP{net.ParseIP("127.0.0.1")}, KeyUsage: x509.KeyUsageDigitalSignature,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyDER, _ := x509.MarshalECPrivateKey(key)
+	certFile, keyFile := filepath.Join(dir, "cert.pem"), filepath.Join(dir, "key.pem")
+	writeFile(t, certFile, string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})))
+	writeFile(t, keyFile, string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})))
+
+	var out, errb bytes.Buffer
+	app := &App{In: strings.NewReader(""), Out: &out, Err: &errb, Version: "test", Dir: dir}
+	if code := app.Run(context.Background(), []string{"token", "add", "alice", "--config", filepath.Join(dir, "team.json")}); code != 0 {
+		t.Fatalf("token add: %s", errb.String())
+	}
+	if code := app.Run(context.Background(), []string{"serve", "--tls-cert", certFile}); code == 0 || !strings.Contains(errb.String(), "go together") {
+		t.Fatalf("cert without key: %d %s", code, errb.String())
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan int)
+	go func() {
+		done <- app.Run(ctx, []string{"serve", "--config", filepath.Join(dir, "team.json"), "--addr", addr, "--data", "",
+			"--tls-cert", certFile, "--tls-key", keyFile})
+	}()
+	defer func() { cancel(); <-done }()
+	pool := x509.NewCertPool()
+	pool.AddCert(must(x509.ParseCertificate(der)))
+	hc := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}}, Timeout: 2 * time.Second}
+	var resp *http.Response
+	for i := 0; i < 50; i++ {
+		if resp, err = hc.Get("https://" + addr + "/healthz"); err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err != nil || resp.StatusCode != http.StatusOK || resp.TLS == nil {
+		t.Fatalf("https healthz: %v %v", resp, err)
+	}
+	_ = resp.Body.Close()
+}
+
+func must[T any](v T, err error) T {
+	if err != nil {
+		panic(err)
+	}
+	return v
 }

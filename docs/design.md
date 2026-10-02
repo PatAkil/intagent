@@ -159,7 +159,10 @@ All endpoints take and return JSON and require `Authorization: Bearer <token>`, 
 ## Security model
 
 - Tokens are stored on the server as SHA-256 hashes and compared in constant time.
-- The dashboard authenticates with the same token, held in an HttpOnly cookie.
+- The dashboard exchanges a member's token for a read-only session cookie: an HMAC of the token's hash under a key
+  kept in the data directory (`ui.key`, mode 0600), never the token itself.
+- `intagent serve --tls-cert --tls-key` serves HTTPS directly; behind a proxy, `X-Forwarded-Proto: https` marks the
+  cookie `Secure`.
 - All member-supplied text is stripped of control characters, collapsed to one line and length-capped on the server,
   and quoted and framed as teammate data when rendered into an agent's context.
 - Notes are rate-limited per claim.
