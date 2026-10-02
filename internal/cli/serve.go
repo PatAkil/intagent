@@ -52,7 +52,9 @@ func (a *App) serve(ctx context.Context, args []string) error {
 	policy := fc.BoardConfig().Policy
 	logger.Info("intagent server listening", "addr", ln.Addr().String(), "members", len(fc.Members),
 		"policy", fmt.Sprintf("block=%s overlap=%s nearby=%s", policy.Block, policy.Overlap, policy.Nearby), "data", *data)
-	return srv.Serve(ctx, ln)
+	err = srv.Serve(ctx, ln)
+	logger.Info("intagent server stopped", "err", err)
+	return err
 }
 
 func (a *App) token(_ context.Context, args []string) error {

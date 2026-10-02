@@ -226,6 +226,9 @@ func renderDeclare(now time.Time, res DeclareResult) string {
 	if len(res.Accepted) > 0 {
 		lines = append(lines, fmt.Sprintf("Declared %s intent on %s. Teammates' agents will be told before they edit these paths.",
 			res.Accepted[0].Mode, listPaths(intentPatterns(res.Accepted), 6)))
+		if res.Accepted[0].Mode == Exclusive {
+			lines = append(lines, "Their edits there are refused while an agent of yours is running in this worktree; once none is, they are only warned. Release the intent with release_intent when you are done.")
+		}
 	}
 	for _, r := range res.Rejected {
 		lines = append(lines, fmt.Sprintf("Not declared: %s. %s.", r.Pattern, r.Reason))

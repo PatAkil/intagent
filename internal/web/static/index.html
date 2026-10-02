@@ -1,1 +1,104 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><title>intagent</title></head><body><p>intagent dashboard</p></body></html>
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="referrer" content="no-referrer">
+<title>intagent</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='1.5' y='1.5' width='8.5' height='8.5' rx='1.5' fill='none' stroke='%232a78d6' stroke-width='1.6'/%3E%3Crect x='6' y='6' width='8.5' height='8.5' rx='1.5' fill='none' stroke='%2352514e' stroke-width='1.6'/%3E%3Crect x='6' y='6' width='4' height='4' fill='%23d03b3b'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+<script src="app.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to the board</a>
+
+<header class="topbar">
+  <div class="topbar-in">
+    <div class="brand">
+      <span class="mark" aria-hidden="true"></span>
+      <span class="brand-name">intagent</span>
+    </div>
+    <div class="repo-pick" id="repo-pick" hidden>
+      <label for="repo" class="sr-only">Repository</label>
+      <select id="repo" name="repo"></select>
+    </div>
+    <div class="topbar-end">
+      <div class="conn" id="conn" data-state="connecting" role="status" hidden>
+        <span class="conn-dot" aria-hidden="true"></span>
+        <span class="conn-text" id="conn-text">Connecting</span>
+      </div>
+      <div class="who" id="who" hidden></div>
+      <form method="post" action="/ui/logout" id="logout-form" hidden>
+        <button type="submit" class="btn btn-quiet">Sign out</button>
+      </form>
+      <button type="button" class="btn btn-quiet" id="signin-btn" hidden>Sign in</button>
+    </div>
+  </div>
+</header>
+
+<main id="main" tabindex="-1">
+  <p class="boot" id="boot">Loading the board…</p>
+
+  <section class="login" id="login" aria-labelledby="login-title" hidden>
+    <div class="login-card">
+      <h1 id="login-title">Sign in to your team’s board</h1>
+      <p class="login-lede">intagent shows which coding agents on your team are changing which files, so they do not step on each other.</p>
+      <form method="post" action="/ui/login" class="login-form">
+        <label for="token">Member token</label>
+        <input id="token" name="token" type="password" autocomplete="off" spellcheck="false" required
+               placeholder="ia_…" aria-describedby="token-help">
+        <p class="login-error" id="login-error" role="alert" hidden>That token was not accepted. Check that it was pasted whole, or ask whoever runs the server for a new one.</p>
+        <button type="submit" class="btn btn-primary">Sign in</button>
+      </form>
+      <p class="login-help" id="token-help">Your token was printed once by <code>intagent token add &lt;your-name&gt;</code>. If you have run <code>intagent login</code>, it is saved in <code>intagent/config.json</code> in your user config directory.</p>
+      <p class="login-back" id="login-back" hidden><button type="button" class="btn btn-link" id="login-cancel">Back to the read-only board</button></p>
+    </div>
+  </section>
+
+  <div class="board" id="board" hidden>
+    <section class="stats" aria-labelledby="stats-title">
+      <h2 id="stats-title" class="sr-only">What intagent caught in this repository</h2>
+      <div class="stats-in" id="stats-body"></div>
+    </section>
+
+    <div class="layout">
+      <section class="panel claims" aria-labelledby="claims-title">
+        <div class="panel-head">
+          <h2 id="claims-title">Claims</h2>
+          <p class="panel-meta" id="claims-meta"></p>
+        </div>
+        <div class="banner" id="board-error" role="status" hidden></div>
+        <div id="claims-body"></div>
+      </section>
+
+      <div class="rail">
+        <section class="panel hot" aria-labelledby="hot-title">
+          <div class="panel-head">
+            <h2 id="hot-title">Hot spots</h2>
+            <p class="panel-meta" id="hot-meta"></p>
+          </div>
+          <div id="hot-body"></div>
+        </section>
+
+        <section class="panel feed" aria-labelledby="feed-title">
+          <div class="panel-head">
+            <h2 id="feed-title">Activity</h2>
+            <div class="seg" role="group" aria-label="Show">
+              <button type="button" class="seg-btn" data-filter="all" aria-pressed="true">All</button>
+              <button type="button" class="seg-btn" data-filter="conflicts" aria-pressed="false">Conflicts</button>
+            </div>
+          </div>
+          <ol class="feed-list" id="feed-body"></ol>
+          <div id="feed-empty" hidden></div>
+        </section>
+      </div>
+    </div>
+  </div>
+</main>
+
+<footer class="foot" id="foot" hidden>
+  <p id="foot-text"></p>
+</footer>
+</body>
+</html>
