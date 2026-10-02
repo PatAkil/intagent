@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http/httptest"
 	"os"
 	"os/exec"
@@ -175,6 +177,16 @@ func TestTwoMembersCollideThroughHooks(t *testing.T) {
 		t.Fatalf("codex patch: %q", out)
 	}
 
+	// Cursor runs the Claude hook it imports, with no agent named and its own
+	// payload, and must get Cursor's answer: a deny it understands.
+	cu, _ := json.Marshal(map[string]any{"conversation_id": "u1", "session_id": "u1", "hook_event_name": "preToolUse", "cursor_version": "1.0.35",
+		"workspace_roots": []string{b}, "tool_name": "Write", "tool_input": map[string]string{"file_path": filepath.Join(b, "svc/pay/retry.go")}})
+	out, _, code = tm.as("bob", b, string(cu), "hook")
+	var cur map[string]any
+	if err := json.Unmarshal([]byte(out), &cur); err != nil || code != 0 || cur["permission"] != "deny" || !strings.Contains(fmt.Sprint(cur["agent_message"]), "alice's agent") {
+		t.Fatalf("cursor edit: code %d %q", code, out)
+	}
+
 	// Writes outside the repository and to unrelated files pass silently.
 	for _, p := range []string{"/tmp/elsewhere.txt", filepath.Join(b, "README.md")} {
 		ev := map[string]any{"tool_name": "Write", "tool_input": map[string]any{"file_path": p}}
@@ -294,6 +306,105 @@ func TestInitIsIdempotentAndPreservesSettings(t *testing.T) {
 	writeFile(t, filepath.Join(a, ".mcp.json"), "{oops")
 	if _, errOut, code := tm.as("alice", a, "", "init", "--url", tm.url); code == 0 || !strings.Contains(errOut, "not valid JSON") {
 		t.Fatalf("init over invalid JSON: %d %s", code, errOut)
+	}
+}
+
+func TestInitMigratesOldWiring(t *testing.T) {
+	tm := newTeam(t, "alice")
+	a := tm.clone("alice")
+	// What an earlier intagent wrote, next to the team's own hooks.
+	writeFile(t, filepath.Join(a, ".claude/settings.json"), `{"hooks":{
+"PreToolUse":[{"matcher":"Edit|Write","hooks":[{"type":"command","command":"intagent","args":["hook","claude-code"]},{"type":"command","command":"./lint.sh"}]}],
+"SessionEnd":[{"hooks":[{"type":"command","command":"intagent","args":["hook","claude-code"],"timeout":5}]}],
+"Stop":[{"hooks":[{"type":"command","command":"/usr/local/bin/intagent hook claude-code"}]}],
+"SessionStart":[{"hooks":[{"type":"command","command":"intagent hook"}]}],
+"Notification":[]}}`)
+	writeFile(t, filepath.Join(a, ".cursor/hooks.json"), `{"version":1,"hooks":{
+"afterFileEdit":[{"command":"intagent hook cursor"}],
+"stop":[{"command":"intagent hook cursor"},{"command":"./notify.sh"}],
+"beforeShellExecution":[{"command":"./audit.sh"}]}}`)
+	if out, errOut, code := tm.as("alice", a, "", "init", "--url", tm.url); code != 0 {
+		t.Fatalf("init: %s %s", out, errOut)
+	}
+
+	var claude struct {
+		Hooks map[string][]struct {
+			Matcher string           `json:"matcher"`
+			Hooks   []map[string]any `json:"hooks"`
+		} `json:"hooks"`
+	}
+	readJSON(t, filepath.Join(a, ".claude/settings.json"), &claude)
+	if _, ok := claude.Hooks["Notification"]; !ok {
+		t.Error("an empty event list of the team's was dropped")
+	}
+	ours := map[string]int{}
+	var lint int
+	for event, groups := range claude.Hooks {
+		for _, g := range groups {
+			for _, h := range g.Hooks {
+				switch h["command"] {
+				case hookCommand:
+					ours[event]++
+					if h["args"] != nil {
+						t.Errorf("%s: handler still has args: %v", event, h)
+					}
+				case "./lint.sh":
+					lint++
+				default:
+					t.Errorf("%s: unexpected handler %v", event, h)
+				}
+			}
+		}
+	}
+	if lint != 1 {
+		t.Errorf("the team's lint hook was not kept exactly once: %d", lint)
+	}
+
+	var cursor struct {
+		Version int                         `json:"version"`
+		Hooks   map[string][]map[string]any `json:"hooks"`
+	}
+	readJSON(t, filepath.Join(a, ".cursor/hooks.json"), &cursor)
+	if _, ok := cursor.Hooks["afterFileEdit"]; ok {
+		t.Error("the old afterFileEdit wiring was left behind")
+	}
+	if len(cursor.Hooks["beforeShellExecution"]) != 1 || len(cursor.Hooks["stop"]) != 2 || cursor.Hooks["stop"][0]["command"] != "./notify.sh" {
+		t.Errorf("the team's Cursor hooks were not kept: %v", cursor.Hooks)
+	}
+	if cursor.Hooks["preToolUse"][0]["matcher"] != "^(Write|Delete|Shell)$" {
+		t.Errorf("preToolUse = %v", cursor.Hooks["preToolUse"])
+	}
+	// Cursor runs both files; it drops an imported Claude hook only when the
+	// command is identical to its own hook's for the same event.
+	imported := map[string]string{"SessionStart": "sessionStart", "UserPromptSubmit": "beforeSubmitPrompt", "PreToolUse": "preToolUse",
+		"PostToolUse": "postToolUse", "Stop": "stop", "SessionEnd": "sessionEnd"}
+	for ce, cu := range imported {
+		if ours[ce] != 1 {
+			t.Errorf("%s has %d intagent handlers, want 1", ce, ours[ce])
+		}
+		n := 0
+		for _, h := range cursor.Hooks[cu] {
+			if h["command"] == hookCommand {
+				n++
+			}
+		}
+		if n != 1 {
+			t.Errorf("Cursor's %s has %d handlers matching Claude's %s", cu, n, ce)
+		}
+	}
+	if len(ours) != len(imported) {
+		t.Errorf("intagent handlers on %v", ours)
+	}
+}
+
+func readJSON(t *testing.T, path string, v any) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, v); err != nil {
+		t.Fatalf("%s: %v\n%s", path, err, data)
 	}
 }
 
@@ -420,10 +531,15 @@ func TestDoctorAndHelp(t *testing.T) {
 	if !strings.Contains(out, "knows you as alice") || !strings.Contains(out, "Claude Code hooks: .claude/settings.json") {
 		t.Fatalf("doctor after init:\n%s", out)
 	}
+	// Wiring from before the shell form breaks under Cursor; doctor says so.
+	writeFile(t, filepath.Join(a, ".claude/settings.json"), `{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"intagent","args":["hook","claude-code"]}]}]}}`)
+	if out, _, code := tm.as("alice", a, "", "doctor"); code != 1 || !strings.Contains(out, "settings.json is not wired for this version") {
+		t.Fatalf("doctor over old wiring: %d\n%s", code, out)
+	}
 	if out, _, code := tm.as("alice", a, "", "help"); code != 0 || !strings.Contains(out, "intagent init") {
 		t.Fatalf("help: %d %s", code, out)
 	}
-	if _, errOut, code := tm.as("alice", a, "", "frobnicate"); code != 2 || !strings.Contains(errOut, "unknown command") {
+	if _, errOut, code := tm.as("alice", a, "", "frobnicate"); code != 1 || !strings.Contains(errOut, "unknown command") {
 		t.Fatalf("unknown command: %d %s", code, errOut)
 	}
 	if out, _, _ := tm.as("alice", a, "", "version"); strings.TrimSpace(out) != "intagent test" {
@@ -464,5 +580,54 @@ func TestDemoStoryCollides(t *testing.T) {
 	v := b.View(time.Now(), demoRepo)
 	if len(v.Claims) != 4 || v.Stats.Refused == 0 || v.Stats.Bumped == 0 || v.Stats.Notes == 0 {
 		t.Fatalf("demo did not play its story: %d claims, stats %+v", len(v.Claims), v.Stats)
+	}
+}
+
+// The hook wiring is committed, so it runs for teammates without intagent too.
+func TestCommittedHooksAreHarmlessWithoutIntagent(t *testing.T) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("no sh")
+	}
+	run := func(path string, stdin string, args ...string) (string, int) {
+		t.Helper()
+		cmd := exec.Command(sh, args...)
+		cmd.Env = []string{"PATH=" + path}
+		cmd.Stdin = strings.NewReader(stdin)
+		out, err := cmd.Output()
+		var exit *exec.ExitError
+		switch {
+		case errors.As(err, &exit):
+			return string(out), exit.ExitCode()
+		case err != nil:
+			t.Fatal(err)
+		}
+		return string(out), 0
+	}
+	without := t.TempDir()
+	if out, code := run(without, `{"hook_event_name":"PreToolUse"}`, "-c", hookCommand); out != "" || code != 0 {
+		t.Fatalf("without intagent: %q, exit %d", out, code)
+	}
+	with := t.TempDir()
+	fake := filepath.Join(with, "intagent")
+	writeFile(t, fake, "#!/bin/sh\necho \"ran $*\"\nread line\necho \"$line\"\nexit ${FAKE_EXIT:-0}\n")
+	if err := os.Chmod(fake, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if out, code := run(with, `{"x":1}`, "-c", hookCommand); out != "ran hook\n{\"x\":1}\n" || code != 0 {
+		t.Fatalf("with intagent: %q, exit %d", out, code)
+	}
+
+	hooks := t.TempDir()
+	script, err := installGitHook(hooks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, code := run(without, "", script); code != 0 {
+		t.Fatalf("pre-commit without intagent: exit %d", code)
+	}
+	writeFile(t, fake, "#!/bin/sh\necho \"ran $*\"\nexit 1\n")
+	if out, code := run(with, "", script); out != "ran guard\n" || code != 1 {
+		t.Fatalf("pre-commit with intagent: %q, exit %d", out, code)
 	}
 }

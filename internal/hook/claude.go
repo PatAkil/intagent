@@ -9,10 +9,20 @@ import (
 )
 
 // ClaudeCode speaks Claude Code's hook protocol (verified against v2.1.288).
-type ClaudeCode struct{}
+// GitHub Copilot CLI runs the same hooks with the same payloads, except that
+// tool arguments keep Copilot's names (path instead of file_path); Copilot is
+// set for it.
+type ClaudeCode struct {
+	Copilot bool
+}
 
 // Agent names the agent.
-func (ClaudeCode) Agent() board.Agent { return board.AgentClaudeCode }
+func (c ClaudeCode) Agent() board.Agent {
+	if c.Copilot {
+		return board.AgentCopilot
+	}
+	return board.AgentClaudeCode
+}
 
 type claudeInput struct {
 	SessionID     string          `json:"session_id"`
@@ -33,7 +43,7 @@ var claudeEditPath = map[string]string{
 }
 
 // Parse reads a Claude Code hook payload.
-func (ClaudeCode) Parse(stdin []byte) (Event, error) {
+func (c ClaudeCode) Parse(stdin []byte) (Event, error) {
 	var in claudeInput
 	if err := json.Unmarshal(stdin, &in); err != nil {
 		return Event{}, fmt.Errorf("claude-code hook payload: %w", err)
@@ -53,7 +63,7 @@ func (ClaudeCode) Parse(stdin []byte) (Event, error) {
 		ev.Kind = board.KindToolStart
 		if isEdit {
 			ev.Kind = board.KindPreEdit
-			if p := stringField(in.ToolInput, field); p != "" {
+			if p := editPath(in.ToolInput, field); p != "" {
 				ev.Paths = []string{p}
 			}
 		}
@@ -62,7 +72,7 @@ func (ClaudeCode) Parse(stdin []byte) (Event, error) {
 		switch {
 		case isEdit:
 			ev.Kind = board.KindPostEdit
-			if p := stringField(in.ToolInput, field); p != "" {
+			if p := editPath(in.ToolInput, field); p != "" {
 				ev.Paths = []string{p}
 			}
 		case in.ToolName == "Bash" || in.ToolName == "PowerShell":
@@ -79,13 +89,24 @@ func (ClaudeCode) Parse(stdin []byte) (Event, error) {
 		ev.Skip = true
 	}
 	if !ev.Skip && ev.SessionID == "" {
-		return Event{}, fmt.Errorf("claude-code hook payload has no session_id")
+		return Event{}, fmt.Errorf("%s hook payload has no session_id", c.Agent())
 	}
 	return ev, nil
 }
 
+// editPath reads the written path, under Claude Code's or Copilot's field name.
+func editPath(input json.RawMessage, field string) string {
+	if p := stringField(input, field); p != "" {
+		return p
+	}
+	return stringField(input, "path")
+}
+
 // Render answers in the JSON Claude Code expects; anything else would be ignored.
-func (ClaudeCode) Render(ev Event, res board.HookResult) Output {
+func (c ClaudeCode) Render(ev Event, res board.HookResult) Output {
+	if c.Copilot {
+		return renderCopilot(ev, res)
+	}
 	switch ev.Name {
 	case "PreToolUse":
 		switch res.Decision {
@@ -103,4 +124,23 @@ func (ClaudeCode) Render(ev Event, res board.HookResult) Output {
 		}
 	}
 	return Output{}
+}
+
+// renderCopilot answers GitHub Copilot CLI, which honours both the nested
+// Claude form and its own top-level fields; it gets both.
+func renderCopilot(ev Event, res board.HookResult) Output {
+	h := hookSpecific{HookEventName: ev.Name, AdditionalContext: res.Context}
+	top := map[string]any{}
+	if res.Context != "" {
+		top["additionalContext"] = res.Context
+	}
+	if ev.Name == "PreToolUse" && res.Decision != board.Allow {
+		h.PermissionDecision, h.PermissionDecisionReason = string(res.Decision), res.Reason
+		top["permissionDecision"], top["permissionDecisionReason"] = string(res.Decision), res.Reason
+	}
+	if h.PermissionDecision == "" && h.AdditionalContext == "" {
+		return Output{}
+	}
+	top["hookSpecificOutput"] = h
+	return jsonOut(top)
 }

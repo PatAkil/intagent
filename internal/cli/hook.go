@@ -22,7 +22,7 @@ const maxHookInput = 32 << 20
 // own failure: any error is logged and the hook exits 0 with no output, unless
 // INTAGENT_FAIL=closed asks for edits to be refused while the server is unreachable.
 func (a *App) hook(ctx context.Context, args []string) error {
-	fs := a.flags("hook <claude-code|codex|cursor>", "hook <agent> < event.json")
+	fs := a.flags("hook", "hook [claude-code|codex|cursor|copilot] < event.json")
 	agentFlag := fs.String("agent", "", "the agent (alternative to the positional argument)")
 	if err := fs.Parse(args); err != nil {
 		return errUsage
@@ -31,14 +31,15 @@ func (a *App) hook(ctx context.Context, args []string) error {
 	if name == "" && fs.NArg() > 0 {
 		name = fs.Arg(0)
 	}
-	ad, err := hook.For(name)
-	if err != nil {
-		return err
-	}
 	data, err := io.ReadAll(io.LimitReader(a.In, maxHookInput))
 	if err != nil {
 		hookLog("read stdin: %v", err)
 		return nil
+	}
+	ad, err := hook.Detect(name, data, os.Getenv)
+	if err != nil {
+		hookLog("%v", err)
+		return nil // a misconfigured hook must never block an agent
 	}
 	ev, err := ad.Parse(data)
 	if err != nil {

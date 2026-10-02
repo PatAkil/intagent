@@ -44,7 +44,7 @@ See and steer the work:
   intagent note <member|claim|path> <text> leave a note for another member's agents
 
 Called by agents and git:
-  intagent hook <claude-code|codex|cursor> handle one hook event from stdin
+  intagent hook [<agent>]                   handle one hook event from stdin
   intagent mcp                             serve intagent's tools over MCP on stdio
   intagent watch                           report this worktree for agents without hooks
   intagent guard                           pre-commit check against exclusive intents
@@ -55,11 +55,16 @@ Run 'intagent <command> -h' for a command's options.
 // errUsage marks errors already explained to the user.
 var errUsage = errors.New("usage")
 
+// intagent never exits with 2: agents' hook runners read exit code 2 as "block
+// this tool call", so a usage mistake in a hook configuration must not stop an
+// agent. Usage errors exit 1 like any other error.
+const exitUsage = 1
+
 // Run executes one command line and returns the process exit code.
 func (a *App) Run(ctx context.Context, args []string) int {
 	if len(args) == 0 {
 		fmt.Fprint(a.Err, usage)
-		return 2
+		return exitUsage
 	}
 	cmd, rest := args[0], args[1:]
 	run, ok := a.commands()[cmd]
@@ -73,7 +78,7 @@ func (a *App) Run(ctx context.Context, args []string) int {
 			return 0
 		}
 		fmt.Fprintf(a.Err, "intagent: unknown command %q\n\n%s", cmd, usage)
-		return 2
+		return exitUsage
 	}
 	if err := run(ctx, rest); err != nil {
 		var exit exitError
@@ -83,8 +88,10 @@ func (a *App) Run(ctx context.Context, args []string) int {
 				fmt.Fprintln(a.Err, exit.msg)
 			}
 			return exit.code
-		case errors.Is(err, errUsage), errors.Is(err, flag.ErrHelp):
-			return 2
+		case errors.Is(err, flag.ErrHelp):
+			return 0
+		case errors.Is(err, errUsage):
+			return exitUsage
 		}
 		fmt.Fprintf(a.Err, "intagent %s: %v\n", cmd, err)
 		return 1

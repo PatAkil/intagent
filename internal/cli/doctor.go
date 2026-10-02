@@ -66,14 +66,15 @@ func (a *App) doctor(ctx context.Context, args []string) error {
 		case strings.Contains(string(data), needle):
 			ok("%s: %s", what, rel)
 		default:
-			bad("%s: %s exists but does not mention intagent; run 'intagent init'", what, rel)
+			bad("%s: %s is not wired for this version of intagent; run 'intagent init'", what, rel)
 		}
 	}
-	check(".claude/settings.json", "intagent", "Claude Code hooks")
+	// Older installs passed arguments separately, which Cursor drops.
+	check(".claude/settings.json", hookCommand, "Claude Code hooks")
 	check(".mcp.json", "intagent", "Claude Code MCP server")
 	check(".codex/hooks.json", "intagent hook codex", "Codex hooks")
 	check(".codex/config.toml", "[mcp_servers.intagent]", "Codex MCP server")
-	check(".cursor/hooks.json", "intagent hook cursor", "Cursor hooks")
+	check(".cursor/hooks.json", hookCommand, "Cursor hooks")
 	if dir != root {
 		info("Claude Code reads project hooks only from the directory it starts in; start it at %s, or run 'intagent init --user'", root)
 	}

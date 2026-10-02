@@ -188,8 +188,146 @@ func TestCursorParse(t *testing.T) {
 	}
 }
 
+// cuPre is a Cursor preToolUse payload as the SDK's runtime sent it for an edit.
+const cuPre = `{"conversation_id":"c1","generation_id":"g1","model":"m","session_id":"c1","hook_event_name":"preToolUse",
+"cursor_version":"1.0.35","workspace_roots":["/ws"],"user_email":null,"transcript_path":null,
+"tool_name":"Write","tool_input":{"file_path":"/ws/src/a.ts","content":"x"},"tool_use_id":"t1","cwd":"/ws"}`
+
+func TestCursorEditsAreCheckedBeforeTheWrite(t *testing.T) {
+	cu := Cursor{}
+	ev, err := cu.Parse([]byte(cuPre))
+	want := Event{Kind: board.KindPreEdit, Name: "preToolUse", SessionID: "c1", Cwd: "/ws", Tool: "Write", Paths: []string{"/ws/src/a.ts"}}
+	if err != nil || !reflect.DeepEqual(ev, want) {
+		t.Fatalf("preToolUse Write = %+v, %v", ev, err)
+	}
+	tests := []struct {
+		name, payload string
+		kind          board.Kind
+		paths         []string
+		footprint     bool
+	}{
+		{"delete", `{"conversation_id":"c1","hook_event_name":"postToolUse","tool_name":"Delete","tool_input":{"file_path":"/ws/old.ts"}}`, board.KindPostEdit, []string{"/ws/old.ts"}, false},
+		{"shell before", `{"conversation_id":"c1","hook_event_name":"preToolUse","tool_name":"Shell","tool_input":{"command":"make"}}`, board.KindToolStart, nil, false},
+		{"shell after", `{"conversation_id":"c1","hook_event_name":"postToolUse","tool_name":"Shell","tool_input":{"command":"make"}}`, board.KindToolEnd, nil, true},
+		{"read", `{"conversation_id":"c1","hook_event_name":"preToolUse","tool_name":"Read","tool_input":{"file_path":"/ws/a.ts"}}`, board.KindToolStart, nil, false},
+		{"session", `{"session_id":"s9","hook_event_name":"sessionStart","workspace_roots":["/ws"]}`, board.KindSessionStart, nil, true},
+		{"end", `{"conversation_id":"c1","hook_event_name":"sessionEnd","reason":"user_close"}`, board.KindSessionEnd, nil, true},
+	}
+	for _, tt := range tests {
+		ev, err := cu.Parse([]byte(tt.payload))
+		if err != nil || ev.Kind != tt.kind || !reflect.DeepEqual(ev.Paths, tt.paths) || ev.Footprint != tt.footprint {
+			t.Errorf("%s: %+v, %v", tt.name, ev, err)
+		}
+	}
+	if _, err := cu.Parse([]byte(`{"hook_event_name":"stop"}`)); err == nil {
+		t.Error("a payload without a conversation was accepted")
+	}
+}
+
+func TestCursorRender(t *testing.T) {
+	cu := Cursor{}
+	pre := Event{Name: "preToolUse"}
+	render := func(ev Event, res board.HookResult) map[string]any {
+		t.Helper()
+		var m map[string]any
+		out := cu.Render(ev, res)
+		if err := json.Unmarshal(out.Stdout, &m); err != nil || out.Exit != 0 {
+			t.Fatalf("%s: not valid JSON or exit %d: %q", ev.Name, out.Exit, out.Stdout)
+		}
+		return m
+	}
+	m := render(pre, board.HookResult{Decision: board.Refuse, Reason: "alice's agent holds it", Context: "ctx"})
+	if m["permission"] != "deny" || m["user_message"] != "alice's agent holds it" || m["agent_message"] != "alice's agent holds it" || m["additional_context"] != "ctx" {
+		t.Errorf("refuse = %v", m)
+	}
+	m = render(pre, board.HookResult{Decision: board.DecideAsk, Reason: "r"})
+	if m["permission"] != "deny" || !strings.Contains(m["agent_message"].(string), "Ask your user") {
+		t.Errorf("ask = %v", m)
+	}
+	if m = render(pre, board.HookResult{Decision: board.Allow}); m["permission"] != "allow" || len(m) != 1 {
+		t.Errorf("allow = %v", m)
+	}
+	if m = render(Event{Name: "beforeSubmitPrompt"}, board.HookResult{Context: "c"}); m["continue"] != true || m["additional_context"] != "c" {
+		t.Errorf("prompt = %v", m)
+	}
+	for _, name := range []string{"sessionStart", "postToolUse", "postToolUseFailure"} {
+		if m = render(Event{Name: name}, board.HookResult{Context: "c"}); m["additional_context"] != "c" {
+			t.Errorf("%s = %v", name, m)
+		}
+	}
+	// Steps that take no answer still get valid JSON.
+	if m = render(Event{Name: "stop"}, board.HookResult{Context: "c"}); len(m) != 0 {
+		t.Errorf("stop = %v", m)
+	}
+}
+
+func TestCopilotUsesClaudeHooksWithItsOwnArguments(t *testing.T) {
+	cp := ClaudeCode{Copilot: true}
+	if cp.Agent() != board.AgentCopilot {
+		t.Fatal(cp.Agent())
+	}
+	ev, err := cp.Parse([]byte(`{"session_id":"p1","cwd":"/w","hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{"path":"/w/a.go","file_text":"x"}}`))
+	if err != nil || ev.Kind != board.KindPreEdit || !reflect.DeepEqual(ev.Paths, []string{"/w/a.go"}) {
+		t.Fatalf("parse = %+v, %v", ev, err)
+	}
+	var m struct {
+		PermissionDecision string       `json:"permissionDecision"`
+		Reason             string       `json:"permissionDecisionReason"`
+		H                  hookSpecific `json:"hookSpecificOutput"`
+	}
+	out := cp.Render(ev, board.HookResult{Decision: board.Refuse, Reason: "held"})
+	if err := json.Unmarshal(out.Stdout, &m); err != nil || m.PermissionDecision != "deny" || m.Reason != "held" ||
+		m.H.PermissionDecision != "deny" || m.H.HookEventName != "PreToolUse" || out.Exit != 0 {
+		t.Fatalf("deny = %q", out.Stdout)
+	}
+	if out := cp.Render(ev, board.HookResult{Decision: board.Allow}); len(out.Stdout) != 0 {
+		t.Fatalf("silent allow printed %q", out.Stdout)
+	}
+	out = cp.Render(Event{Name: "SessionStart"}, board.HookResult{Context: "board"})
+	if !strings.Contains(string(out.Stdout), `"additionalContext":"board"`) || strings.Contains(string(out.Stdout), "permissionDecision") {
+		t.Fatalf("context = %q", out.Stdout)
+	}
+}
+
+func TestDetect(t *testing.T) {
+	env := func(kv ...string) func(string) string {
+		return func(k string) string {
+			for i := 0; i+1 < len(kv); i += 2 {
+				if kv[i] == k {
+					return kv[i+1]
+				}
+			}
+			return ""
+		}
+	}
+	tests := []struct {
+		name, arg, payload string
+		getenv             func(string) string
+		want               Adapter
+	}{
+		{"claude, unnamed", "", ccPreEdit, env(), ClaudeCode{}},
+		{"claude, named", "claude-code", ccPreEdit, env(), ClaudeCode{}},
+		// Cursor runs the hooks it imports from .claude/settings.json with its own payloads.
+		{"cursor through the claude hook", "", cuPre, env(), Cursor{}},
+		{"cursor through the old claude wiring", "claude-code", cuPre, env("CLAUDE_PROJECT_DIR", "/ws"), Cursor{}},
+		{"cursor without a version", "", `{"conversation_id":"c","hook_event_name":"stop"}`, env(), Cursor{}},
+		{"copilot", "", `{"session_id":"p","hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{"path":"/a"}}`, env("COPILOT_CLI", "1"), ClaudeCode{Copilot: true}},
+		{"codex", "codex", `{"session_id":"x","hook_event_name":"PreToolUse","tool_name":"apply_patch"}`, env("COPILOT_CLI", "1"), Codex{}},
+		{"garbage keeps the named adapter", "codex", `{`, env(), Codex{}},
+	}
+	for _, tt := range tests {
+		got, err := Detect(tt.arg, []byte(tt.payload), tt.getenv)
+		if err != nil || got != tt.want {
+			t.Errorf("%s: %#v, %v", tt.name, got, err)
+		}
+	}
+	if _, err := Detect("gemini", []byte(ccPreEdit), env()); err == nil {
+		t.Error("Detect accepted an unknown agent")
+	}
+}
+
 func TestFor(t *testing.T) {
-	for _, n := range []string{"claude-code", "claude", "codex", "cursor"} {
+	for _, n := range []string{"", "claude-code", "claude", "codex", "cursor", "copilot"} {
 		if _, err := For(n); err != nil {
 			t.Errorf("For(%q): %v", n, err)
 		}

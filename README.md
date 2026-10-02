@@ -3,10 +3,10 @@
 **Intent for agents.** A live, team-wide board of which coding agent is changing which file, so that every agent
 on your team knows what the others are doing *before* it writes the same file.
 
-Several people each run several agents (Claude Code, Codex, Cursor) in one monorepo. Each vendor's multi-agent
-features stop at one person's account, so agents belonging to different people only meet at the pull request,
-after the duplicate work is done and the conflict is already there. intagent moves that meeting point to the moment
-an agent is about to edit a file.
+Several people each run several agents (Claude Code, Codex, Cursor, Copilot CLI) in one monorepo. Each vendor's
+multi-agent features stop at one person's account, so agents belonging to different people only meet at the pull
+request, after the duplicate work is done and the conflict is already there. intagent moves that meeting point to
+the moment an agent is about to edit a file.
 
 ```
 alice's Claude Code ─┐                                   ┌─ bob's Claude Code
@@ -96,8 +96,10 @@ intagent doctor
 
 `init` writes `.intagent.json` (the server for this repository) and wires up every supported agent: Claude Code
 (`.claude/settings.json` hooks, `.mcp.json`), Codex (`.codex/hooks.json`, `.codex/config.toml`) and Cursor
-(`.cursor/hooks.json`, `.cursor/mcp.json`). It merges into existing files and never overwrites settings it did not
-write. Add `--git-hook` for a pre-commit guard and `--areas 'services/*,libs/*'` to define your monorepo's areas.
+(`.cursor/hooks.json`, `.cursor/mcp.json`); GitHub Copilot CLI runs Claude Code's. It merges into existing files,
+keeps everyone else's hooks, and replaces only its own, so running it again after an upgrade migrates the wiring.
+The hooks do nothing for a teammate who has not installed intagent. Add `--git-hook` for a pre-commit guard and
+`--areas 'services/*,libs/*'` to define your monorepo's areas.
 
 ## Supported agents
 
@@ -105,10 +107,12 @@ write. Add `--git-hook` for a pre-commit guard and `--areas 'services/*,libs/*'`
 |---|---|---|---|---|---|
 | **Claude Code** | refuse, bump, ask or warn | recorded | session start, every prompt, around each edit | yes | Hooks load from the directory Claude starts in; run `intagent init --user` to also install them in your user settings. In a folder you have not trusted, Claude ignores the project's `permissions.allow`; headless runs need `--allowedTools 'mcp__intagent__*'`. |
 | **Codex** | refuse or warn (`apply_patch`, including patches piped through the shell) | recorded | session start, every prompt, around each edit | yes | Codex runs project hooks only for trusted projects and trusted hooks: `intagent init --trust-codex` writes both to your `~/.codex/config.toml`. |
-| **Cursor** | not available (Cursor reports edits after they happen) | recorded | through the MCP tools | yes | Cursor's agent still sees others' work through `check_paths` and `team_board`, and its edits reach everyone else. |
+| **Cursor** | refuse, bump or warn (`Write` and `Delete`; an ask becomes a refusal that tells the agent to ask you) | recorded | session start, every prompt, around each edit | yes | Needs a Cursor with `preToolUse` hooks: an older one rejects the whole hooks file and gets only the MCP tools. Cursor also runs the hooks in `.claude/settings.json`; intagent writes the same command in both files, so each runs once. |
+| **GitHub Copilot CLI** | refuse, bump, ask or warn (`create`, `edit`) | recorded | session start, every prompt, around each edit | yes (`.mcp.json`) | Runs the hooks in `.claude/settings.json`; nothing more to install. |
 | **Anything else** | `intagent guard` as a pre-commit hook | `intagent watch` reports the worktree | `intagent watch` prints news | any MCP client | |
 
-The exact payloads and output formats were verified against Claude Code 2.1.288 and Codex 0.160.0 in live runs; see
+The exact payloads and output formats were verified in live runs against Claude Code 2.1.288, Codex 0.160.0,
+GitHub Copilot CLI 1.0.91 and the agent runtime of `@cursor/sdk` 1.0.35; see
 [docs/integrations.md](docs/integrations.md).
 
 ## Policy
@@ -170,7 +174,7 @@ refused or put to a person (warnings are not sent).
 | `intagent note <member\|claim\|path> <text>` | Leave a note for another member's agents. |
 | `intagent watch` | Keep a worktree on the board for agents without hooks. |
 | `intagent guard` | Pre-commit check against teammates' exclusive intents. |
-| `intagent hook <agent>` / `intagent mcp` | Called by agents. |
+| `intagent hook [<agent>]` / `intagent mcp` | Called by agents; the hook recognises the agent from what it sends. |
 
 Environment: `INTAGENT_URL` and `INTAGENT_TOKEN` override the configuration, `INTAGENT_DISABLE=1` turns intagent
 off, `INTAGENT_FAIL=closed` refuses edits while the server is unreachable (the default is to fail open),

@@ -14,6 +14,7 @@ const (
 	AgentClaudeCode Agent = "claude-code"
 	AgentCodex      Agent = "codex"
 	AgentCursor     Agent = "cursor"
+	AgentCopilot    Agent = "copilot"
 	AgentWatch      Agent = "watch"
 	AgentCLI        Agent = "cli"
 )

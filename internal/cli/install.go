@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 )
@@ -40,7 +41,29 @@ var codexWiring = []hookWire{
 	{"SessionEnd", "", 3},
 }
 
+// hookCommand is the handler for Claude Code and Cursor. It is written in shell
+// form, with no "args", because Cursor imports Claude Code's hooks and keeps
+// only the command string; and it is the same string in both files, so Cursor
+// recognises the imported copy as a duplicate of its own and runs it once.
+// The adapter is chosen from the payload.
+//
+// The files are committed, so the hook also runs for teammates who have not
+// installed intagent. It then does nothing: GitHub Copilot CLI, which runs
+// these hooks too, refuses every edit when a pre-tool hook fails.
+const hookCommand = "command -v intagent >/dev/null && intagent hook || true"
+
 const codexCommand = "intagent hook codex"
+
+// cursorWiring uses only events Cursor accepts: an unknown event name makes
+// Cursor drop the whole file.
+var cursorWiring = []hookWire{
+	{"sessionStart", "", 10},
+	{"beforeSubmitPrompt", "", 10},
+	{"preToolUse", "^(Write|Delete|Shell)$", 10},
+	{"postToolUse", "^(Write|Delete|Shell)$", 10},
+	{"stop", "", 10},
+	{"sessionEnd", "", 10},
+}
 
 // readJSONObject reads a JSON object file; a missing file is an empty object.
 // It refuses to continue on invalid JSON rather than overwrite someone's file.
@@ -90,10 +113,14 @@ func asSlice(v any) []any {
 	return nil
 }
 
+// intagentHook matches a shell command that runs 'intagent hook', from a path
+// or not, guarded or not.
+var intagentHook = regexp.MustCompile(`(?:^|[\s/&|;])intagent(?:\.exe)? hook(?:\s|$)`)
+
 // isIntagentHandler recognises a handler intagent installed, in exec or shell form.
 func isIntagentHandler(h map[string]any) bool {
 	cmd, _ := h["command"].(string)
-	if strings.HasPrefix(cmd, "intagent hook") || strings.Contains(cmd, "/intagent hook") {
+	if intagentHook.MatchString(cmd) {
 		return true
 	}
 	if filepath.Base(cmd) != "intagent" {
@@ -103,30 +130,79 @@ func isIntagentHandler(h map[string]any) bool {
 	return len(args) > 0 && args[0] == "hook"
 }
 
-// mergeHooks adds intagent's handlers to a Claude-style hooks object, once per event.
+// mergeHooks makes intagent's handlers in a Claude-style hooks object exactly
+// the given wiring: older intagent handlers are removed from every event, in
+// whatever form they were written, one current handler is added per wired
+// event, and everyone else's handlers stay as they were. It reports whether
+// anything changed.
 func mergeHooks(hooks map[string]any, wiring []hookWire, handler func(hookWire) map[string]any) bool {
-	changed := false
-	for _, w := range wiring {
-		groups := asSlice(hooks[w.event])
-		present := false
+	return rewire(hooks, wiring, func(groups []any) []any {
+		var kept []any
 		for _, g := range groups {
-			for _, h := range asSlice(asMap(g)["hooks"]) {
-				if isIntagentHandler(asMap(h)) {
-					present = true
-				}
+			group, ok := g.(map[string]any)
+			if !ok {
+				kept = append(kept, g)
+				continue
 			}
+			handlers := asSlice(group["hooks"])
+			others := withoutIntagent(handlers)
+			if len(others) == 0 && len(handlers) > 0 {
+				continue
+			}
+			if len(others) < len(handlers) {
+				group["hooks"] = others
+			}
+			kept = append(kept, group)
 		}
-		if present {
-			continue
-		}
+		return kept
+	}, func(w hookWire) any {
 		group := map[string]any{"hooks": []any{handler(w)}}
 		if w.matcher != "" {
 			group["matcher"] = w.matcher
 		}
-		hooks[w.event] = append(groups, group)
-		changed = true
+		return group
+	})
+}
+
+// mergeFlatHooks does the same for Cursor's flat lists of handlers.
+func mergeFlatHooks(hooks map[string]any, wiring []hookWire, handler func(hookWire) map[string]any) bool {
+	return rewire(hooks, wiring, withoutIntagent, func(w hookWire) any { return handler(w) })
+}
+
+// rewire strips intagent's entries from every event list, drops lists that
+// only held intagent's, and appends the current entry to each wired event.
+func rewire(hooks map[string]any, wiring []hookWire, strip func([]any) []any, entry func(hookWire) any) bool {
+	before, _ := json.Marshal(hooks)
+	for event, v := range hooks {
+		list, ok := v.([]any)
+		if !ok {
+			continue
+		}
+		// A group strip keeps is edited in place, so an unchanged length means
+		// the list itself needs no rewriting.
+		switch kept := strip(list); {
+		case len(kept) == len(list):
+		case len(kept) == 0:
+			delete(hooks, event)
+		default:
+			hooks[event] = kept
+		}
 	}
-	return changed
+	for _, w := range wiring {
+		hooks[w.event] = append(asSlice(hooks[w.event]), entry(w))
+	}
+	after, _ := json.Marshal(hooks)
+	return !bytes.Equal(before, after)
+}
+
+func withoutIntagent(handlers []any) []any {
+	var others []any
+	for _, h := range handlers {
+		if !isIntagentHandler(asMap(h)) {
+			others = append(others, h)
+		}
+	}
+	return others
 }
 
 // installClaude wires Claude Code's hooks and permissions into a settings file.
@@ -137,7 +213,7 @@ func installClaude(settingsPath string) (bool, error) {
 	}
 	hooks := asMap(m["hooks"])
 	changed := mergeHooks(hooks, claudeWiring, func(w hookWire) map[string]any {
-		return map[string]any{"type": "command", "command": "intagent", "args": []any{"hook", "claude-code"}, "timeout": w.timeout}
+		return map[string]any{"type": "command", "command": hookCommand, "timeout": w.timeout}
 	})
 	m["hooks"] = hooks
 	perms := asMap(m["permissions"])
@@ -367,25 +443,18 @@ func installCursor(root string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, ok := m["version"]; !ok {
+	_, hasVersion := m["version"]
+	if !hasVersion {
 		m["version"] = 1
 	}
 	hooks := asMap(m["hooks"])
-	changed := false
-	for _, event := range cursorEvents {
-		list := asSlice(hooks[event])
-		present := false
-		for _, h := range list {
-			if isIntagentHandler(asMap(h)) {
-				present = true
-			}
+	if mergeFlatHooks(hooks, cursorWiring, func(w hookWire) map[string]any {
+		h := map[string]any{"command": hookCommand, "timeout": w.timeout}
+		if w.matcher != "" {
+			h["matcher"] = w.matcher
 		}
-		if !present {
-			hooks[event] = append(list, map[string]any{"command": "intagent hook cursor"})
-			changed = true
-		}
-	}
-	if changed {
+		return h
+	}) || !hasVersion {
 		m["hooks"] = hooks
 		if err := writeJSONObject(hooksPath, m); err != nil {
 			return nil, err
@@ -400,8 +469,6 @@ func installCursor(root string) ([]string, error) {
 	}
 	return wrote, nil
 }
-
-var cursorEvents = []string{"beforeSubmitPrompt", "afterFileEdit", "stop"}
 
 // installGitHook adds a pre-commit hook running 'intagent guard', unless a
 // pre-commit hook already exists that intagent did not write.
@@ -419,6 +486,8 @@ func installGitHook(hooksDir string) (string, error) {
 	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
 		return "", err
 	}
-	script := "#!/bin/sh\n# intagent: refuse commits that touch files a teammate's active agent reserved.\nexec intagent guard\n"
+	// Git GUIs often run hooks with a shorter PATH; without intagent, commit as usual.
+	script := "#!/bin/sh\n# intagent: refuse commits that touch files a teammate's active agent reserved.\n" +
+		"command -v intagent >/dev/null || exit 0\nexec intagent guard\n"
 	return p, os.WriteFile(p, []byte(script), 0o755)
 }

@@ -46,14 +46,36 @@ type Adapter interface {
 // For returns the adapter for an agent name as used on the command line.
 func For(name string) (Adapter, error) {
 	switch strings.ToLower(name) {
-	case "claude-code", "claude", "claudecode":
+	case "", "claude-code", "claude", "claudecode":
 		return ClaudeCode{}, nil
+	case "copilot":
+		return ClaudeCode{Copilot: true}, nil
 	case "codex":
 		return Codex{}, nil
 	case "cursor":
 		return Cursor{}, nil
 	}
-	return nil, fmt.Errorf("unknown agent %q: want claude-code, codex or cursor", name)
+	return nil, fmt.Errorf("unknown agent %q: want claude-code, codex, cursor or copilot", name)
+}
+
+// Detect picks the adapter for one invocation. name is the agent named on the
+// command line, if any. The payload wins when it is unmistakably Cursor's,
+// because Cursor also runs the hooks in Claude Code's settings files and sends
+// them its own payloads. GitHub Copilot CLI runs those hooks too, with
+// Claude-style payloads, and is recognised by its environment.
+func Detect(name string, stdin []byte, getenv func(string) string) (Adapter, error) {
+	if isCursorPayload(stdin) {
+		return Cursor{}, nil
+	}
+	ad, err := For(name)
+	if err != nil {
+		return nil, err
+	}
+	if cc, ok := ad.(ClaudeCode); ok && getenv("COPILOT_CLI") == "1" {
+		cc.Copilot = true
+		return cc, nil
+	}
+	return ad, nil
 }
 
 // hookSpecific is the hookSpecificOutput object shared by Claude Code and Codex.

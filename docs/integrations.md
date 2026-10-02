@@ -22,8 +22,14 @@ permission `mcp__intagent__*`.
 
 What matters:
 
-- **Exec form.** Handlers are `{"command": "intagent", "args": ["hook", "claude-code"]}`, run without a shell, so
-  shell profiles cannot pollute stdout. intagent prints nothing but the answer JSON.
+- **One command, in shell form.** Every handler is
+  `command -v intagent >/dev/null && intagent hook || true`, without `args`. Shell form, because Cursor and Copilot
+  CLI run these hooks too and Cursor keeps only the `command` string. Guarded, because the file is committed:
+  for a teammate without intagent the hook does nothing, where a missing binary would otherwise make Copilot CLI
+  refuse every edit. A non-interactive `sh -c` reads no profile, and intagent prints nothing but the answer JSON.
+  `intagent init` replaces the exec form (`"args": ["hook", "claude-code"]`) that earlier versions wrote.
+- **intagent never exits 2.** Exit 2 is a refusal in Claude Code, Cursor and Copilot CLI, so a usage error exits 1
+  and the hook itself always exits 0.
 - **Paths.** `Edit` and `Write` carry `tool_input.file_path`; `NotebookEdit` carries `tool_input.notebook_path`.
   Paths are absolute. Writes outside the worktree (Claude's scratchpad) are ignored.
 - **A refusal reaches the model** as a failed tool call: `PreToolUse:Edit hook error: <reason>`. Models adapt to it.
@@ -79,11 +85,58 @@ What matters:
 
 ## Cursor
 
-Cursor reports edits after they happen (`afterFileEdit`), so it cannot be stopped before a write. intagent records
-Cursor's edits and prompts, and Cursor's agent sees others' work through the MCP tools.
+Verified against the agent runtime of `@cursor/sdk` 1.0.35, which runs Cursor's hooks; the editor itself was not
+driven.
 
-**Installed by `intagent init`:** `.cursor/hooks.json` (`beforeSubmitPrompt`, `afterFileEdit`, `stop`) and
-`.cursor/mcp.json`.
+**Installed by `intagent init`:** `.cursor/hooks.json` and `.cursor/mcp.json`. Each hook runs the same command as
+Claude Code's, with a 10 s timeout.
+
+| Event | Matcher | intagent event | Answer |
+|---|---|---|---|
+| `sessionStart` | (all) | `session_start` + git footprint | `additional_context` |
+| `beforeSubmitPrompt` | (all) | `prompt` | `continue: true` and `additional_context` |
+| `preToolUse` | `^(Write\|Delete\|Shell)$` | `pre_edit` for `Write` and `Delete` (`tool_input.file_path`), `tool_start` for `Shell` | `permission: deny` with `user_message` and `agent_message`, or `permission: allow`; `additional_context` |
+| `postToolUse` | same | `post_edit`, or `tool_end` + git footprint after `Shell` | `additional_context` |
+| `stop` | (all) | `stop` + git footprint | `{}` |
+| `sessionEnd` | (all) | `session_end` + git footprint | `{}` |
+
+What matters:
+
+- **Edits are tool calls.** Every agent edit reaches `preToolUse` as tool `Write` (deletions as `Delete`), so Cursor
+  can be refused before the write. Matchers are unanchored regular expressions; intagent anchors its own.
+- **Always valid JSON.** Cursor treats invalid JSON from a permission step as a refusal, so every answer is JSON and
+  an allow is spelled out. Cursor ignores `ask` on `preToolUse` for local tools; intagent turns it into a refusal
+  that tells the agent to ask its person.
+- **One unknown event drops the file.** Cursor rejects a whole hooks file that names an event it does not know. A
+  Cursor too old for `preToolUse` and `sessionStart` therefore runs none of intagent's hooks there, and its agent
+  sees the team only through the MCP tools. intagent still parses the older `afterFileEdit`,
+  `beforeShellExecution` and `afterShellExecution` events if you wire them by hand.
+- **Cursor runs Claude Code's hooks too.** It imports the hooks in `.claude/settings.json`, keeps only their
+  `command`, and sends them Cursor's payloads. intagent recognises a Cursor payload whichever file the hook came
+  from (`cursor_version`, or a lower-case event name with a `conversation_id`), and writes the identical command in
+  both files: Cursor drops an imported hook whose command equals one of its own for the same event.
+- **Sessions** are `conversation_id`; paths resolve against `workspace_roots[0]`.
+- **Windows.** Cursor runs hooks in PowerShell there, which cannot run the guarded command; Cursor carries on without
+  intagent (it fails open). Untested.
+
+## GitHub Copilot CLI
+
+Verified against GitHub Copilot CLI 1.0.91.
+
+**Installed by `intagent init`:** nothing of its own. Copilot CLI runs the hooks in `.claude/settings.json` and the
+MCP server in `.mcp.json` (in a folder you have trusted).
+
+What matters:
+
+- **Claude's dialect, Copilot's arguments.** Payloads use Claude Code's event and tool names (`create` arrives as
+  `Write`, `edit` as `Edit`) but keep Copilot's argument names: `tool_input.path`, `file_text`. Relative paths arrive
+  as the model wrote them and resolve against `cwd`. intagent recognises Copilot by `COPILOT_CLI=1` in the
+  environment.
+- **Answers.** intagent prints both Copilot's top-level `permissionDecision` and Claude's nested form; the model
+  reads `Denied by preToolUse hook: <reason>`. `additionalContext` reaches the model on session start, prompts and
+  around tool calls.
+- **Failure is closed.** A pre-tool hook that exits 1, or whose binary is missing, refuses the tool call. intagent's
+  hook always exits 0, and the guard in the command covers teammates who have not installed it.
 
 ## Any other agent
 
