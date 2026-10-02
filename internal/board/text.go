@@ -20,8 +20,11 @@ func Clean(s string, max int) string {
 	space := false
 	n := 0
 	for _, r := range s {
-		if unicode.IsControl(r) || unicode.IsSpace(r) || r == ' ' || r == ' ' {
+		if unicode.IsControl(r) || unicode.IsSpace(r) || r == '\u2028' || r == '\u2029' {
 			space = b.Len() > 0
+			continue
+		}
+		if unicode.Is(unicode.Cf, r) { // bidi overrides, zero-width characters
 			continue
 		}
 		if n >= max {
@@ -31,6 +34,25 @@ func Clean(s string, max int) string {
 			b.WriteByte(' ')
 			n++
 			space = false
+		}
+		b.WriteRune(r)
+		n++
+	}
+	return b.String()
+}
+
+// ident cleans a name that is shown to agents without quotes (a branch, an
+// agent, a tool, a repository) down to one token: no spaces, quotes, angle
+// brackets, backslashes, control or formatting characters, at most max runes.
+func ident(s string, max int) string {
+	var b strings.Builder
+	n := 0
+	for _, r := range strings.ToValidUTF8(s, "") {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || unicode.IsSpace(r) || strings.ContainsRune("\"'`<>\\", r) {
+			continue
+		}
+		if n == max {
+			break
 		}
 		b.WriteRune(r)
 		n++

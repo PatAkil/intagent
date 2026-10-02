@@ -199,8 +199,10 @@ off, `INTAGENT_FAIL=closed` refuses edits while the server is unreachable (the d
   `SameSite=Strict`, `Secure` over HTTPS) that can only read, so a page in another tab cannot act on your behalf.
   The cookie is a MAC of the token's hash under a key kept in the data directory: it is not the token, cannot be
   forged from the team file, survives a restart and ends when the token is rotated.
-- Text from one member's agent reaches another's only quoted, stripped of control characters, collapsed to one line,
-  capped in length, and introduced as information rather than instructions. Notes are rate-limited.
+- Text from one member's agent reaches another's only quoted, stripped of control and invisible formatting
+  characters, collapsed to one line, capped in length, and introduced as information rather than instructions.
+  Paths and patterns containing control, formatting or line-separator characters are rejected; branch, agent and
+  tool names are reduced to a single token; webhook messages escape Slack markup. Notes are rate-limited.
 - The hook fails open with a short timeout: intagent never stops an agent because intagent is down, unless a team
   asks for `INTAGENT_FAIL=closed`.
 

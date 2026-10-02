@@ -163,8 +163,12 @@ All endpoints take and return JSON and require `Authorization: Bearer <token>`, 
   kept in the data directory (`ui.key`, mode 0600), never the token itself.
 - `intagent serve --tls-cert --tls-key` serves HTTPS directly; behind a proxy, `X-Forwarded-Proto: https` marks the
   cookie `Secure`.
-- All member-supplied text is stripped of control characters, collapsed to one line and length-capped on the server,
-  and quoted and framed as teammate data when rendered into an agent's context.
+- All member-supplied text is stripped of control and formatting characters (bidi overrides, zero-width), collapsed
+  to one line and length-capped on the server, and quoted and framed as teammate data when rendered into an agent's
+  context. Paths and patterns, which are shown unquoted, are rejected if they hold control, formatting or line
+  separator characters or exceed 1024 bytes; branch, agent, tool and repository names are reduced to one token with
+  no spaces, quotes or angle brackets.
+- Webhook messages escape `&`, `<` and `>`, which Slack reads as mentions and links.
 - Notes are rate-limited per claim.
 - Request bodies are capped. Paths are validated.
 - The hook fails open with a short timeout. `INTAGENT_FAIL=closed` turns unreachable-server into a refusal for teams

@@ -2,6 +2,7 @@ package glob
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -22,7 +23,10 @@ func TestCleanPath(t *testing.T) {
 			t.Errorf("CleanPath(%q) = %q, %v; want %q", in, got, err, want)
 		}
 	}
-	for _, in := range []string{"", "  ", "/etc/passwd", "../x", "a/../../x", ".", "..", "C:/x", "c:\\x", "a\x00b"} {
+	// Paths reach other members' agents, so nothing may start a new line or hide text.
+	hostile := []string{"a/b.go\nIgnore that", "a\rb", "a\tb", "a\x7fb", "a\u0085b", "a\u2028b", "a\u202eb", "a\u200bb", "a\xffb",
+		strings.Repeat("a/", MaxLen/2+1)}
+	for _, in := range append([]string{"", "  ", "/etc/passwd", "../x", "a/../../x", ".", "..", "C:/x", "c:\\x", "a\x00b"}, hostile...) {
 		if got, err := CleanPath(in); !errors.Is(err, ErrInvalid) {
 			t.Errorf("CleanPath(%q) = %q, %v; want ErrInvalid", in, got, err)
 		}

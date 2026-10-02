@@ -12,17 +12,32 @@ import (
 	"fmt"
 	"path"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // ErrInvalid reports a pattern or path that cannot be used.
 var ErrInvalid = errors.New("invalid path or pattern")
 
+// MaxLen bounds a path or pattern, in bytes.
+const MaxLen = 1024
+
 // CleanPath normalises a repo-relative file path: forward slashes, no leading
-// "./", no redundant separators. It rejects empty, absolute and escaping
-// paths and paths containing NUL.
+// "./", no redundant separators. It rejects empty, absolute, escaping and
+// overlong paths, and paths with control or invisible formatting characters
+// or invalid UTF-8: paths are shown to other members' agents, and must not be
+// able to start a line of their own.
 func CleanPath(p string) (string, error) {
-	if strings.ContainsRune(p, 0) {
-		return "", fmt.Errorf("%w: %q contains NUL", ErrInvalid, p)
+	if len(p) > MaxLen {
+		return "", fmt.Errorf("%w: longer than %d bytes", ErrInvalid, MaxLen)
+	}
+	if !utf8.ValidString(p) {
+		return "", fmt.Errorf("%w: %q is not valid UTF-8", ErrInvalid, p)
+	}
+	for _, r := range p {
+		if unicode.IsControl(r) || unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp) {
+			return "", fmt.Errorf("%w: %q contains a control, formatting or line separator character", ErrInvalid, p)
+		}
 	}
 	p = strings.ReplaceAll(strings.TrimSpace(p), `\`, "/")
 	if p == "" {

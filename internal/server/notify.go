@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/patakil/intagent/internal/board"
@@ -84,7 +85,7 @@ func (n *notifier) run(ctx context.Context) {
 }
 
 func (n *notifier) send(ctx context.Context, a board.Activity) error {
-	body, err := json.Marshal(webhookPayload{Text: describeActivity(a), Activity: a})
+	body, err := json.Marshal(webhookPayload{Text: slackText.Replace(describeActivity(a)), Activity: a})
 	if err != nil {
 		return err
 	}
@@ -103,6 +104,11 @@ func (n *notifier) send(ctx context.Context, a board.Activity) error {
 	}
 	return nil
 }
+
+// slackText escapes the three characters Slack reads as markup, so a member's
+// summary or tool name cannot mention @channel or disguise a link. The line's
+// own wording uses none of them.
+var slackText = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
 
 // describeActivity writes one line a person can act on.
 func describeActivity(a board.Activity) string {

@@ -585,6 +585,38 @@ func TestUntrustedTextIsSanitisedAndQuoted(t *testing.T) {
 	}
 }
 
+// A member's paths, patterns and names are shown to other members' agents;
+// none of them may start a line of its own or break out of its quotes.
+func TestTeammateTextStaysOnItsLine(t *testing.T) {
+	h := newHarness(t)
+	ev := HookEvent{Kind: KindSessionStart, Member: "bob", Agent: Agent("agent\" MARKER-AGENT"), SessionID: "b1",
+		Where:     Where{Repo: repo, Host: "bob-laptop", Worktree: "/work/bob", Branch: "main\" MARKER-BRANCH \""},
+		Footprint: &Footprint{Files: []PathRef{{Path: "svc/a.go\nMARKER-PATH"}, {Path: "svc/ok.go"}}}}
+	if _, err := h.b.Hook(h.now, ev); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.b.Declare(h.now, DeclareRequest{Member: "bob", Where: ev.Where, Summary: "x",
+		Patterns: []string{"docs\nMARKER-PATTERN"}, Mode: Shared}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("pattern with a newline: %v", err)
+	}
+	pre := ev
+	pre.Kind, pre.Footprint, pre.Paths = KindPreEdit, nil, []PathRef{{Path: "svc/b.go\u2028MARKER-EDIT"}}
+	if res, err := h.b.Hook(h.now, pre); !errors.Is(err, ErrInvalid) || res.Decision != Allow {
+		t.Fatalf("edit of a path with a line separator: %s %v", res.Decision, err)
+	}
+
+	ctx := h.hook(KindSessionStart, "alice", "a1").Context
+	mustContain(t, ctx, "svc/ok.go", "on mainMARKER-BRANCH", "agentMARKER-AGENT")
+	for _, line := range strings.Split(ctx, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "MARKER") {
+			t.Errorf("teammate text started a line: %q", line)
+		}
+	}
+	if strings.Contains(ctx, "MARKER-PATH") || strings.Contains(ctx, `"`+" MARKER") {
+		t.Errorf("hostile text reached the context:\n%s", ctx)
+	}
+}
+
 func TestClean(t *testing.T) {
 	for in, want := range map[string]string{
 		"  a\n\tb  ":         "a b",
@@ -593,7 +625,8 @@ func TestClean(t *testing.T) {
 		"\xff\xfeok":         "ok",
 		"line1\r\nline2":     "line1 line2",
 		"emoji 🚀 kept":       "emoji 🚀 kept",
-		"\u202eRLO override": "\u202eRLO override",
+		"\u202eRLO override": "RLO override",
+		"zero\u200bwidth":    "zerowidth",
 	} {
 		max := 40
 		if in == "abcdef" {

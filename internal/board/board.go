@@ -173,10 +173,10 @@ func (b *Board) changed() { b.version++ }
 // --- validation -----------------------------------------------------------
 
 func cleanWhere(w Where) (Where, error) {
-	w.Repo = Clean(w.Repo, 200)
+	w.Repo = ident(w.Repo, 200)
 	w.Host = Clean(w.Host, 100)
 	w.Worktree = Clean(w.Worktree, 500)
-	w.Branch = Clean(w.Branch, maxBranchLen)
+	w.Branch = ident(w.Branch, maxBranchLen)
 	if w.Repo == "" || w.Host == "" || w.Worktree == "" {
 		return w, fmt.Errorf("%w: repo, host and worktree are required", ErrInvalid)
 	}
@@ -318,8 +318,8 @@ func (b *Board) Hook(now time.Time, ev HookEvent) (HookResult, error) {
 	}
 	ev.Where = w
 	ev.SessionID = Clean(ev.SessionID, 200)
-	ev.Agent = Agent(Clean(string(ev.Agent), 40))
-	ev.Tool = Clean(ev.Tool, 60)
+	ev.Agent = Agent(ident(string(ev.Agent), 40))
+	ev.Tool = ident(ev.Tool, 60)
 	if ev.Member == "" || ev.SessionID == "" || ev.Agent == "" {
 		return allow, fmt.Errorf("%w: member, agent and session_id are required", ErrInvalid)
 	}

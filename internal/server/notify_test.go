@@ -81,3 +81,19 @@ func TestWebhookFilters(t *testing.T) {
 		t.Error("custom event list not honoured")
 	}
 }
+
+// Slack reads <...> as mentions and links; member text must not become either.
+func TestWebhookEscapesSlackMarkup(t *testing.T) {
+	a := board.Activity{Kind: "conflict", Member: "bob", Agent: board.AgentCodex, Repo: "github.com/acme/mono", Decision: board.Refuse,
+		Text: `svc/a.go → alice (declared exclusive intent svc/**: "<!channel> & <https://evil.example|the runbook>")`}
+	got := slackText.Replace(describeActivity(a))
+	if strings.ContainsAny(got, "<>") || !strings.Contains(got, "&lt;!channel&gt; &amp; &lt;https://evil.example|the runbook&gt;") {
+		t.Fatalf("text = %s", got)
+	}
+	for _, kind := range []string{"session.stalled", "session.gone", "conflict", "other"} {
+		a := board.Activity{Kind: kind, Member: "m", Agent: "a", Repo: "r", Text: "t"}
+		if s := describeActivity(a); strings.ContainsAny(s, "<>&") {
+			t.Errorf("%s: the template itself uses Slack markup: %s", kind, s)
+		}
+	}
+}
