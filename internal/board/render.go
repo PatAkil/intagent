@@ -107,7 +107,7 @@ func (b *Board) renderInbox(now time.Time, items []InboxItem) string {
 }
 
 // renderStart greets a session with the state of the board.
-func (b *Board) renderStart(now time.Time, c *Claim, s *Session) string {
+func (b *Board) renderStart(now time.Time, c *Claim) string {
 	live := b.liveClaims(now)
 	var others []*Claim
 	for _, o := range b.claimsInRepo(c.Repo) {

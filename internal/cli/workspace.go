@@ -76,12 +76,12 @@ func (w *workspace) errNotConnected() error {
 	return nil
 }
 
-// connected returns the workspace's client or a helpful error.
-func (w *workspace) connected() (*client.Client, error) {
+// requireConnection reports why the workspace cannot reach a server, if it cannot.
+func (w *workspace) requireConnection() error {
 	if w.client == nil {
-		return nil, w.errNotConnected()
+		return w.errNotConnected()
 	}
-	return w.client, nil
+	return nil
 }
 
 // refs turns paths (absolute, or relative to base) into repo-relative path

@@ -192,7 +192,7 @@ func cleanPaths(in []PathRef) ([]PathRef, error) {
 	for _, p := range in {
 		c, err := glob.CleanPath(p.Path)
 		if err != nil {
-			return nil, fmt.Errorf("%w: %v", ErrInvalid, err)
+			return nil, fmt.Errorf("%w: %w", ErrInvalid, err)
 		}
 		if seen[c] {
 			continue
@@ -345,7 +345,7 @@ func (b *Board) Hook(now time.Time, ev HookEvent) (HookResult, error) {
 		}
 		s.Tool = ""
 		b.reconcile(now, c, s, ev.Footprint)
-		res.Context = joinBlocks(b.renderStart(now, c, s), b.deliver(now, c, s))
+		res.Context = joinBlocks(b.renderStart(now, c), b.deliver(now, c, s))
 	case KindPrompt:
 		b.setWorking(now, s, "")
 		b.taskFromPrompt(c, s, ev.Prompt)
@@ -442,10 +442,7 @@ func (b *Board) reconcile(now time.Time, c *Claim, s *Session, fp *Footprint) {
 	if fp == nil {
 		return
 	}
-	files, err := cleanFootprint(fp.Files, b.cfg.MaxFootprint)
-	if err != nil {
-		return
-	}
+	files := cleanFootprint(fp.Files, b.cfg.MaxFootprint)
 	next := make(map[string]*Touch, len(files))
 	var added []PathRef
 	for _, f := range files {
@@ -476,7 +473,7 @@ func (b *Board) reconcile(now time.Time, c *Claim, s *Session, fp *Footprint) {
 	}
 }
 
-func cleanFootprint(in []PathRef, limit int) ([]PathRef, error) {
+func cleanFootprint(in []PathRef, limit int) []PathRef {
 	out := make([]PathRef, 0, min(len(in), limit))
 	seen := map[string]bool{}
 	for _, f := range in {
@@ -491,7 +488,7 @@ func cleanFootprint(in []PathRef, limit int) ([]PathRef, error) {
 		area, _ := glob.CleanPath(f.Area)
 		out = append(out, PathRef{Path: p, Area: area})
 	}
-	return out, nil
+	return out
 }
 
 // touch records files a hook saw being written.
@@ -863,7 +860,7 @@ func (b *Board) Declare(now time.Time, r DeclareRequest) (DeclareResult, error) 
 	}
 	mode, err := ParseMode(string(r.Mode))
 	if err != nil {
-		return DeclareResult{}, fmt.Errorf("%w: %v", ErrInvalid, err)
+		return DeclareResult{}, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
 	if len(r.Patterns) == 0 || len(r.Patterns) > maxIntents {
 		return DeclareResult{}, fmt.Errorf("%w: declare between 1 and %d patterns", ErrInvalid, maxIntents)
@@ -872,7 +869,7 @@ func (b *Board) Declare(now time.Time, r DeclareRequest) (DeclareResult, error) 
 	for _, p := range r.Patterns {
 		c, err := glob.CleanPattern(p)
 		if err != nil {
-			return DeclareResult{}, fmt.Errorf("%w: %v", ErrInvalid, err)
+			return DeclareResult{}, fmt.Errorf("%w: %w", ErrInvalid, err)
 		}
 		patterns = append(patterns, c)
 	}
@@ -906,7 +903,7 @@ func (b *Board) Declare(now time.Time, r DeclareRequest) (DeclareResult, error) 
 	c.UpdatedAt = now
 
 	for _, in := range res.Accepted {
-		res.Overlaps = append(res.Overlaps, b.intentOverlaps(now, c, in, live)...)
+		res.Overlaps = append(res.Overlaps, b.intentOverlaps(c, in, live)...)
 	}
 	sortConflicts(res.Overlaps)
 	b.tellIntent(now, c, res.Accepted, res.Overlaps)
@@ -948,7 +945,7 @@ func upsertIntent(list []Intent, in Intent) []Intent {
 }
 
 // intentOverlaps lists other claims whose intents or changed files meet a new intent.
-func (b *Board) intentOverlaps(now time.Time, c *Claim, in Intent, live map[string]bool) []Conflict {
+func (b *Board) intentOverlaps(c *Claim, in Intent, live map[string]bool) []Conflict {
 	var out []Conflict
 	for _, o := range b.claimsInRepo(c.Repo) {
 		if o.ID == c.ID {
@@ -1028,7 +1025,7 @@ func (b *Board) Release(now time.Time, r ReleaseRequest) (int, error) {
 	for _, p := range r.Patterns {
 		c, err := glob.CleanPattern(p)
 		if err != nil {
-			return 0, fmt.Errorf("%w: %v", ErrInvalid, err)
+			return 0, fmt.Errorf("%w: %w", ErrInvalid, err)
 		}
 		drop[c] = true
 	}

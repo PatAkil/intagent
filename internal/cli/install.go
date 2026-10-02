@@ -204,12 +204,13 @@ func installCodex(root string) ([]string, error) {
 		if len(existing) == 0 {
 			block = strings.TrimPrefix(block, "\n")
 		}
-		f, err := os.OpenFile(cfgPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+		// A repository file, meant to be committed and read by everyone's Codex.
+		f, err := os.OpenFile(cfgPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644) //nolint:gosec
 		if err != nil {
 			return nil, err
 		}
 		if _, err := f.WriteString(block); err != nil {
-			f.Close()
+			_ = f.Close()
 			return nil, err
 		}
 		if err := f.Close(); err != nil {
@@ -351,11 +352,11 @@ func trustCodex(codexConfig string, roots []string, hooksFiles []string) ([]stri
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
 	if _, err := f.WriteString("\n# Added by 'intagent init --trust-codex'" + add.String()); err != nil {
+		_ = f.Close()
 		return nil, err
 	}
-	return notes, nil
+	return notes, f.Close()
 }
 
 // installCursor writes .cursor/hooks.json and .cursor/mcp.json.

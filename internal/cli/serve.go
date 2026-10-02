@@ -45,7 +45,7 @@ func (a *App) serve(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	ln, err := net.Listen("tcp", *addr)
+	ln, err := new(net.ListenConfig).Listen(ctx, "tcp", *addr)
 	if err != nil {
 		return err
 	}

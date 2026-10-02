@@ -206,7 +206,7 @@ func (s *Server) reply(id json.RawMessage, result any, rerr *rpcError) {
 // Args decodes a tool call's arguments into v and reports a friendly error.
 func Args(call Call, v any) error {
 	if err := json.Unmarshal(call.Arguments, v); err != nil {
-		return fmt.Errorf("invalid arguments: %v", err)
+		return fmt.Errorf("invalid arguments: %w", err)
 	}
 	return nil
 }

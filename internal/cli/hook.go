@@ -125,6 +125,6 @@ func hookLog(format string, args ...any) {
 	if err != nil {
 		return
 	}
-	defer f.Close()
 	log.New(f, "", log.LstdFlags).Printf(format, args...)
+	_ = f.Close() // nothing useful to do if the log cannot be written
 }

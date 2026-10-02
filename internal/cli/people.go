@@ -19,7 +19,7 @@ func (a *App) here(ctx context.Context) (*workspace, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
-	if _, err := ws.connected(); err != nil {
+	if err := ws.requireConnection(); err != nil {
 		return nil, "", err
 	}
 	return ws, dir, nil

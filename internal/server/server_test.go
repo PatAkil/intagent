@@ -78,7 +78,7 @@ func (ts *testServer) do(t *testing.T, method, path, member string, body any, ou
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if out != nil {
 		if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
 			t.Fatalf("%s %s: decode: %v", method, path, err)
@@ -104,19 +104,19 @@ func TestAuth(t *testing.T) {
 	if code := ts.do(t, "POST", "/v1/hook", "", hookEv(board.KindPrompt, "alice", "a"), nil); code != http.StatusUnauthorized {
 		t.Fatalf("no token: %d", code)
 	}
-	req, _ := http.NewRequest("POST", ts.url+"/v1/hook", strings.NewReader(`{}`))
+	req, _ := http.NewRequest(http.MethodPost, ts.url+"/v1/hook", strings.NewReader(`{}`))
 	req.Header.Set("Authorization", "Bearer ia_wrong")
 	if resp, _ := http.DefaultClient.Do(req); resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("wrong token: %d", resp.StatusCode)
 	}
 	// A cookie never authorises a write, even a valid one.
-	req, _ = http.NewRequest("POST", ts.url+"/v1/hook", strings.NewReader(`{}`))
+	req, _ = http.NewRequest(http.MethodPost, ts.url+"/v1/hook", strings.NewReader(`{}`))
 	req.AddCookie(&http.Cookie{Name: cookieName, Value: ts.tokens["alice"]})
 	if resp, _ := http.DefaultClient.Do(req); resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("cookie write: %d", resp.StatusCode)
 	}
 	// ...but it does authorise reads.
-	req, _ = http.NewRequest("GET", ts.url+"/v1/whoami", nil)
+	req, _ = http.NewRequest(http.MethodGet, ts.url+"/v1/whoami", nil)
 	req.AddCookie(&http.Cookie{Name: cookieName, Value: ts.tokens["bob"]})
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil || resp.StatusCode != http.StatusOK {
@@ -204,7 +204,7 @@ func TestErrorMapping(t *testing.T) {
 	if code := ts.do(t, "POST", "/v1/hook", "alice", board.HookEvent{Kind: board.KindPrompt}, &e); code != http.StatusBadRequest || e.Error == "" {
 		t.Fatalf("invalid event: %d %+v", code, e)
 	}
-	req, _ := http.NewRequest("POST", ts.url+"/v1/hook", strings.NewReader("{not json"))
+	req, _ := http.NewRequest(http.MethodPost, ts.url+"/v1/hook", strings.NewReader("{not json"))
 	req.Header.Set("Authorization", "Bearer "+ts.tokens["alice"])
 	if resp, _ := http.DefaultClient.Do(req); resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("bad JSON: %d", resp.StatusCode)
@@ -221,7 +221,7 @@ func TestErrorMapping(t *testing.T) {
 		t.Fatalf("board without repo: %d", code)
 	}
 	big := strings.Repeat("x", maxBody+10)
-	req, _ = http.NewRequest("POST", ts.url+"/v1/hook", strings.NewReader(`{"prompt":"`+big+`"}`))
+	req, _ = http.NewRequest(http.MethodPost, ts.url+"/v1/hook", strings.NewReader(`{"prompt":"`+big+`"}`))
 	req.Header.Set("Authorization", "Bearer "+ts.tokens["alice"])
 	if resp, _ := http.DefaultClient.Do(req); resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("oversized body: %d", resp.StatusCode)
@@ -236,7 +236,7 @@ func TestBoardViews(t *testing.T) {
 	if len(v.Claims) != 1 || v.Claims[0].Member != "alice" {
 		t.Fatalf("view: %+v", v)
 	}
-	req, _ := http.NewRequest("GET", ts.url+"/v1/board?format=text&repo="+repo, nil)
+	req, _ := http.NewRequest(http.MethodGet, ts.url+"/v1/board?format=text&repo="+repo, nil)
 	req.Header.Set("Authorization", "Bearer "+ts.tokens["bob"])
 	resp, _ := http.DefaultClient.Do(req)
 	body, _ := io.ReadAll(resp.Body)
@@ -277,7 +277,7 @@ func TestStream(t *testing.T) {
 	ts := newTestServer(t)
 	open := func(lastID string) (*bufio.Reader, func()) {
 		ctx, cancel := context.WithCancel(context.Background())
-		req, _ := http.NewRequestWithContext(ctx, "GET", ts.url+"/v1/stream?repo="+repo, nil)
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.url+"/v1/stream?repo="+repo, nil)
 		req.Header.Set("Authorization", "Bearer "+ts.tokens["bob"])
 		if lastID != "" {
 			req.Header.Set("Last-Event-ID", lastID)
@@ -296,7 +296,7 @@ func TestStream(t *testing.T) {
 				break
 			}
 		}
-		return r, func() { cancel(); resp.Body.Close() }
+		return r, func() { cancel(); _ = resp.Body.Close() }
 	}
 	r, closeStream := open("")
 	ts.do(t, "POST", "/v1/hook", "alice", hookEv(board.KindPostEdit, "alice", "a1", "x/y.go"), nil)
@@ -354,13 +354,13 @@ func TestServeShutsDownAndSaves(t *testing.T) {
 
 	base := "http://" + ln.Addr().String()
 	// An open event stream must not hold up shutdown.
-	req, _ := http.NewRequest("GET", base+"/v1/stream?repo="+repo, nil)
+	req, _ := http.NewRequest(http.MethodGet, base+"/v1/stream?repo="+repo, nil)
 	req.Header.Set("Authorization", "Bearer "+ts.tokens["bob"])
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	ts.url = base
 	ts.do(t, "POST", "/v1/hook", "alice", hookEv(board.KindPostEdit, "alice", "a1", "x/y.go"), nil)
 

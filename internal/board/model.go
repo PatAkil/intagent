@@ -42,21 +42,23 @@ func ParseMode(s string) (Mode, error) {
 // Phase is the last lifecycle position a session reported.
 type Phase string
 
+// Phases a session reports through its hooks.
 const (
-	PhaseWorking Phase = "working"
-	PhaseWaiting Phase = "waiting"
-	PhaseEnded   Phase = "ended"
+	PhaseWorking Phase = "working" // a turn is in progress
+	PhaseWaiting Phase = "waiting" // the turn ended; the agent waits for its person
+	PhaseEnded   Phase = "ended"   // the session ended cleanly
 )
 
 // State is a session's liveness: its phase, adjusted for how long it has been silent.
 type State string
 
+// Liveness states, derived from a session's phase and silence.
 const (
-	StateWorking State = "working"
-	StateWaiting State = "waiting"
-	StateStalled State = "stalled"
-	StateGone    State = "gone"
-	StateEnded   State = "ended"
+	StateWorking State = "working" // a turn is in progress and the agent reports in
+	StateWaiting State = "waiting" // between turns, recently seen
+	StateStalled State = "stalled" // working, but silent too long
+	StateGone    State = "gone"    // silent for so long it is presumed dead
+	StateEnded   State = "ended"   // ended cleanly
 )
 
 // Live reports whether a session in this state still holds its claim's intents.
@@ -65,13 +67,15 @@ func (s State) Live() bool { return s == StateWorking || s == StateWaiting }
 // Severity ranks how much another claim matters to a path.
 type Severity int
 
+// Severities, from least to most serious.
 const (
+	// SeverityNone means no other claim matters.
 	SeverityNone Severity = iota
-	// Nearby: another claim works in the same area.
+	// Nearby means another claim works in the same area.
 	Nearby
-	// Overlap: another claim changed this path or plans to.
+	// Overlap means another claim changed this path or plans to.
 	Overlap
-	// Block: an active claim holds an exclusive intent on this path.
+	// Block means an active claim holds an exclusive intent on this path.
 	Block
 )
 
@@ -149,10 +153,11 @@ func (p Policy) action(s Severity) Action {
 // Decision is the answer to an agent about to write.
 type Decision string
 
+// Decisions a hook can return.
 const (
-	Allow     Decision = "allow"
-	DecideAsk Decision = "ask"
-	Refuse    Decision = "deny"
+	Allow     Decision = "allow" // go ahead
+	DecideAsk Decision = "ask"   // let the person decide
+	Refuse    Decision = "deny"  // do not write; the reason says why
 )
 
 // Intent is a declared plan to change the paths a pattern covers.
@@ -253,6 +258,7 @@ type Footprint struct {
 // Kind is a normalised lifecycle event.
 type Kind string
 
+// Event kinds, one per lifecycle moment the adapters recognise.
 const (
 	KindSessionStart Kind = "session_start"
 	KindPrompt       Kind = "prompt"

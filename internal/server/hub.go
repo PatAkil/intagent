@@ -55,9 +55,3 @@ func (h *hub) publish(acts []board.Activity) {
 		}
 	}
 }
-
-func (h *hub) count() int {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return len(h.subs)
-}

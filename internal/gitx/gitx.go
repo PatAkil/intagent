@@ -56,7 +56,7 @@ func Open(ctx context.Context, dir string) (*Worktree, error) {
 		if err2 != nil {
 			return nil, fmt.Errorf("%w: %s", ErrNotRepo, dir)
 		}
-		out = append(top, []byte("HEAD\n")...)
+		out = append(append([]byte{}, top...), "HEAD\n"...)
 	}
 	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
 	if len(lines) < 2 {
@@ -118,9 +118,7 @@ func (w *Worktree) Rel(abs string) (string, bool) {
 	}
 	root := w.Root
 	if r, err := filepath.EvalSymlinks(root); err == nil {
-		if a, err := evalExisting(abs); err == nil {
-			root, abs = r, a
-		}
+		root, abs = r, evalExisting(abs)
 	}
 	rel, err := filepath.Rel(root, filepath.Clean(abs))
 	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
@@ -135,15 +133,15 @@ func (w *Worktree) Rel(abs string) (string, bool) {
 
 // evalExisting resolves symlinks in the longest existing prefix of p, so a
 // file that does not exist yet still resolves through a symlinked directory.
-func evalExisting(p string) (string, error) {
+func evalExisting(p string) string {
 	rest := ""
 	for cur := p; ; {
 		if r, err := filepath.EvalSymlinks(cur); err == nil {
-			return filepath.Join(r, rest), nil
+			return filepath.Join(r, rest)
 		}
 		parent := filepath.Dir(cur)
 		if parent == cur {
-			return p, nil
+			return p
 		}
 		rest = filepath.Join(filepath.Base(cur), rest)
 		cur = parent

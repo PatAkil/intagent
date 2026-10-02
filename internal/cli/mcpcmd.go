@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -41,7 +40,7 @@ func (a *App) mcpWorkspace(ctx context.Context) (*workspace, string, error) {
 	if err != nil {
 		return nil, "", fmt.Errorf("intagent works inside a git repository; %s is not in one", dir)
 	}
-	if _, err := ws.connected(); err != nil {
+	if err := ws.requireConnection(); err != nil {
 		return nil, "", err
 	}
 	return ws, dir, nil
@@ -218,5 +217,3 @@ func (w *workspace) patterns(base string, in []string) []string {
 	}
 	return out
 }
-
-var errNoArgs = errors.New("missing arguments")

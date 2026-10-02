@@ -54,7 +54,7 @@ func CleanPattern(p string) (string, error) {
 			return "", fmt.Errorf("%w: %q: ** must be a whole segment", ErrInvalid, p)
 		}
 		if _, err := path.Match(seg, ""); err != nil {
-			return "", fmt.Errorf("%w: %q: %v", ErrInvalid, p, err)
+			return "", fmt.Errorf("%w: %q: %w", ErrInvalid, p, err)
 		}
 	}
 	return c, nil

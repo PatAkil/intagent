@@ -21,17 +21,17 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 		return err
 	}
 	tmp := f.Name()
-	defer os.Remove(tmp) // no-op after a successful rename
+	defer func() { _ = os.Remove(tmp) }() // no-op after a successful rename
 	if err := f.Chmod(perm); err != nil {
-		f.Close()
+		_ = f.Close()
 		return err
 	}
 	if _, err := f.Write(data); err != nil {
-		f.Close()
+		_ = f.Close()
 		return err
 	}
 	if err := f.Sync(); err != nil {
-		f.Close()
+		_ = f.Close()
 		return err
 	}
 	if err := f.Close(); err != nil {
@@ -42,7 +42,7 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	}
 	if d, err := os.Open(dir); err == nil {
 		_ = d.Sync() // best effort: make the rename durable
-		d.Close()
+		_ = d.Close()
 	}
 	return nil
 }
