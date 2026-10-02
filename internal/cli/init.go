@@ -15,9 +15,9 @@ import (
 )
 
 func (a *App) initRepo(ctx context.Context, args []string) error {
-	fs := a.flags("init", "init [--url <server>] [--agents claude-code,codex,cursor] [--git-hook] [--user] [--trust-codex]")
+	fs := a.flags("init", "init [--url <server>] [--agents claude-code,codex,cursor,gemini] [--git-hook] [--user] [--trust-codex]")
 	url := fs.String("url", "", "the team server for this repository")
-	agents := fs.String("agents", "claude-code,codex,cursor", "agents to wire up")
+	agents := fs.String("agents", "claude-code,codex,cursor,gemini", "agents to wire up (Copilot CLI uses claude-code's)")
 	gitHook := fs.Bool("git-hook", false, "install a pre-commit hook that runs 'intagent guard'")
 	user := fs.Bool("user", false, "also install Claude Code hooks in your user settings, so they run when Claude starts in a subdirectory")
 	trust := fs.Bool("trust-codex", false, "mark this project and intagent's hooks as trusted in your ~/.codex/config.toml")
@@ -110,8 +110,14 @@ func (a *App) initRepo(ctx context.Context, args []string) error {
 				rel, _ := filepath.Rel(root, w)
 				done = append(done, rel+" (Cursor)")
 			}
+		case "gemini":
+			if ok, err := installGemini(root); err != nil {
+				return err
+			} else if ok {
+				done = append(done, ".gemini/settings.json (Gemini CLI hooks and MCP server)")
+			}
 		default:
-			return fmt.Errorf("unknown agent %q: want claude-code, codex or cursor", ag)
+			return fmt.Errorf("unknown agent %q: want claude-code, codex, cursor or gemini", ag)
 		}
 	}
 	if *gitHook {
@@ -140,6 +146,9 @@ func (a *App) initRepo(ctx context.Context, args []string) error {
 	}
 	if strings.Contains(*agents, "claude") {
 		fmt.Fprintln(a.Out, "\nClaude Code asks once per member to approve the project's MCP server; accept 'intagent' when it does.")
+	}
+	if strings.Contains(*agents, "gemini") {
+		fmt.Fprintln(a.Out, "\nGemini CLI runs a project's hooks only in folders you trust; trust this one when Gemini asks.")
 	}
 	return nil
 }

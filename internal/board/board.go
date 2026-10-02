@@ -359,6 +359,8 @@ func (b *Board) Hook(now time.Time, ev HookEvent) (HookResult, error) {
 		if res.Decision != Allow {
 			// The edit does not run (yet), so no tool end will follow it.
 			b.setWorking(now, s, "")
+		} else if ev.LateContext && res.Context != "" {
+			s.Pending, res.Context = joinBlocks(s.Pending, res.Context), ""
 		}
 	case KindPostEdit:
 		b.setWorking(now, s, "")
@@ -808,8 +810,15 @@ func (b *Board) enqueue(now time.Time, c *Claim, it InboxItem) {
 	c.Inbox = keep
 }
 
-// deliver renders the inbox items this session has not seen yet.
+// deliver renders what this session has not been told yet: context held back
+// from before an edit, then the inbox items it has not seen.
 func (b *Board) deliver(now time.Time, c *Claim, s *Session) string {
+	pending := s.Pending
+	s.Pending = ""
+	return joinBlocks(pending, b.deliverInbox(now, c, s))
+}
+
+func (b *Board) deliverInbox(now time.Time, c *Claim, s *Session) string {
 	var items []InboxItem
 	for i := range c.Inbox {
 		it := &c.Inbox[i]

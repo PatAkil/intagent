@@ -292,7 +292,7 @@ func TestInitIsIdempotentAndPreservesSettings(t *testing.T) {
 	if len(allow) != 2 || allow[1] != "mcp__intagent__*" {
 		t.Fatalf("permissions = %v", allow)
 	}
-	for _, f := range []string{".intagent.json", ".mcp.json", ".codex/hooks.json", ".codex/config.toml", ".cursor/hooks.json", ".cursor/mcp.json", ".git/hooks/pre-commit"} {
+	for _, f := range []string{".intagent.json", ".mcp.json", ".codex/hooks.json", ".codex/config.toml", ".cursor/hooks.json", ".cursor/mcp.json", ".gemini/settings.json", ".git/hooks/pre-commit"} {
 		if _, err := os.Stat(filepath.Join(a, f)); err != nil {
 			t.Errorf("%s not written: %v", f, err)
 		}
@@ -411,7 +411,7 @@ func readJSON(t *testing.T, path string, v any) {
 func snapshotFiles(t *testing.T, root string) string {
 	t.Helper()
 	var b strings.Builder
-	for _, f := range []string{".intagent.json", ".claude/settings.json", ".mcp.json", ".codex/hooks.json", ".codex/config.toml", ".cursor/hooks.json", ".cursor/mcp.json"} {
+	for _, f := range []string{".intagent.json", ".claude/settings.json", ".mcp.json", ".codex/hooks.json", ".codex/config.toml", ".cursor/hooks.json", ".cursor/mcp.json", ".gemini/settings.json"} {
 		data, _ := os.ReadFile(filepath.Join(root, f))
 		b.WriteString(f + "\n" + string(data))
 	}

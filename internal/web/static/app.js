@@ -16,7 +16,7 @@
   const STORE_KEY = 'intagent.repo';
   const FILTER_KEY = 'intagent.feedFilter';
 
-  const AGENTS = { 'claude-code': 'Claude Code', codex: 'Codex', cursor: 'Cursor', copilot: 'Copilot CLI', watch: 'watch', cli: 'CLI' };
+  const AGENTS = { 'claude-code': 'Claude Code', codex: 'Codex', cursor: 'Cursor', copilot: 'Copilot CLI', gemini: 'Gemini CLI', watch: 'watch', cli: 'CLI' };
 
   const STATES = {
     working: { icon: 'dot', hint: 'A turn is in progress.' },
@@ -839,7 +839,7 @@
           ', and go away once their branch is merged and their sessions end.']),
       el('ol', { class: 'steps' },
         el('li', null, 'Save your token for this server: ', code('intagent login --url ' + origin)),
-        el('li', null, 'In the repository, run ', code('intagent init'), ' once to enrol it for Claude Code, Codex, Cursor and Copilot CLI.'),
+        el('li', null, 'In the repository, run ', code('intagent init'), ' once to enrol it for Claude Code, Codex, Cursor, Copilot CLI and Gemini CLI.'),
         el('li', null, 'Start Claude Code there. Its session appears on this board as soon as it starts.')),
       el('p', { class: 'muted' }, 'Run ', code('intagent doctor'), ' in the repository if nothing shows up.'));
   }

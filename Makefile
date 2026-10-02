@@ -1,7 +1,7 @@
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: build test race lint check e2e e2e-copilot install
+.PHONY: build test race lint check e2e e2e-copilot e2e-gemini install
 
 build:
 	go build -trimpath -ldflags "$(LDFLAGS)" -o intagent ./cmd/intagent
@@ -28,3 +28,7 @@ e2e:
 # e2e-copilot runs the real GitHub Copilot CLI against a scripted model: offline and free (needs npm).
 e2e-copilot:
 	./scripts/e2e-copilot.sh
+
+# e2e-gemini runs the real Gemini CLI against a scripted model: offline and free (needs npm).
+e2e-gemini:
+	./scripts/e2e-gemini.sh

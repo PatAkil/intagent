@@ -28,6 +28,9 @@ type Event struct {
 	Prompt string
 	// Footprint asks the caller to reconcile the worktree's git changes.
 	Footprint bool
+	// LateContext says the agent drops context given at this point, so the
+	// board should hold it for the next event.
+	LateContext bool
 }
 
 // Output is what the hook process writes and how it exits.
@@ -54,8 +57,10 @@ func For(name string) (Adapter, error) {
 		return Codex{}, nil
 	case "cursor":
 		return Cursor{}, nil
+	case "gemini":
+		return Gemini{}, nil
 	}
-	return nil, fmt.Errorf("unknown agent %q: want claude-code, codex, cursor or copilot", name)
+	return nil, fmt.Errorf("unknown agent %q: want claude-code, codex, cursor, copilot or gemini", name)
 }
 
 // Detect picks the adapter for one invocation. name is the agent named on the

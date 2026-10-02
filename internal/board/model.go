@@ -15,6 +15,7 @@ const (
 	AgentCodex      Agent = "codex"
 	AgentCursor     Agent = "cursor"
 	AgentCopilot    Agent = "copilot"
+	AgentGemini     Agent = "gemini"
 	AgentWatch      Agent = "watch"
 	AgentCLI        Agent = "cli"
 )
@@ -236,6 +237,9 @@ type Session struct {
 	Acked map[string]bool `json:"acked,omitempty"`
 	// Reported is the last derived state announced as an activity.
 	Reported State `json:"reported,omitempty"`
+	// Pending is context from before an edit, held for an agent that only
+	// reads context after a tool has run.
+	Pending string `json:"pending,omitempty"`
 }
 
 func sessionKey(member string, agent Agent, id string) string {
@@ -292,6 +296,10 @@ type HookEvent struct {
 	Paths     []PathRef  `json:"paths,omitempty"`
 	Prompt    string     `json:"prompt,omitempty"`
 	Footprint *Footprint `json:"footprint,omitempty"`
+	// LateContext says the agent ignores context given before a tool runs;
+	// the board then holds a pre_edit's warnings until the next event that
+	// can carry them, normally the edit's own post_edit.
+	LateContext bool `json:"late_context,omitempty"`
 }
 
 // HookResult is the server's answer to a hook event.

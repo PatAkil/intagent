@@ -144,6 +144,40 @@ What matters:
 - **Failure is closed.** A pre-tool hook that exits 1, or whose binary is missing, refuses the tool call. intagent's
   hook always exits 0, and the guard in the command covers teammates who have not installed it.
 
+## Gemini CLI
+
+Verified against Gemini CLI 0.62.0, driven offline against a scripted model (`make e2e-gemini`): the team context
+arrived at session start, a write to a teammate's reserved file was refused with intagent's reason, a heads-up about
+nearby work arrived with the result of the write that prompted it, and in a clone without intagent on the `PATH` a
+write went through untouched.
+
+**Installed by `intagent init`:** hooks and the MCP server in `.gemini/settings.json`. Gemini CLI does not read Claude
+Code's hooks, so its command names the adapter: `{ command -v intagent >/dev/null && intagent hook gemini || true; }`.
+
+| Event | Matcher | intagent event | Answer |
+|---|---|---|---|
+| `SessionStart` | (all) | `session_start` + git footprint | `hookSpecificOutput.additionalContext`, prepended to the prompt |
+| `BeforeAgent` | (all) | `prompt` | `hookSpecificOutput.additionalContext` |
+| `BeforeTool` | `^(write_file\|replace\|run_shell_command)$` | `pre_edit` (`tool_input.file_path`), or `tool_start` | `{"decision": "deny", "reason": ...}`, or nothing |
+| `AfterTool` | same | `post_edit`, or `tool_end` + git footprint after the shell | `hookSpecificOutput.additionalContext`, appended to the tool's output |
+| `AfterAgent` | (all) | `stop` + git footprint | nothing |
+| `SessionEnd` | (all) | `session_end` + git footprint | nothing |
+
+What matters:
+
+- **Its own refusal.** Gemini CLI ignores Claude's nested `permissionDecision`; it refuses on
+  `{"decision": "deny", "reason": R}`, and the model reads `Tool execution blocked: R`. There is no ask, so asking
+  becomes a refusal that tells the agent to ask its person.
+- **No context before a tool.** Gemini drops `additionalContext` from `BeforeTool`. intagent marks those events, and
+  the board holds a pre-edit's warnings for that session until its next event, normally the edit's own `AfterTool`.
+- **Exit codes.** Exit 2 or 3 blocks the tool; exit 1 only warns. intagent's hook exits 0.
+- **Timeouts are milliseconds** (intagent writes 10 000).
+- **Trust.** Gemini runs a project's hooks only in trusted folders; headless runs need `GEMINI_CLI_TRUST_WORKSPACE=true`
+  or `--skip-trust`. It also asks for review when a project hook's command changes.
+- **MCP environment.** Gemini withholds variables whose names look like secrets (`*TOKEN*`, `*KEY*`) from MCP
+  servers, so the MCP server reads the token from the user config written by `intagent login`, not from
+  `INTAGENT_TOKEN`.
+
 ## Any other agent
 
 - `intagent watch` keeps a worktree on the board, reporting its git footprint on an interval and printing news.

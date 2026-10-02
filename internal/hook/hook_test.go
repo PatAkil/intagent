@@ -289,6 +289,71 @@ func TestCopilotUsesClaudeHooksWithItsOwnArguments(t *testing.T) {
 	}
 }
 
+// gmPre is a Gemini CLI BeforeTool payload as Gemini CLI 0.62.0 sent it.
+const gmPre = `{"session_id":"52096186-aa","transcript_path":"/h/.gemini/tmp/proj/chats/session.jsonl","cwd":"/abs/proj",
+"hook_event_name":"BeforeTool","timestamp":"2026-10-02T22:46:40.788Z","tool_name":"write_file",
+"tool_input":{"file_path":"/abs/proj/claimed.go","content":"package claimed\n"}}`
+
+func TestGemini(t *testing.T) {
+	gm := Gemini{}
+	ev, err := gm.Parse([]byte(gmPre))
+	want := Event{Kind: board.KindPreEdit, Name: "BeforeTool", SessionID: "52096186-aa", Cwd: "/abs/proj", Tool: "write_file",
+		Paths: []string{"/abs/proj/claimed.go"}, LateContext: true}
+	if err != nil || !reflect.DeepEqual(ev, want) {
+		t.Fatalf("BeforeTool = %+v, %v", ev, err)
+	}
+	tests := []struct {
+		name, payload string
+		kind          board.Kind
+		paths         []string
+		footprint     bool
+	}{
+		{"replace after", `{"session_id":"g","cwd":"/p","hook_event_name":"AfterTool","tool_name":"replace","tool_input":{"file_path":"/p/a.go","old_string":"a","new_string":"b"}}`, board.KindPostEdit, []string{"/p/a.go"}, false},
+		{"shell before", `{"session_id":"g","cwd":"/p","hook_event_name":"BeforeTool","tool_name":"run_shell_command","tool_input":{"command":"make"}}`, board.KindToolStart, nil, false},
+		{"shell after", `{"session_id":"g","cwd":"/p","hook_event_name":"AfterTool","tool_name":"run_shell_command","tool_input":{"command":"make"}}`, board.KindToolEnd, nil, true},
+		{"read", `{"session_id":"g","cwd":"/p","hook_event_name":"BeforeTool","tool_name":"read_file","tool_input":{"file_path":"/p/a.go"}}`, board.KindToolStart, nil, false},
+		{"prompt", `{"session_id":"g","cwd":"/p","hook_event_name":"BeforeAgent","prompt":"fix it"}`, board.KindPrompt, nil, false},
+		{"turn ends", `{"session_id":"g","cwd":"/p","hook_event_name":"AfterAgent","prompt":"fix it","prompt_response":"done"}`, board.KindStop, nil, true},
+		{"start", `{"session_id":"g","cwd":"/p","hook_event_name":"SessionStart","source":"startup"}`, board.KindSessionStart, nil, true},
+		{"end", `{"session_id":"g","cwd":"/p","hook_event_name":"SessionEnd","reason":"exit"}`, board.KindSessionEnd, nil, true},
+	}
+	for _, tt := range tests {
+		ev, err := gm.Parse([]byte(tt.payload))
+		if err != nil || ev.Kind != tt.kind || !reflect.DeepEqual(ev.Paths, tt.paths) || ev.Footprint != tt.footprint || ev.LateContext {
+			t.Errorf("%s: %+v, %v", tt.name, ev, err)
+		}
+	}
+	if ev, _ := gm.Parse([]byte(`{"session_id":"g","hook_event_name":"PreCompress","trigger":"auto"}`)); !ev.Skip {
+		t.Error("PreCompress not skipped")
+	}
+
+	pre := Event{Name: "BeforeTool"}
+	var m map[string]string
+	out := gm.Render(pre, board.HookResult{Decision: board.Refuse, Reason: "held"})
+	if err := json.Unmarshal(out.Stdout, &m); err != nil || m["decision"] != "deny" || m["reason"] != "held" || len(m) != 2 {
+		t.Fatalf("refuse = %q", out.Stdout)
+	}
+	out = gm.Render(pre, board.HookResult{Decision: board.DecideAsk, Reason: "r"})
+	if !strings.Contains(string(out.Stdout), `"decision":"deny"`) || !strings.Contains(string(out.Stdout), "Ask your user") {
+		t.Fatalf("ask = %q", out.Stdout)
+	}
+	if out := gm.Render(pre, board.HookResult{Decision: board.Allow, Context: "late"}); len(out.Stdout) != 0 {
+		t.Fatalf("allow printed %q", out.Stdout)
+	}
+	for _, name := range []string{"SessionStart", "BeforeAgent", "AfterTool"} {
+		var o struct {
+			H hookSpecific `json:"hookSpecificOutput"`
+		}
+		out := gm.Render(Event{Name: name}, board.HookResult{Context: "news"})
+		if err := json.Unmarshal(out.Stdout, &o); err != nil || o.H.AdditionalContext != "news" || o.H.HookEventName != name {
+			t.Errorf("%s = %q", name, out.Stdout)
+		}
+	}
+	if out := gm.Render(Event{Name: "AfterAgent"}, board.HookResult{Context: "news"}); len(out.Stdout) != 0 {
+		t.Errorf("AfterAgent printed %q", out.Stdout)
+	}
+}
+
 func TestDetect(t *testing.T) {
 	env := func(kv ...string) func(string) string {
 		return func(k string) string {
@@ -321,18 +386,18 @@ func TestDetect(t *testing.T) {
 			t.Errorf("%s: %#v, %v", tt.name, got, err)
 		}
 	}
-	if _, err := Detect("gemini", []byte(ccPreEdit), env()); err == nil {
+	if _, err := Detect("aider", []byte(ccPreEdit), env()); err == nil {
 		t.Error("Detect accepted an unknown agent")
 	}
 }
 
 func TestFor(t *testing.T) {
-	for _, n := range []string{"", "claude-code", "claude", "codex", "cursor", "copilot"} {
+	for _, n := range []string{"", "claude-code", "claude", "codex", "cursor", "copilot", "gemini"} {
 		if _, err := For(n); err != nil {
 			t.Errorf("For(%q): %v", n, err)
 		}
 	}
-	if _, err := For("gemini"); err == nil {
+	if _, err := For("aider"); err == nil {
 		t.Error("For accepted an unknown agent")
 	}
 }

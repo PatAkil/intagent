@@ -1,10 +1,10 @@
 // Command fakemodel is a scripted stand-in for an OpenAI-compatible chat
-// completions API, so that agents which accept a custom model provider (GitHub
-// Copilot CLI among them) can be driven through intagent's hooks offline,
-// deterministically and for free.
+// completions API and for the Gemini API, so that agents which accept a custom
+// model endpoint (GitHub Copilot CLI, Gemini CLI) can be driven through
+// intagent's hooks offline, deterministically and for free.
 //
 // The script is a JSON file of turns, picked by the number of assistant
-// messages already in the conversation:
+// (or model) messages already in the conversation:
 //
 //	{"turns": [{"tool": ["edit"], "args": {"edit": {"path": "a.go"}}}, {"text": "done"}]}
 //
@@ -21,6 +21,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"time"
 )
@@ -31,6 +32,7 @@ type turn struct {
 	Text string                    `json:"text"`
 }
 
+// request is an OpenAI chat completions request.
 type request struct {
 	Model    string `json:"model"`
 	Stream   bool   `json:"stream"`
@@ -41,6 +43,18 @@ type request struct {
 		Function struct {
 			Name string `json:"name"`
 		} `json:"function"`
+	} `json:"tools"`
+}
+
+// geminiRequest is a Gemini generateContent request.
+type geminiRequest struct {
+	Contents []struct {
+		Role string `json:"role"`
+	} `json:"contents"`
+	Tools []struct {
+		FunctionDeclarations []struct {
+			Name string `json:"name"`
+		} `json:"functionDeclarations"`
 	} `json:"tools"`
 }
 
@@ -74,9 +88,44 @@ func main() {
 		if err := os.WriteFile(filepath.Join(*logDir, fmt.Sprintf("req-%03d.json", i)), raw, 0o600); err != nil {
 			log.Print(err)
 		}
+		if strings.HasSuffix(r.URL.Path, ":countTokens") {
+			writeJSON(w, map[string]int{"totalTokens": 10})
+			return
+		}
+		if strings.Contains(r.URL.Path, "enerateContent") {
+			var req geminiRequest
+			_ = json.Unmarshal(raw, &req)
+			turns, offered := 0, []string{}
+			for _, c := range req.Contents {
+				if c.Role == "model" {
+					turns++
+				}
+			}
+			for _, t := range req.Tools {
+				for _, f := range t.FunctionDeclarations {
+					offered = append(offered, f.Name)
+				}
+			}
+			t, err := pick(*script, turns, offered)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			answerGemini(w, t, strings.HasSuffix(r.URL.Path, ":streamGenerateContent"))
+			return
+		}
 		var req request
 		_ = json.Unmarshal(raw, &req)
-		t, err := pick(*script, req)
+		turns, offered := 0, []string{}
+		for _, m := range req.Messages {
+			if m.Role == "assistant" {
+				turns++
+			}
+		}
+		for _, tool := range req.Tools {
+			offered = append(offered, tool.Function.Name)
+		}
+		t, err := pick(*script, turns, offered)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -87,8 +136,9 @@ func main() {
 	log.Fatal(srv.ListenAndServe())
 }
 
-// pick chooses the turn for a request and resolves its tool call.
-func pick(script string, req request) (turn, error) {
+// pick chooses the turn after the given number of model turns and resolves
+// its tool call against the tools the agent offered.
+func pick(script string, turns int, offered []string) (turn, error) {
 	data, err := os.ReadFile(script)
 	if err != nil {
 		return turn{}, err
@@ -100,19 +150,9 @@ func pick(script string, req request) (turn, error) {
 	if len(s.Turns) == 0 {
 		return turn{}, fmt.Errorf("script %s has no turns", script)
 	}
-	n := 0
-	for _, m := range req.Messages {
-		if m.Role == "assistant" {
-			n++
-		}
-	}
-	t := s.Turns[min(n, len(s.Turns)-1)]
+	t := s.Turns[min(turns, len(s.Turns)-1)]
 	if len(t.Tool) == 0 {
 		return t, nil
-	}
-	var offered []string
-	for _, tool := range req.Tools {
-		offered = append(offered, tool.Function.Name)
 	}
 	for _, name := range t.Tool {
 		if slices.Contains(offered, name) {
@@ -159,6 +199,27 @@ func answer(w http.ResponseWriter, req request, t turn, id string) {
 	event(map[string]any{"index": 0, "delta": msg, "finish_reason": nil}, nil)
 	event(map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": finish}, map[string]any{"usage": usage})
 	fmt.Fprint(w, "data: [DONE]\n\n")
+}
+
+// answerGemini answers a generateContent request, streamed as server-sent
+// events when the agent asked for streamGenerateContent.
+func answerGemini(w http.ResponseWriter, t turn, stream bool) {
+	part := map[string]any{"text": t.Text}
+	if len(t.Tool) > 0 {
+		part = map[string]any{"functionCall": map[string]any{"name": t.Tool[0], "args": t.Args[t.Tool[0]]}}
+	}
+	resp := map[string]any{
+		"candidates":    []any{map[string]any{"content": map[string]any{"role": "model", "parts": []any{part}}, "finishReason": "STOP", "index": 0}},
+		"usageMetadata": map[string]int{"promptTokenCount": 10, "candidatesTokenCount": 5, "totalTokenCount": 15},
+		"modelVersion":  "fake",
+	}
+	if !stream {
+		writeJSON(w, resp)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	b, _ := json.Marshal(resp)
+	fmt.Fprintf(w, "data: %s\r\n\r\n", b)
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

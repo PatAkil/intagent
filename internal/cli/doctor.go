@@ -75,6 +75,7 @@ func (a *App) doctor(ctx context.Context, args []string) error {
 	check(".codex/hooks.json", "intagent hook codex", "Codex hooks")
 	check(".codex/config.toml", "[mcp_servers.intagent]", "Codex MCP server")
 	check(".cursor/hooks.json", hookCommand, "Cursor hooks")
+	check(".gemini/settings.json", geminiCommand, "Gemini CLI hooks")
 	if dir != root {
 		info("Claude Code reads project hooks only from the directory it starts in; start it at %s, or run 'intagent init --user'", root)
 	}

@@ -259,6 +259,37 @@ func TestNearbyWarnsOncePerArea(t *testing.T) {
 	}
 }
 
+// Gemini CLI ignores context given before a tool runs; the warning waits for
+// the edit's own after-tool hook instead.
+func TestLateContextArrivesAfterTheEdit(t *testing.T) {
+	h := newHarness(t)
+	h.hook(KindPrompt, "alice", "a1")
+	h.edit("alice", "a1", "services/payments/retry.go")
+
+	late := func(kind Kind, path string) HookResult {
+		t.Helper()
+		res, err := h.b.Hook(h.now, HookEvent{Kind: kind, Member: "bob", Agent: AgentGemini, SessionID: "g1", Where: whereOf("bob"),
+			Tool: "write_file", Paths: refs(path), LateContext: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+	if res := late(KindPreEdit, "services/payments/client.go"); res.Decision != Allow || res.Context != "" {
+		t.Fatalf("before the edit: %s %q", res.Decision, res.Context)
+	}
+	res := late(KindPostEdit, "services/payments/client.go")
+	mustContain(t, res.Context, "Heads-up", "alice's agent", "same area services/payments")
+	if res := late(KindPostEdit, "services/payments/client.go"); res.Context != "" {
+		t.Fatalf("the warning was delivered twice: %q", res.Context)
+	}
+	// Refusals are answers, not context: they are never held back.
+	h.declare("alice", Exclusive, "Retry rework", "services/payments/**")
+	if res := late(KindPreEdit, "services/payments/retry.go"); res.Decision != Refuse || res.Reason == "" {
+		t.Fatalf("refusal: %s %q", res.Decision, res.Reason)
+	}
+}
+
 func TestPolicyActions(t *testing.T) {
 	tests := []struct {
 		action  Action

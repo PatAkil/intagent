@@ -7,9 +7,9 @@ agent declare what it is about to do.
 
 ## The problem it solves
 
-Several people each run several agents (Claude Code, Codex, Cursor, Copilot CLI) in one monorepo. Each vendor's
-multi-agent features stop at one person's account, so agents belonging to different people only meet at the pull
-request.
+Several people each run several agents (Claude Code, Codex, Cursor, Copilot CLI, Gemini CLI) in one monorepo.
+Each vendor's multi-agent features stop at one person's account, so agents belonging to different people only meet
+at the pull request.
 By then two agents may have rewritten the same file, renamed the same API in different ways, or done the same task
 twice. intagent moves that meeting point to the moment an agent is about to edit a file.
 
@@ -35,7 +35,7 @@ twice. intagent moves that meeting point to the moment an agent is about to edit
 |---|---|
 | **Team server** | `intagent serve`. One per team. Holds the board in memory, persists it to a snapshot file. |
 | **Member** | A person. Identified by their bearer token. |
-| **Session** | One agent run: a Claude Code session, a Codex session, a Cursor conversation, a Copilot CLI session, or an `intagent watch` loop. Has a liveness state. |
+| **Session** | One agent run: a Claude Code session, a Codex session, a Cursor conversation, a Copilot CLI or Gemini CLI session, or an `intagent watch` loop. Has a liveness state. |
 | **Claim** | The unit of ownership: one per member, host and worktree. Holds intents, footprint, a task summary and an inbox. Sessions in the same worktree share a claim, because they write the same files. |
 | **Intent** | A declared path or glob with a mode (`shared` or `exclusive`) and a summary. "I am about to change `services/payments/**`." |
 | **Footprint** | The files a claim has actually changed relative to the default branch: added by `PostToolUse`, reconciled against git at session start, stop and end. |
@@ -130,8 +130,8 @@ internal/glob          ** glob matching for intents and areas
 internal/server        HTTP API, auth, SSE hub, sweeper, snapshot persistence, webhooks
 internal/client        HTTP client and configuration (env, user config, repo config)
 internal/gitx          repo identity, worktree root, branch, footprint, areas
-internal/hook          adapters (Claude Code, Copilot CLI, Codex, Cursor): vendor hook JSON in, normalised
-                       event out, vendor response back; the adapter is detected from the payload
+internal/hook          adapters (Claude Code, Copilot CLI, Codex, Cursor, Gemini CLI): vendor hook JSON in,
+                       normalised event out, vendor response back; detected from the payload
 internal/mcp           a minimal stdio MCP server and intagent's tools
 internal/web           the dashboard, embedded
 ```

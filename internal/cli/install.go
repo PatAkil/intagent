@@ -58,6 +58,20 @@ const hookCommand = "{ command -v intagent >/dev/null && intagent hook || true; 
 
 const codexCommand = "intagent hook codex"
 
+// geminiCommand is guarded like hookCommand. Gemini CLI does not read Claude
+// Code's hooks, so it names its adapter.
+const geminiCommand = "{ command -v intagent >/dev/null && intagent hook gemini || true; }"
+
+// geminiWiring times out in seconds here; Gemini CLI counts milliseconds.
+var geminiWiring = []hookWire{
+	{"SessionStart", "", 10},
+	{"BeforeAgent", "", 10},
+	{"BeforeTool", "^(write_file|replace|run_shell_command)$", 10},
+	{"AfterTool", "^(write_file|replace|run_shell_command)$", 10},
+	{"AfterAgent", "", 10},
+	{"SessionEnd", "", 5},
+}
+
 // cursorWiring uses only events Cursor accepts: an unknown event name makes
 // Cursor drop the whole file.
 var cursorWiring = []hookWire{
@@ -437,6 +451,31 @@ func trustCodex(codexConfig string, roots []string, hooksFiles []string) ([]stri
 		return nil, err
 	}
 	return notes, f.Close()
+}
+
+// installGemini writes Gemini CLI's hooks and MCP server into
+// .gemini/settings.json.
+func installGemini(root string) (bool, error) {
+	p := filepath.Join(root, ".gemini", "settings.json")
+	m, err := readJSONObject(p)
+	if err != nil {
+		return false, err
+	}
+	hooks := asMap(m["hooks"])
+	changed := mergeHooks(hooks, geminiWiring, func(w hookWire) map[string]any {
+		return map[string]any{"type": "command", "command": geminiCommand, "name": "intagent", "timeout": w.timeout * 1000}
+	})
+	m["hooks"] = hooks
+	servers := asMap(m["mcpServers"])
+	if _, ok := servers["intagent"]; !ok {
+		servers["intagent"] = map[string]any{"command": "intagent", "args": []any{"mcp"}}
+		m["mcpServers"] = servers
+		changed = true
+	}
+	if !changed {
+		return false, nil
+	}
+	return true, writeJSONObject(p, m)
 }
 
 // installCursor writes .cursor/hooks.json and .cursor/mcp.json.

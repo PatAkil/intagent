@@ -31,7 +31,7 @@ func (a *App) hook(ctx context.Context, args []string) (err error) {
 			err = nil
 		}
 	}()
-	fs := a.flags("hook", "hook [claude-code|codex|cursor|copilot] < event.json")
+	fs := a.flags("hook", "hook [claude-code|codex|cursor|copilot|gemini] < event.json")
 	agentFlag := fs.String("agent", "", "the agent (alternative to the positional argument)")
 	if err := fs.Parse(args); err != nil {
 		return errUsage
@@ -92,6 +92,7 @@ func (a *App) handleHook(ctx context.Context, ad hook.Adapter, ev hook.Event) (h
 	}
 	hev := board.HookEvent{
 		Kind: ev.Kind, Agent: ad.Agent(), SessionID: ev.SessionID, Where: ws.where, Tool: ev.Tool, Paths: refs,
+		LateContext: ev.LateContext,
 	}
 	if ws.settings.SharePrompts {
 		hev.Prompt = ev.Prompt
