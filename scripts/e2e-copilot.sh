@@ -6,7 +6,8 @@
 # 1. Bob's Copilot is told about the team when its session starts.
 # 2. Bob's Copilot edits a file Alice reserved, with a relative path as models
 #    write them: the edit is refused and the model reads intagent's reason.
-# 3. Carol has not installed intagent: her Copilot edits as if intagent were
+# 3. With a codex model Copilot edits only through apply_patch: refused too.
+# 4. Carol has not installed intagent: her Copilot edits as if intagent were
 #    not there, although the hooks are committed.
 #
 # Usage: scripts/e2e-copilot.sh   (COPILOT=/path/to/copilot to skip the install)
@@ -58,11 +59,11 @@ git clone -q origin.git bob 2>/dev/null
 git clone -q origin.git carol 2>/dev/null
 (cd bob && as bob intagent login --url "$URL" --token "$BOB" >/dev/null)
 
-# copilot <member> <PATH> <prompt>: one headless Copilot run in that member's clone.
+# copilot <member> <PATH> <prompt> [model]: one headless Copilot run in that member's clone.
 copilot() {
   rm -f "$WORK"/model/req-*.json
   (cd "$WORK/$1" && env PATH="$2" HOME="$WORK/home" COPILOT_HOME="$WORK/home" COPILOT_OFFLINE=true \
-    COPILOT_PROVIDER_BASE_URL="http://127.0.0.1:$LLM/v1" COPILOT_MODEL=fake-model COPILOT_ALLOW_ALL=true \
+    COPILOT_PROVIDER_BASE_URL="http://127.0.0.1:$LLM/v1" COPILOT_MODEL="${4:-fake-model}" COPILOT_ALLOW_ALL=true \
     INTAGENT_CONFIG="$WORK/$1.json" INTAGENT_HOST="$1-laptop" \
     timeout 120 "$COPILOT" -p "$3" >"$WORK/$1.out" 2>"$WORK/$1.err") || fail "copilot exited $? for $1"
 }
@@ -78,6 +79,15 @@ told "Denied by preToolUse hook: [intagent] services/payments/retry.go is part o
   || fail "bob's model did not read intagent's refusal"
 grep -q "MaxRetries = 3" bob/services/payments/retry.go || fail "the reserved file was changed"
 (cd bob && as bob intagent board) | grep -q "1 collision caught before the edit" || fail "the board did not count the refusal"
+
+step "bob's Copilot, on a codex model, patches the reserved file with apply_patch"
+jq -n --arg p $'*** Begin Patch\n*** Update File: services/payments/retry.go\n@@\n-const MaxRetries = 3\n+const MaxRetries = 10\n*** End Patch\n' \
+  '{turns: [{tool: ["apply_patch"], input: {apply_patch: $p}}, {text: "done"}]}' >"$WORK/script.json"
+copilot bob "$WORK/bin:$WITHOUT" "Raise MaxRetries to 10" gpt-5-codex
+told '"apply_patch"' || fail "Copilot did not offer apply_patch to a codex model"
+told "Denied by preToolUse hook: [intagent] services/payments/retry.go is part of a teammate's work" \
+  || fail "the apply_patch edit was not refused"
+grep -q "MaxRetries = 3" bob/services/payments/retry.go || fail "apply_patch changed the reserved file"
 
 step "carol, without intagent, edits a file"
 cat >"$WORK/script.json" <<'EOF'

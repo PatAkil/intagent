@@ -122,9 +122,13 @@ func (f *fake) chat(w http.ResponseWriter, raw []byte, id string) error {
 			Role string `json:"role"`
 		} `json:"messages"`
 		Tools []struct {
+			Type     string `json:"type"`
 			Function struct {
 				Name string `json:"name"`
 			} `json:"function"`
+			Custom struct {
+				Name string `json:"name"`
+			} `json:"custom"`
 		} `json:"tools"`
 	}
 	if err := json.Unmarshal(raw, &req); err != nil {
@@ -137,7 +141,11 @@ func (f *fake) chat(w http.ResponseWriter, raw []byte, id string) error {
 		}
 	}
 	for _, t := range req.Tools {
-		offered[t.Function.Name] = "function"
+		if t.Type == "custom" {
+			offered[t.Custom.Name] = "custom"
+		} else {
+			offered[t.Function.Name] = "function"
+		}
 	}
 	c, text, err := f.pick(turns, offered)
 	if err != nil {
@@ -145,7 +153,13 @@ func (f *fake) chat(w http.ResponseWriter, raw []byte, id string) error {
 	}
 	msg := map[string]any{"role": "assistant", "content": text}
 	finish := "stop"
-	if c.name != "" {
+	switch {
+	case c.kind == "custom":
+		msg["content"] = nil
+		msg["tool_calls"] = []any{map[string]any{"index": 0, "id": id, "type": "custom",
+			"custom": map[string]string{"name": c.name, "input": c.input}}}
+		finish = "tool_calls"
+	case c.name != "":
 		args, _ := json.Marshal(c.args)
 		msg["content"] = nil
 		msg["tool_calls"] = []any{map[string]any{"index": 0, "id": id, "type": "function",

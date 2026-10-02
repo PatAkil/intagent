@@ -354,6 +354,28 @@ func TestGemini(t *testing.T) {
 	}
 }
 
+// With GPT and codex models Copilot edits only through apply_patch, which
+// reaches the Claude-style hook as tool "Edit" with the patch as a bare string.
+func TestCopilotApplyPatch(t *testing.T) {
+	cp := ClaudeCode{Copilot: true}
+	payload := `{"hook_event_name":"PreToolUse","session_id":"p1","cwd":"/w","tool_name":"Edit",
+"tool_input":"*** Begin Patch\n*** Update File: services/payments/retry.go\n@@\n-package payments\n+package payments // patched\n` +
+		`*** Add File: services/payments/jitter.go\n+package payments\n*** End Patch\n"}`
+	ev, err := cp.Parse([]byte(payload))
+	want := []string{"services/payments/retry.go", "services/payments/jitter.go"}
+	if err != nil || ev.Kind != board.KindPreEdit || !reflect.DeepEqual(ev.Paths, want) {
+		t.Fatalf("parse = %+v, %v", ev, err)
+	}
+	ev, err = cp.Parse([]byte(strings.Replace(payload, `"PreToolUse"`, `"PostToolUse"`, 1)))
+	if err != nil || ev.Kind != board.KindPostEdit || !reflect.DeepEqual(ev.Paths, want) {
+		t.Fatalf("post = %+v, %v", ev, err)
+	}
+	ev, err = cp.Parse([]byte(strings.Replace(payload, `"tool_name":"Edit"`, `"tool_name":"apply_patch"`, 1)))
+	if err != nil || ev.Kind != board.KindPreEdit || len(ev.Paths) != 2 {
+		t.Fatalf("as apply_patch = %+v, %v", ev, err)
+	}
+}
+
 func TestDetect(t *testing.T) {
 	env := func(kv ...string) func(string) string {
 		return func(k string) string {

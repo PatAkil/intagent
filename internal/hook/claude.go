@@ -40,6 +40,7 @@ var claudeEditPath = map[string]string{
 	"Write":        "file_path",
 	"MultiEdit":    "file_path",
 	"NotebookEdit": "notebook_path",
+	"apply_patch":  "",
 }
 
 // Parse reads a Claude Code hook payload.
@@ -63,18 +64,14 @@ func (c ClaudeCode) Parse(stdin []byte) (Event, error) {
 		ev.Kind = board.KindToolStart
 		if isEdit {
 			ev.Kind = board.KindPreEdit
-			if p := editPath(in.ToolInput, field); p != "" {
-				ev.Paths = []string{p}
-			}
+			ev.Paths = editPaths(in.ToolInput, field)
 		}
 	case "PostToolUse":
 		ev.Kind = board.KindToolEnd
 		switch {
 		case isEdit:
 			ev.Kind = board.KindPostEdit
-			if p := editPath(in.ToolInput, field); p != "" {
-				ev.Paths = []string{p}
-			}
+			ev.Paths = editPaths(in.ToolInput, field)
 		case in.ToolName == "Bash" || in.ToolName == "PowerShell":
 			// Shell commands can write files without saying which.
 			ev.Footprint = true
@@ -94,12 +91,20 @@ func (c ClaudeCode) Parse(stdin []byte) (Event, error) {
 	return ev, nil
 }
 
-// editPath reads the written path, under Claude Code's or Copilot's field name.
-func editPath(input json.RawMessage, field string) string {
-	if p := stringField(input, field); p != "" {
-		return p
+// editPaths reads the paths an edit writes: the path field under Claude
+// Code's or Copilot's name or, when Copilot passes its freeform apply_patch
+// input as a bare string (under tool "Edit"), every file the patch touches.
+func editPaths(input json.RawMessage, field string) []string {
+	for _, f := range []string{field, "path"} {
+		if p := stringField(input, f); f != "" && p != "" {
+			return []string{p}
+		}
 	}
-	return stringField(input, "path")
+	var patch string
+	if json.Unmarshal(input, &patch) == nil {
+		return patchPaths("apply_patch", patch)
+	}
+	return nil
 }
 
 // Render answers in the JSON Claude Code expects; anything else would be ignored.
