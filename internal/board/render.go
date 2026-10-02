@@ -18,8 +18,11 @@ const (
 )
 
 func describeConflict(now time.Time, cf Conflict) string {
+	return "- " + conflictLine(now, cf)
+}
+
+func conflictLine(now time.Time, cf Conflict) string {
 	var b strings.Builder
-	b.WriteString("- ")
 	if cf.SameClaim {
 		b.WriteString("Another session of yours")
 	} else {
@@ -33,7 +36,7 @@ func describeConflict(now time.Time, cf Conflict) string {
 		state = "not running"
 	}
 	if !cf.Since.IsZero() {
-		state += ", " + ago(now, cf.Since) + " ago"
+		state += ", " + since(now, cf.Since)
 	}
 	fmt.Fprintf(&b, " (%s) %s", state, cf.Why)
 	if cf.Task != "" && cf.Pattern == "" && !cf.SameClaim {
@@ -98,7 +101,7 @@ func (b *Board) renderInbox(now time.Time, items []InboxItem) string {
 	}
 	lines := []string{fmt.Sprintf("%s News from your team %s:", prefix, dataNotice)}
 	for _, it := range items {
-		lines = append(lines, fmt.Sprintf("- %s ago: %s", ago(now, it.At), it.Text))
+		lines = append(lines, fmt.Sprintf("- %s: %s", since(now, it.At), it.Text))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -149,7 +152,7 @@ func (b *Board) summarizeClaim(now time.Time, o *Claim, active bool) string {
 		sb.WriteString(" on " + o.Branch)
 	}
 	if !active {
-		sb.WriteString(", not running, last seen " + ago(now, o.UpdatedAt) + " ago")
+		sb.WriteString(", not running, last seen " + since(now, o.UpdatedAt))
 	}
 	if o.Task != "" {
 		sb.WriteString(": " + quote(o.Task))
@@ -158,12 +161,7 @@ func (b *Board) summarizeClaim(now time.Time, o *Claim, active bool) string {
 		fmt.Fprintf(&sb, "; %s intent %s", in.Mode, in.Pattern)
 	}
 	if n := len(o.Footprint); n > 0 {
-		files := sortedFiles(o)
-		fmt.Fprintf(&sb, "; changed %d file", n)
-		if n != 1 {
-			sb.WriteString("s")
-		}
-		sb.WriteString(": " + listPaths(files, 4))
+		fmt.Fprintf(&sb, "; changed %s: %s", plural(n, "file"), listPaths(sortedFiles(o), 4))
 	}
 	return sb.String()
 }
@@ -266,7 +264,7 @@ func RenderConflicts(now time.Time, cs []Conflict) string {
 	for _, p := range order {
 		lines = append(lines, p+":")
 		for _, cf := range byPath[p] {
-			lines = append(lines, "  "+cf.Severity.String()+" "+describeConflict(now, cf))
+			lines = append(lines, "  ["+cf.Severity.String()+"] "+conflictLine(now, cf))
 		}
 	}
 	return strings.Join(lines, "\n")
@@ -276,7 +274,7 @@ func renderView(v View) string {
 	if len(v.Claims) == 0 {
 		return fmt.Sprintf("No agents have work in %s right now.", v.Repo)
 	}
-	lines := []string{fmt.Sprintf("%s: %d claims, %d live sessions %s", v.Repo, len(v.Claims), v.Sessions, dataNotice)}
+	lines := []string{fmt.Sprintf("%s: %s, %s %s", v.Repo, plural(len(v.Claims), "claim"), plural(v.Sessions, "live session"), dataNotice)}
 	for _, c := range v.Claims {
 		state := "active"
 		if !c.Active {
@@ -286,7 +284,7 @@ func renderView(v View) string {
 		if c.Branch != "" {
 			head += " on " + c.Branch
 		}
-		head += fmt.Sprintf(" (%s, updated %s ago)", state, ago(v.At, c.UpdatedAt))
+		head += fmt.Sprintf(" (%s, updated %s)", state, since(v.At, c.UpdatedAt))
 		if c.Task != "" {
 			head += ": " + quote(c.Task)
 		}
@@ -300,7 +298,7 @@ func renderView(v View) string {
 			if s.Tool != "" {
 				d += fmt.Sprintf(" in %s for %s", s.Tool, ago(v.At, s.ToolSince))
 			} else {
-				d += ", last seen " + ago(v.At, s.LastSeen) + " ago"
+				d += ", last seen " + since(v.At, s.LastSeen)
 			}
 			ss = append(ss, d)
 		}
@@ -319,7 +317,7 @@ func renderView(v View) string {
 			for _, f := range c.Files {
 				files = append(files, f.Path)
 			}
-			lines = append(lines, fmt.Sprintf("    changed %d files: %s", n, listPaths(files, 6)))
+			lines = append(lines, fmt.Sprintf("    changed %s: %s", plural(n, "file"), listPaths(files, 6)))
 		}
 	}
 	return strings.Join(lines, "\n")

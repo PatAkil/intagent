@@ -585,7 +585,7 @@ func TestCheckIsReadOnly(t *testing.T) {
 	if h.b.Version() != v || len(h.b.View(h.now, repo).Claims) != 1 {
 		t.Fatalf("Check changed the board")
 	}
-	mustContain(t, RenderConflicts(h.now, cs), "a/b.go:", "overlap", "alice's agent", "a/c.go:", "nearby")
+	mustContain(t, RenderConflicts(h.now, cs), "a/b.go:", "[overlap] alice's agent", "a/c.go:", "[nearby]")
 	// Bob was not acknowledged by the check: his first real edit is still bumped.
 	if res := h.hook(KindPreEdit, "bob", "b1", "a/b.go"); res.Decision != Refuse {
 		t.Fatalf("decision %s, want a bump", res.Decision)
@@ -634,7 +634,7 @@ func TestViewAndStats(t *testing.T) {
 	if v.Stats.Checks != 3 || v.Stats.Bumped != 1 || v.Stats.Overlaps != 2 || v.Stats.Alerts != 1 {
 		t.Fatalf("stats = %+v", v.Stats)
 	}
-	mustContain(t, v.Text(), "2 claims, 1 live sessions", "bob on feat/bob (active", "alice on feat/alice (not running", "changed 1 files: a/b.go")
+	mustContain(t, v.Text(), "2 claims, 1 live session ", "bob on feat/bob (active", "alice on feat/alice (not running", "changed 1 file: a/b.go")
 	if rs := h.b.Repos(h.now); len(rs) != 1 || rs[0].Claims != 2 || rs[0].ActiveClaims != 1 || rs[0].LiveSessions != 1 {
 		t.Fatalf("repos = %+v", rs)
 	}

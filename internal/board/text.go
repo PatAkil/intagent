@@ -59,6 +59,22 @@ func ago(now, t time.Time) string {
 	return fmt.Sprintf("%dd", int(d.Hours()/24))
 }
 
+// since says how long ago t was, as "just now" or "12m ago".
+func since(now, t time.Time) string {
+	if !t.IsZero() && now.Sub(t) < 10*time.Second {
+		return "just now"
+	}
+	return ago(now, t) + " ago"
+}
+
+// plural adds an s to a noun unless n is 1.
+func plural(n int, noun string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, noun)
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
+}
+
 func who(c *Claim) string {
 	if c.Member == "" {
 		return "a teammate"
