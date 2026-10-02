@@ -200,8 +200,9 @@ each other, at the moment it matters.
 ## Development
 
 ```sh
-make check   # golangci-lint and go test -race
-make e2e     # two real Claude Code agents against a local server (needs an authenticated claude CLI)
+make check         # golangci-lint and go test -race
+make e2e           # two real Claude Code agents against a local server (needs an authenticated claude CLI)
+make e2e-copilot   # the real GitHub Copilot CLI against a scripted model: offline, free (needs npm)
 ```
 
 The design is in [docs/design.md](docs/design.md).
