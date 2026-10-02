@@ -2,6 +2,8 @@ package cli
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"log"
@@ -86,7 +88,7 @@ func (a *App) handleHook(ctx context.Context, ad hook.Adapter, ev hook.Event) (h
 	}
 	ctx, cancel := context.WithTimeout(ctx, ws.settings.Timeout+2*time.Second)
 	defer cancel()
-	if ev.Footprint {
+	if ev.Footprint && (ev.Kind != board.KindToolEnd || footprintDue(ws.wt.Root, ev.SessionID)) {
 		fp, err := ws.footprint(ctx)
 		if err != nil {
 			hookLog("footprint: %v", err)
@@ -104,6 +106,28 @@ func (a *App) handleHook(ctx context.Context, ad hook.Adapter, ev hook.Event) (h
 		return hook.Output{}, err
 	}
 	return ad.Render(ev, res), nil
+}
+
+// footprintEvery limits how often a shell command triggers a footprint scan,
+// which on a very large monorepo can take a noticeable fraction of a second.
+const footprintEvery = 15 * time.Second
+
+// footprintDue reports whether a session's worktree is due for a scan after a
+// shell command, and records that one is happening now.
+func footprintDue(root, session string) bool {
+	dir, err := os.UserCacheDir()
+	if err != nil {
+		return true
+	}
+	sum := sha256.Sum256([]byte(root + "\x00" + session))
+	stamp := filepath.Join(dir, "intagent", "scan-"+hex.EncodeToString(sum[:8]))
+	if fi, err := os.Stat(stamp); err == nil && time.Since(fi.ModTime()) < footprintEvery {
+		return false
+	}
+	if err := os.MkdirAll(filepath.Dir(stamp), 0o700); err == nil {
+		_ = os.WriteFile(stamp, nil, 0o600)
+	}
+	return true
 }
 
 // hookLog appends to intagent's hook log, since a hook's stdout belongs to the

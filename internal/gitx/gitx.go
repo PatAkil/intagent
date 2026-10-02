@@ -166,47 +166,41 @@ func (w *Worktree) DefaultBranch(ctx context.Context) (string, error) {
 // Changes lists the files that differ from the default branch: committed
 // changes since the merge base, uncommitted changes, and untracked files. It
 // keeps at most limit paths and reports whether it dropped any.
+//
+// It scans the working tree once, with git status, so git's untracked cache
+// and fsmonitor apply; committed changes come from a tree-to-tree diff, which
+// does not touch the working tree at all.
 func (w *Worktree) Changes(ctx context.Context, limit int) ([]string, bool, error) {
 	seen := map[string]bool{}
 	var files []string
-	add := func(out []byte) {
-		for _, p := range bytes.Split(out, []byte{0}) {
-			if s := string(p); s != "" && !seen[s] {
-				seen[s] = true
-				files = append(files, s)
+	add := func(p string) {
+		if p != "" && !seen[p] {
+			seen[p] = true
+			files = append(files, p)
+		}
+	}
+	if def, err := w.DefaultBranch(ctx); err == nil {
+		if out, err := run(ctx, w.Root, "merge-base", "HEAD", def); err == nil {
+			base := strings.TrimSpace(string(out))
+			diff, err := run(ctx, w.Root, "diff", "--name-only", "--no-renames", "-z", base, "HEAD", "--")
+			if err != nil {
+				return nil, false, err
+			}
+			for _, p := range bytes.Split(diff, []byte{0}) {
+				add(string(p))
 			}
 		}
 	}
-	base := ""
-	if def, err := w.DefaultBranch(ctx); err == nil {
-		if out, err := run(ctx, w.Root, "merge-base", "HEAD", def); err == nil {
-			base = strings.TrimSpace(string(out))
-		}
-	}
-	if base == "" {
-		if _, err := run(ctx, w.Root, "rev-parse", "--verify", "-q", "HEAD"); err == nil {
-			base = "HEAD"
-		}
-	}
-	if base != "" {
-		out, err := run(ctx, w.Root, "diff", "--name-only", "--no-renames", "-z", base, "--")
-		if err != nil {
-			return nil, false, err
-		}
-		add(out)
-	} else {
-		// No commits yet: everything staged counts.
-		out, err := run(ctx, w.Root, "diff", "--cached", "--name-only", "-z")
-		if err != nil {
-			return nil, false, err
-		}
-		add(out)
-	}
-	out, err := run(ctx, w.Root, "ls-files", "--others", "--exclude-standard", "-z")
+	status, err := run(ctx, w.Root, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames")
 	if err != nil {
 		return nil, false, err
 	}
-	add(out)
+	for _, entry := range bytes.Split(status, []byte{0}) {
+		// Each entry is "XY path"; with --no-renames there are no second paths.
+		if len(entry) > 3 {
+			add(string(entry[3:]))
+		}
+	}
 	sort.Strings(files)
 	if limit > 0 && len(files) > limit {
 		return files[:limit], true, nil
