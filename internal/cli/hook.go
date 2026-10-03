@@ -108,13 +108,13 @@ func (a *App) handleHook(ctx context.Context, ad hook.Adapter, ev hook.Event) (h
 	if !ws.settings.Enrolled || ws.settings.Disabled {
 		return hook.Output{}, nil // not a team repository, or switched off on purpose
 	}
-	login := "intagent login --url " + ws.settings.URL
-	if ws.settings.Token == "" {
-		return offBoard(ad, ev, ws, "this computer is not signed in to "+ws.settings.URL, "run: "+login), nil
-	}
 	refs := ws.refs(cwd, ev.Paths)
 	if (ev.Kind == board.KindPreEdit || ev.Kind == board.KindPostEdit) && len(refs) == 0 {
 		return hook.Output{}, nil // writes outside the repository
+	}
+	login := "intagent login --url " + ws.settings.URL
+	if ws.settings.Token == "" {
+		return offBoard(ad, ev, ws, "this computer is not signed in to "+ws.settings.URL, "run: "+login), nil
 	}
 	hev := board.HookEvent{
 		Kind: ev.Kind, Agent: ad.Agent(), SessionID: ev.SessionID, Where: ws.where, Tool: ev.Tool, ToolUseID: ev.ToolUseID, Paths: refs,

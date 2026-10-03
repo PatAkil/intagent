@@ -342,12 +342,16 @@ func renderView(v View) string {
 			}
 			lines = append(lines, l)
 		}
-		if n := len(c.Files); n > 0 {
-			files := make([]string, 0, n)
-			for _, f := range c.Files {
+		if n := max(c.FileCount, len(c.Files)); n > 0 {
+			files := make([]string, 0, min(len(c.Files), 6))
+			for _, f := range c.Files[:min(len(c.Files), 6)] {
 				files = append(files, f.Path)
 			}
-			lines = append(lines, fmt.Sprintf("    changed %s: %s", plural(n, "file"), listPaths(files, 6)))
+			list := strings.Join(files, ", ")
+			if more := n - len(files); more > 0 {
+				list += fmt.Sprintf(" and %d more", more)
+			}
+			lines = append(lines, fmt.Sprintf("    changed %s: %s", plural(n, "file"), list))
 		}
 	}
 	return strings.Join(lines, "\n")

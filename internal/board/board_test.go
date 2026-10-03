@@ -1176,6 +1176,25 @@ func TestViewBoundsFilesPerClaim(t *testing.T) {
 	if len(cv.Files) != maxViewFiles || cv.FileCount != maxViewFiles+20 || !cv.Truncated {
 		t.Fatalf("files %d, count %d, truncated %v", len(cv.Files), cv.FileCount, cv.Truncated)
 	}
+	mustContain(t, renderView(h.b.View(h.now, repo)), fmt.Sprintf("changed %d files", maxViewFiles+20),
+		fmt.Sprintf("and %d more", maxViewFiles+20-6))
+
+	// Past the cap, a file a teammate also changed, or reserved, is still listed:
+	// the dashboard finds hot spots in the files a view lists.
+	h.hook(KindPrompt, "bob", "b1")
+	h.hook(KindPostEdit, "bob", "b1", "gen/f0510.go")
+	h.declare("bob", Shared, "regenerate", "gen/f0515.go")
+	listed := map[string]bool{}
+	for _, c := range h.b.View(h.now, repo).Claims {
+		if c.Member == "alice" {
+			for _, f := range c.Files {
+				listed[f.Path] = true
+			}
+		}
+	}
+	if len(listed) != maxViewFiles+2 || !listed["gen/f0510.go"] || !listed["gen/f0515.go"] {
+		t.Fatalf("alice's listed files: %d, contested ones listed: %v %v", len(listed), listed["gen/f0510.go"], listed["gen/f0515.go"])
+	}
 }
 
 func TestZeroConfigTakesDefaults(t *testing.T) {
@@ -1198,5 +1217,125 @@ func TestZeroConfigTakesDefaults(t *testing.T) {
 	v := h.b.View(h.now, repo)
 	if len(v.Claims) != 1 || len(v.Claims[0].Files) != 1 || len(v.Recent) == 0 || v.Policy != DefaultPolicy() {
 		t.Fatalf("view of a zero-config board = %+v", v)
+	}
+}
+
+// Nearby work is acknowledged per area: a warning about the same teammate in
+// a second area is news, counted and put in the feed.
+func TestNearbyWarningsAreCountedPerArea(t *testing.T) {
+	h := newHarness(t)
+	h.hook(KindPrompt, "alice", "a1")
+	h.edit("alice", "a1", "svc/pay/a.go", "libs/http/b.go")
+	h.hook(KindPrompt, "bob", "b1")
+	r1 := h.hook(KindPreEdit, "bob", "b1", "svc/pay/z.go")
+	r2 := h.hook(KindPreEdit, "bob", "b1", "libs/http/y.go")
+	mustContain(t, r1.Context, "svc/pay")
+	mustContain(t, r2.Context, "libs/http")
+	if again := h.hook(KindPreEdit, "bob", "b1", "svc/pay/w.go"); again.Context != "" {
+		t.Fatalf("warned twice about one area: %q", again.Context)
+	}
+	st := h.b.View(h.now, repo).Stats
+	// Three checks met nearby work; two of them told the agent something new.
+	if acts := h.activities("conflict"); st.Warned != 2 || st.Nearby != 3 || len(acts) != 2 {
+		t.Fatalf("two areas: warned=%d nearby=%d activities=%d", st.Warned, st.Nearby, len(acts))
+	}
+}
+
+// Declaring an exclusive intent over a teammate's earlier work does not lift
+// the team's policy on that work; only a change made inside the reservation
+// after it was declared is softened, for its owner.
+func TestOwnReservationDoesNotOverrideThePolicy(t *testing.T) {
+	for _, action := range []Action{Deny, Bump} {
+		h := newHarness(t, func(c *Config) { c.Policy.Overlap = action })
+		h.hook(KindPrompt, "alice", "a1")
+		h.edit("alice", "a1", "pkg/a.go")
+		h.hook(KindPrompt, "bob", "b1")
+		h.advance(time.Minute)
+		if d := h.declare("bob", Exclusive, "mine now", "**"); len(d.Accepted) != 1 {
+			t.Fatalf("declare: %+v", d)
+		}
+		if res := h.hook(KindPreEdit, "bob", "b1", "pkg/a.go"); res.Decision != Refuse {
+			t.Fatalf("overlap %s, alice's earlier change inside bob's new reservation: %s %q", action, res.Decision, res.Context)
+		}
+	}
+}
+
+// A reservation that only warns, or is switched off, makes unchecked changes
+// inside it a warning, or nothing; and each file is reported once, however
+// often it leaves the worktree's changes and comes back.
+func TestUncheckedChangesFollowThePolicy(t *testing.T) {
+	scan := func(h *harness, files ...string) string {
+		t.Helper()
+		res, err := h.b.Hook(h.now, HookEvent{Kind: KindToolEnd, Member: "bob", Agent: AgentCodex, SessionID: "b1", Where: whereOf("bob"),
+			Tool: "Bash", Footprint: &Footprint{Files: refs(files...)}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res.Context
+	}
+	setup := func(block Action) *harness {
+		h := newHarness(t, func(c *Config) { c.Policy.Block = block })
+		h.hook(KindPrompt, "alice", "a1")
+		h.declare("alice", Exclusive, "Retry rework", "svc/pay/**")
+		h.hook(KindPrompt, "bob", "b1")
+		return h
+	}
+
+	h := setup(Off)
+	if got := scan(h, "svc/pay/retry.go"); strings.Contains(got, "reserved") || len(h.activities("conflict")) > 0 {
+		t.Fatalf("block: off, yet: %q %+v", got, h.activities("conflict"))
+	}
+
+	h = setup(Warn)
+	mustContain(t, scan(h, "svc/pay/retry.go"), "Your worktree now changes files a teammate reserved")
+	if acts := h.activities("conflict"); len(acts) != 1 || acts[0].Breach {
+		t.Fatalf("block: warn records a warning, not a breach: %+v", acts)
+	}
+
+	h = setup(Deny)
+	mustContain(t, scan(h, "svc/pay/a.go", "svc/pay/b.go", "svc/pay/c.go"), "svc/pay/a.go", "svc/pay/c.go")
+	scan(h)                                                          // git switch main
+	again := scan(h, "svc/pay/a.go", "svc/pay/b.go", "svc/pay/c.go") // and back
+	acts := h.activities("conflict")
+	if strings.Contains(again, "reserved") || len(acts) != 1 || !acts[0].Breach || len(acts[0].Paths) != 3 {
+		t.Fatalf("three files, two switches: %q, activities %+v", again, acts)
+	}
+}
+
+// A retry that runs into a second teammate is announced under the new
+// collision, not the one already announced.
+func TestNewCollisionIsTheOneAnnounced(t *testing.T) {
+	h := newHarness(t)
+	h.hook(KindPrompt, "alice", "a1")
+	h.declare("alice", Exclusive, "A work", "a/**")
+	h.hook(KindPrompt, "carol", "c1")
+	h.declare("carol", Exclusive, "C work", "c/**")
+	h.hook(KindPrompt, "bob", "b1")
+	h.hook(KindPreEdit, "bob", "b1", "a/x.go")
+	if res := h.hook(KindPreEdit, "bob", "b1", "a/x.go", "c/y.go"); res.Decision != Refuse {
+		t.Fatalf("second edit: %s", res.Decision)
+	}
+	acts := h.activities("conflict")
+	if len(acts) != 2 || !strings.Contains(acts[1].Text, "carol") {
+		t.Fatalf("activities = %+v", acts)
+	}
+}
+
+// The feed says whom a note reached: a member by name, even one with a dot in
+// it or reached through a claim ID, or whoever works on a path.
+func TestNoteActivityNamesItsRecipient(t *testing.T) {
+	h := newHarness(t)
+	h.hook(KindPrompt, "jane.doe", "j1")
+	h.edit("jane.doe", "j1", "README.md")
+	h.hook(KindPrompt, "bob", "b1")
+	for _, to := range []string{"jane.doe", "c_1", "README.md"} {
+		if _, err := h.b.Note(h.now, NoteRequest{Member: "bob", Where: whereOf("bob"), To: to, Text: "rebase please"}); err != nil {
+			t.Fatalf("note to %s: %v", to, err)
+		}
+	}
+	acts := h.activities("note.sent")
+	if len(acts) != 3 || acts[0].Text != "to jane.doe: rebase please" || acts[1].Text != "to jane.doe: rebase please" ||
+		acts[2].Text != "to whoever works on README.md: rebase please" || len(acts[2].Paths) != 1 || len(acts[0].Paths) != 0 {
+		t.Fatalf("note activities = %+v", acts)
 	}
 }

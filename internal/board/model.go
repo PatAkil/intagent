@@ -324,14 +324,16 @@ type HookResult struct {
 
 // Conflict is one other claim that matters to a path.
 type Conflict struct {
-	Path      string    `json:"path"`
-	Severity  Severity  `json:"severity"`
-	ClaimID   string    `json:"claim_id"`
-	Member    string    `json:"member"`
-	Branch    string    `json:"branch,omitempty"`
-	Task      string    `json:"task,omitempty"`
-	Why       string    `json:"why"`
-	Pattern   string    `json:"pattern,omitempty"`
+	Path     string   `json:"path"`
+	Severity Severity `json:"severity"`
+	ClaimID  string   `json:"claim_id"`
+	Member   string   `json:"member"`
+	Branch   string   `json:"branch,omitempty"`
+	Task     string   `json:"task,omitempty"`
+	Why      string   `json:"why"`
+	Pattern  string   `json:"pattern,omitempty"`
+	// Area is the area of the path written, which a nearby conflict is about.
+	Area      string    `json:"area,omitempty"`
 	Since     time.Time `json:"since,omitzero"`
 	Active    bool      `json:"active"`
 	SameClaim bool      `json:"same_claim,omitempty"`
@@ -390,4 +392,7 @@ type Activity struct {
 	Text     string       `json:"text,omitempty"`
 	Severity Severity     `json:"severity,omitempty"`
 	Decision Decision     `json:"decision,omitempty"`
+	// Breach marks a change made without a check (through the shell) inside a
+	// teammate's reservation, which the policy would have stopped.
+	Breach bool `json:"breach,omitempty"`
 }

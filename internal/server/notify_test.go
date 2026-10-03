@@ -70,6 +70,8 @@ func TestWebhookFilters(t *testing.T) {
 		{board.Activity{Kind: "session.stalled"}, true},
 		{board.Activity{Kind: "conflict", Decision: board.Refuse}, true},
 		{board.Activity{Kind: "conflict", Decision: board.Allow}, false},
+		{board.Activity{Kind: "conflict", Decision: board.Allow, Severity: board.Block}, false}, // a reservation that only warns
+		{board.Activity{Kind: "conflict", Decision: board.Allow, Severity: board.Block, Breach: true}, true},
 		{board.Activity{Kind: "file.changed"}, false},
 	} {
 		if n.wants(c.a) != c.want {

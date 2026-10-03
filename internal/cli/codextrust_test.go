@@ -61,3 +61,48 @@ func TestTrustCodexWritesThroughASymlink(t *testing.T) {
 		t.Fatalf("linked file:\n%s", data)
 	}
 }
+
+// A project table can also be written inline or with dotted keys; adding a
+// [projects."/repo"] header after either would define it twice, and Codex
+// could not read its config.
+func TestTOMLDocSeesTablesDefinedByKeys(t *testing.T) {
+	for name, text := range map[string]string{
+		"inline parent":   `projects = { "/other" = { trust_level = "trusted" } }`,
+		"inline in table": "[projects]\n\"/repo\" = { trust_level = \"untrusted\" }",
+		"dotted":          `projects."/repo".trust_level = "untrusted"`,
+		"dotted, quoted":  `"projects".'/repo'.trust_level = "untrusted"`,
+	} {
+		doc := &tomlDoc{lines: strings.Split(text, "\n")}
+		if _, err := doc.set(`[projects."/repo"]`, "trust_level", `"trusted"`); err == nil || !strings.Contains(err.Error(), "yourself") {
+			t.Errorf("%s: set gave %v:\n%s", name, err, doc.String())
+		}
+	}
+	// Codex's older form, a [projects] table of inline tables for other
+	// projects, takes a table for this one.
+	doc := &tomlDoc{lines: []string{"[projects]", `"/other" = { trust_level = "trusted" }`, "[[mcp_list]]", `projects = 1`}}
+	if _, err := doc.set(`[projects."/repo"]`, "trust_level", `"trusted"`); err != nil || !strings.Contains(doc.String(), "[projects.\"/repo\"]\ntrust_level") {
+		t.Fatalf("set beside other projects: %v\n%s", err, doc.String())
+	}
+}
+
+func TestSplitKey(t *testing.T) {
+	for in, want := range map[string]string{
+		`projects."/repo"`:     "projects|/repo",
+		` a . 'b c' . "d\"e" `: `a|b c|d"e`,
+		`hooks.state."x:y.z"`:  "hooks|state|x:y.z",
+		`trust_level`:          "trust_level",
+		`"unterminated`:        "!",
+		`a b`:                  "!",
+		`a.`:                   "!",
+		`  "x = y",`:           "!",
+	} {
+		parts, ok := splitKey(in)
+		got := strings.Join(parts, "|")
+		if !ok {
+			got = "!"
+		}
+		if got != want {
+			t.Errorf("splitKey(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

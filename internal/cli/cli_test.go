@@ -1002,6 +1002,17 @@ func TestMembersOffTheBoardAreTold(t *testing.T) {
 	if dec, reason, _ := decision(t, out); dec != "deny" || !strings.Contains(reason, "INTAGENT_FAIL=closed is set in your user's environment") {
 		t.Fatalf("fail closed with a rejected token: %q", out)
 	}
+	// Writes outside the repository, such as an agent's plans, are not intagent's to refuse.
+	outside := claudeEvent("d1", a, "PreToolUse", map[string]any{"tool_name": "Write",
+		"tool_input": map[string]any{"file_path": filepath.Join(t.TempDir(), "plan.md")}})
+	if out, _, code := tm.as("alice", a, outside, "hook"); out != "" || code != 0 {
+		t.Fatalf("writing outside the repository with a rejected token, fail-closed: %d %q", code, out)
+	}
+	t.Setenv("INTAGENT_TOKEN", "")
+	if out, _, code := tm.as("dave", a, outside, "hook"); out != "" || code != 0 {
+		t.Fatalf("writing outside the repository, not signed in, fail-closed: %d %q", code, out)
+	}
+	t.Setenv("INTAGENT_TOKEN", "ia_rotated")
 	// The guard says it did not check, and refuses under fail-closed.
 	writeFile(t, filepath.Join(a, "x.go"), "package x\n")
 	gitRun(t, a, "add", "x.go")

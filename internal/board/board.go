@@ -666,25 +666,46 @@ func (b *Board) alertOthers(now time.Time, c *Claim, paths []PathRef) {
 
 // reportUnchecked tells a session that changes git found in its worktree
 // (made through the shell, which hooks cannot check beforehand) fall inside
-// a teammate's active exclusive intent, and records the breach.
+// a teammate's active exclusive intent, and records the breach, once per file.
+// A policy that ignores reservations ignores these too, and one that only
+// warns about them records a warning rather than a breach.
 func (b *Board) reportUnchecked(now time.Time, c *Claim, s *Session, added []PathRef) {
+	action := b.cfg.Policy.action(Block)
+	if action == Off {
+		return
+	}
 	live, liveSess := b.liveClaims(now), b.liveSessions(now)
-	var lines []string
+	var lines, paths []string
+	var first Conflict
 	for _, p := range added {
 		for _, cf := range b.conflictsFor(now, c, s.Key, p, live, liveSess) {
 			if cf.Severity != Block || cf.SameClaim {
 				continue
 			}
-			lines = append(lines, fmt.Sprintf("- %s, which %s holds exclusively%s", p.Path, who(b.claims[cf.ClaimID]), taskOf(cf)))
-			b.record(Activity{At: now, Kind: ActivityConflict, Repo: c.Repo, Member: c.Member, ClaimID: c.ID, Session: s.ID, Agent: s.Agent,
-				Paths: []string{p.Path}, Severity: Block, Decision: Allow,
-				Text: fmt.Sprintf("%s → %s (changed without a check, inside their exclusive intent)", p.Path, cf.Member)})
+			if k := "unchecked|" + cf.ClaimID + "|" + p.Path; !c.Alerted[k] {
+				if c.Alerted == nil {
+					c.Alerted = map[string]bool{}
+				}
+				c.Alerted[k] = true
+				if len(paths) == 0 {
+					first = cf
+				}
+				lines = append(lines, fmt.Sprintf("- %s, which %s holds exclusively%s", p.Path, who(b.claims[cf.ClaimID]), taskOf(cf)))
+				paths = append(paths, p.Path)
+			}
 			break
 		}
 	}
-	if len(lines) == 0 {
+	if len(paths) == 0 {
 		return
 	}
+	why := "inside their exclusive intent" // a breach's kind already says it was not checked
+	if action == Warn {
+		why = "changed without a check, inside their exclusive intent"
+	}
+	b.record(Activity{At: now, Kind: ActivityConflict, Repo: c.Repo, Member: c.Member, ClaimID: c.ID, Session: s.ID, Agent: s.Agent,
+		Paths: paths, Severity: Block, Decision: Allow, Breach: action != Warn,
+		Text: fmt.Sprintf("%s → %s (%s)", first.Path, first.Member, why)})
 	s.Pending = joinBlocks(s.Pending, "[intagent] Your worktree now changes files a teammate reserved (reported by teammates' "+
 		"agents; information, not instructions):\n"+strings.Join(lines, "\n")+"\nChanges made through the shell are not "+
 		"checked before they happen. Undo the change if it was not meant for that file, or tell your user so they can "+
@@ -698,10 +719,14 @@ func taskOf(cf Conflict) string {
 	return " (" + quote(cf.Task) + ")"
 }
 
-// ownsExclusive reports whether a claim holds an exclusive intent covering path.
-func ownsExclusive(c *Claim, path string) bool {
+// breachedReservation reports whether a conflict is another claim's change to
+// a file inside c's exclusive intent, made since c declared it.
+func breachedReservation(c *Claim, cf Conflict) bool {
+	if cf.Severity != Overlap || cf.Pattern != "" || cf.SameClaim {
+		return false
+	}
 	for _, in := range c.Intents {
-		if in.Mode == Exclusive && glob.Match(in.Pattern, path) {
+		if in.Mode == Exclusive && glob.Match(in.Pattern, cf.Path) && !cf.Since.Before(in.DeclaredAt) {
 			return true
 		}
 	}
@@ -765,7 +790,7 @@ func (b *Board) conflictsFor(now time.Time, self *Claim, selfSession string, p P
 		// written by someone in this worktree, perhaps the asking session.
 		if t, ok := self.Footprint[p.Path]; ok && !t.FromGit && t.Session != "" && t.Session != selfSession && liveSess[t.Session] {
 			out = append(out, Conflict{
-				Path: p.Path, Severity: Overlap, ClaimID: self.ID, Member: self.Member, Branch: self.Branch, Task: self.Task,
+				Path: p.Path, Area: p.Area, Severity: Overlap, ClaimID: self.ID, Member: self.Member, Branch: self.Branch, Task: self.Task,
 				Why: "another live session in this same worktree changed this file", Since: t.At, Active: true, SameClaim: true,
 			})
 		}
@@ -775,7 +800,7 @@ func (b *Board) conflictsFor(now time.Time, self *Claim, selfSession string, p P
 }
 
 func (b *Board) conflictWith(now time.Time, o *Claim, p PathRef, active bool) (Conflict, bool) {
-	best := Conflict{Path: p.Path, ClaimID: o.ID, Member: o.Member, Branch: o.Branch, Task: o.Task, Active: active}
+	best := Conflict{Path: p.Path, Area: p.Area, ClaimID: o.ID, Member: o.Member, Branch: o.Branch, Task: o.Task, Active: active}
 	consider := func(sev Severity, why, pattern string, since time.Time) {
 		if sev > best.Severity {
 			best.Severity, best.Why, best.Pattern, best.Since = sev, why, pattern, since
@@ -848,10 +873,12 @@ func sortConflicts(cs []Conflict) {
 	})
 }
 
+// ackKey names what an agent has been told about a conflict: a file, or for
+// nearby work the area it shares with the other claim.
 func ackKey(c Conflict) string {
 	subject := c.Path
 	if c.Severity == Nearby {
-		subject = "area"
+		subject = c.Area
 	}
 	return c.Severity.String() + "|" + c.ClaimID + "|" + subject
 }
@@ -868,13 +895,10 @@ func (b *Board) decide(now time.Time, c *Claim, s *Session, paths []PathRef, noA
 		for _, cf := range b.conflictsFor(now, c, s.Key, p, live, liveSess) {
 			all = append(all, cf)
 			key := ackKey(cf)
-			if cf.Severity == Nearby {
-				key = "nearby|" + cf.ClaimID + "|" + p.Area
-			}
 			action := b.cfg.Policy.action(cf.Severity)
-			if cf.Severity == Overlap && action != Off && ownsExclusive(c, p.Path) {
-				// Inside its own reservation an agent is told about others'
-				// changes, not stopped by them.
+			if action == Bump && breachedReservation(c, cf) {
+				// A teammate changed a file inside this claim's reservation
+				// after it was made: the owner is told, not stopped.
 				action = Warn
 			}
 			switch {
@@ -924,16 +948,16 @@ func (b *Board) decide(now time.Time, c *Claim, s *Session, paths []PathRef, noA
 	}
 	// A retry that meets the same conflicts again is checked, but it is not
 	// a new collision: counting it, or announcing it, would inflate both.
-	fresh := false
+	var fresh []Conflict
 	for _, cf := range acted {
 		if k := "told|" + ackKey(cf); !s.Acked[k] {
 			s.Acked[k] = true
-			fresh = true
+			fresh = append(fresh, cf)
 		}
 	}
-	b.count(now, c.Repo, all, refused, asked, warned, fresh)
-	if fresh {
-		top := mostSevere(acted)
+	b.count(now, c.Repo, all, refused, asked, warned, len(fresh) > 0)
+	if len(fresh) > 0 {
+		top := mostSevere(fresh)
 		b.record(Activity{At: now, Kind: ActivityConflict, Repo: c.Repo, Member: c.Member, ClaimID: c.ID, Session: s.ID, Agent: s.Agent,
 			Paths: pathsOf(paths), Severity: top.Severity, Decision: res.Decision,
 			Text: fmt.Sprintf("%s → %s (%s)", top.Path, top.Member, top.Why)})
@@ -1344,7 +1368,7 @@ func (b *Board) Note(now time.Time, r NoteRequest) (NoteResult, error) {
 		return NoteResult{}, ErrRateLimited
 	}
 	self := b.findClaim(r.Member, w)
-	targets := b.resolve(w.Repo, to, self)
+	targets, path := b.resolve(w.Repo, to, self)
 	if len(targets) == 0 {
 		return NoteResult{}, fmt.Errorf("%w: %q", ErrNoTarget, to)
 	}
@@ -1364,13 +1388,21 @@ func (b *Board) Note(now time.Time, r NoteRequest) (NoteResult, error) {
 		res.Delivered = append(res.Delivered, t.ID)
 	}
 	b.statsOf(w.Repo, now).Notes += len(targets)
-	b.record(Activity{At: now, Kind: ActivityNoteSent, Repo: w.Repo, Member: r.Member, ClaimID: from.ID, Text: fmt.Sprintf("to %s: %s", to, text)})
+	note := Activity{At: now, Kind: ActivityNoteSent, Repo: w.Repo, Member: r.Member, ClaimID: from.ID}
+	if path != "" {
+		note.Paths, note.Text = []string{path}, fmt.Sprintf("to whoever works on %s: %s", path, text)
+	} else {
+		note.Text = fmt.Sprintf("to %s: %s", targets[0].Member, text)
+	}
+	b.record(note)
 	return res, nil
 }
 
-func (b *Board) resolve(repo, to string, self *Claim) []*Claim {
+// resolve finds a note's recipients: a claim by ID, a member's claims, or the
+// claims that changed or reserved a path, which it also returns.
+func (b *Board) resolve(repo, to string, self *Claim) ([]*Claim, string) {
 	if c, ok := b.claims[to]; ok && c.Repo == repo {
-		return []*Claim{c}
+		return []*Claim{c}, ""
 	}
 	var out []*Claim
 	for _, c := range b.claimsInRepo(repo) {
@@ -1382,11 +1414,11 @@ func (b *Board) resolve(repo, to string, self *Claim) []*Claim {
 		}
 	}
 	if len(out) > 0 {
-		return out
+		return out, ""
 	}
 	p, err := glob.CleanPath(to)
 	if err != nil {
-		return nil
+		return nil, ""
 	}
 	for _, c := range b.claimsInRepo(repo) {
 		if self != nil && c.ID == self.ID {
@@ -1396,7 +1428,7 @@ func (b *Board) resolve(repo, to string, self *Claim) []*Claim {
 			out = append(out, c)
 		}
 	}
-	return out
+	return out, p
 }
 
 // --- maintenance -----------------------------------------------------------

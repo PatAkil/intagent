@@ -295,22 +295,23 @@
   // A request that hangs must not hold the board's refresh slot for good.
   const FETCH_TIMEOUT_MS = 15000;
 
+  // The timeout covers the body too: a response that stalls halfway is as
+  // stuck as one that never starts.
   async function getJSON(url) {
     const ctl = typeof AbortController === 'function' ? new AbortController() : null;
     const timer = ctl ? setTimeout(() => ctl.abort(), FETCH_TIMEOUT_MS) : 0;
-    let r;
     try {
-      r = await fetch(url, { credentials: 'same-origin', cache: 'no-store', headers: { Accept: 'application/json' }, signal: ctl ? ctl.signal : undefined });
+      const r = await fetch(url, { credentials: 'same-origin', cache: 'no-store', headers: { Accept: 'application/json' }, signal: ctl ? ctl.signal : undefined });
+      if (r.status === 401) throw new AuthError('not signed in');
+      if (!r.ok) {
+        let msg = 'HTTP ' + r.status;
+        try { const b = await r.json(); if (b && typeof b.error === 'string') msg = b.error; } catch (_) { /* keep status */ }
+        throw new Error(msg);
+      }
+      return await r.json();
     } finally {
       clearTimeout(timer);
     }
-    if (r.status === 401) throw new AuthError('not signed in');
-    if (!r.ok) {
-      let msg = 'HTTP ' + r.status;
-      try { const b = await r.json(); if (b && typeof b.error === 'string') msg = b.error; } catch (_) { /* keep status */ }
-      throw new Error(msg);
-    }
-    return r.json();
   }
 
   // --- people ----------------------------------------------------------------
@@ -963,9 +964,9 @@
   function stopsLine(s) {
     const mine = [...S.feed.values()].filter((a) => a && a.kind === 'conflict' && a.session && a.session === s.id)
       .sort((x, y) => (y.seq || 0) - (x.seq || 0));
-    if (!mine.length) return null;
     const refused = mine.filter((a) => a.decision === 'deny' || a.decision === 'ask');
-    const last = refused[0] || mine[0];
+    const last = refused[0] || mine.find((a) => a.breach); // warnings do not stop anyone
+    if (!last) return null;
     const holder = (/→ (\S+) \(/.exec(String(last.text || '')) || [])[1] || '';
     const path = arr(last.paths)[0] || '';
     const what = refused.length
@@ -1259,9 +1260,12 @@
       case 'note.sent': {
         const mm = /^to ([^:]+): ([\s\S]*)$/.exec(text);
         if (!mm) return [m, ' sent a note: ', el('q', null, text)];
-        return /[/.]/.test(mm[1])
-          ? [m, ' sent a note to whoever works on ', pathNode(mm[1]), ': ', el('q', null, mm[2])]
-          : [m, ' sent ', strong(mm[1]), ' a note: ', el('q', null, mm[2])];
+        const path = arr(a.paths)[0];
+        if (path) {
+          const body = text.slice(text.indexOf(': ', ('to whoever works on ' + path).length) + 2);
+          return [m, ' sent a note to whoever works on ', pathNode(String(path)), ': ', el('q', null, body)];
+        }
+        return [m, ' sent ', strong(mm[1]), ' a note: ', el('q', null, mm[2])];
       }
       case 'conflict': return conflictSentence(a);
       default: return [m, ' ', code(String(a.kind || 'event')), text ? ': ' + text : ''];
@@ -1276,6 +1280,7 @@
   // What the agent was told: the activity's decision, read with the policy's
   // action for its severity (deny is both a refusal and a bump).
   function conflictOutcome(a) {
+    if (a.breach) return { key: 'breach', label: 'Unchecked', icon: 'deny', verb: ' changed, without a check, ' };
     const action = policyAction(String(a.severity || ''));
     switch (a.decision) {
       case 'deny':

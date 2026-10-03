@@ -959,6 +959,7 @@ main:focus { outline: none; }
 .tag-bumped { color: var(--serious); }
 .tag-asked { color: var(--wait); }
 .tag-warned { color: var(--warn); }
+.tag-breach { color: var(--crit); }
 .mode-exclusive { font-weight: 600; color: var(--ink); }
 
 .act.is-fresh { animation: arrive 2.6s ease-out; }

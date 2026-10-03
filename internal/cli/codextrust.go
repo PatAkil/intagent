@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/patakil/intagent/internal/fsutil"
@@ -237,11 +238,14 @@ func (d *tomlDoc) set(header, key, value string) (string, error) {
 	i, end := d.table(header)
 	if i < 0 {
 		name := strings.Trim(header, "[]")
+		path, _ := splitKey(name)
+		taken := d.definedByKeys(path)
 		for _, l := range d.lines {
-			if strings.HasPrefix(strings.TrimSpace(l), "[") && strings.Contains(l, name[strings.IndexByte(name, '.')+1:]) {
-				return "", fmt.Errorf("it already has a table like %s that intagent cannot edit safely; "+
-					"set %s = %s in it yourself", header, key, value)
-			}
+			taken = taken || strings.HasPrefix(strings.TrimSpace(l), "[") && strings.Contains(l, name[strings.IndexByte(name, '.')+1:])
+		}
+		if taken {
+			return "", fmt.Errorf("it already has a table like %s that intagent cannot edit safely; "+
+				"set %s = %s in it yourself", header, key, value)
 		}
 		d.lines = append(d.lines, "", header, key+" = "+value)
 		return "", nil
@@ -256,6 +260,91 @@ func (d *tomlDoc) set(header, key, value string) (string, error) {
 	}
 	d.lines = slices.Insert(d.lines, i+1, key+" = "+value)
 	return "", nil
+}
+
+// definedByKeys reports whether a key line defines the table at path, or a
+// table above it as a value (projects = { ... }), or a table within it
+// (projects."/repo".trust_level = ...). A [path] header would then define it a
+// second time, and Codex could not read the file.
+func (d *tomlDoc) definedByKeys(path []string) bool {
+	var table []string
+	for _, l := range d.lines {
+		t := strings.TrimSpace(l)
+		if strings.HasPrefix(t, "[") {
+			inner, _, _ := strings.Cut(strings.TrimPrefix(tomlHeader(t), "["), "]")
+			var ok bool
+			if table, ok = splitKey(inner); !ok || strings.HasPrefix(t, "[[") {
+				table = []string{"\x00"} // an array of tables, or a header this cannot read: matches nothing
+			}
+			continue
+		}
+		k, _, found := strings.Cut(t, "=")
+		keys, ok := splitKey(k)
+		if !found || !ok {
+			continue // a comment, a blank line, or a line of a multi-line value
+		}
+		full := append(slices.Clone(table), keys...)
+		if n := min(len(full), len(path)); slices.Equal(full[:n], path[:n]) {
+			return true
+		}
+	}
+	return false
+}
+
+// splitKey splits a TOML dotted key into its unquoted parts.
+func splitKey(s string) ([]string, bool) {
+	var parts []string
+	s = strings.TrimSpace(s)
+	for {
+		var part string
+		switch {
+		case strings.HasPrefix(s, `"`):
+			end := 1
+			for end < len(s) && s[end] != '"' {
+				if s[end] == '\\' {
+					end++
+				}
+				end++
+			}
+			if end >= len(s) {
+				return nil, false
+			}
+			u, err := strconv.Unquote(s[:end+1])
+			if err != nil {
+				return nil, false
+			}
+			part, s = u, s[end+1:]
+		case strings.HasPrefix(s, "'"):
+			end := strings.IndexByte(s[1:], '\'')
+			if end < 0 {
+				return nil, false
+			}
+			part, s = s[1:end+1], s[end+2:]
+		default:
+			end := strings.IndexFunc(s, func(r rune) bool { return !bareKeyRune(r) })
+			if end < 0 {
+				end = len(s)
+			}
+			if end == 0 {
+				return nil, false
+			}
+			part, s = s[:end], s[end:]
+		}
+		parts = append(parts, part)
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return parts, true
+		}
+		if s[0] != '.' {
+			return nil, false
+		}
+		s = strings.TrimSpace(s[1:])
+	}
+}
+
+// bareKeyRune reports whether r may appear in an unquoted TOML key.
+func bareKeyRune(r rune) bool {
+	return r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '-'
 }
 
 func tomlKey(line string) (key, value string, ok bool) {

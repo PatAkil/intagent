@@ -80,7 +80,14 @@ func (b *Board) View(now time.Time, repo string) View {
 			ID: s.ID, Agent: s.Agent, State: st, Tool: s.Tool, ToolSince: s.ToolSince, StartedAt: s.StartedAt, LastSeen: s.LastSeen,
 		})
 	}
-	for _, c := range b.claimsInRepo(repo) {
+	claims := b.claimsInRepo(repo)
+	changedBy := map[string]int{} // how many claims changed each file
+	for _, c := range claims {
+		for p := range c.Footprint {
+			changedBy[p]++
+		}
+	}
+	for _, c := range claims {
 		members[c.Member] = true
 		cv := ClaimView{
 			ID: c.ID, Member: c.Member, Host: c.Host, Worktree: c.Worktree, Branch: c.Branch, Task: c.Task,
@@ -100,8 +107,8 @@ func (b *Board) View(now time.Time, repo string) View {
 		cv.FileCount = len(files)
 		if len(files) > maxViewFiles {
 			// A view goes to every dashboard on every refresh; the newest files
-			// are the ones anyone acts on.
-			files, cv.Truncated = files[:maxViewFiles], true
+			// are the ones anyone acts on, and contested ones are hot spots.
+			files, cv.Truncated = capFiles(c, files, claims, changedBy), true
 		}
 		for _, p := range files {
 			t := c.Footprint[p]
@@ -185,5 +192,25 @@ func (b *Board) Since(repo string, seq uint64) []Activity {
 // Text renders a view for a person or an agent reading a terminal.
 func (v View) Text() string { return renderView(v) }
 
-// maxViewFiles bounds the files a view lists per claim; FileCount has them all.
+// capFiles keeps a claim's newest files and, past the cap, the ones another
+// claim also changed or reserved.
+func capFiles(c *Claim, files []string, claims []*Claim, changedBy map[string]int) []string {
+	out := files[:maxViewFiles:maxViewFiles]
+	for _, p := range files[maxViewFiles:] {
+		contested := changedBy[p] > 1
+		for _, o := range claims {
+			if contested {
+				break
+			}
+			contested = o.ID != c.ID && coveredByIntent(o, p)
+		}
+		if contested {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// maxViewFiles bounds the files a view lists per claim, contested files
+// aside; FileCount has them all.
 const maxViewFiles = 500
