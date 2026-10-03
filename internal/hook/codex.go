@@ -44,7 +44,7 @@ func (Codex) Parse(stdin []byte) (Event, error) {
 	case "PreToolUse":
 		ev.Kind = board.KindToolStart
 		if paths := patchPaths(in.ToolName, command); len(paths) > 0 {
-			ev.Kind, ev.Paths = board.KindPreEdit, paths
+			ev.Kind, ev.Paths, ev.NoAsk = board.KindPreEdit, paths, true
 		}
 	case "PostToolUse":
 		ev.Kind = board.KindToolEnd
@@ -77,7 +77,7 @@ func (Codex) Render(ev Event, res board.HookResult) Output {
 			// that tells the agent to ask.
 			reason := res.Reason
 			if res.Decision == board.DecideAsk {
-				reason += "\nAsk your user whether to go ahead before retrying."
+				reason += askInstead
 			}
 			return specific(hookSpecific{HookEventName: ev.Name, PermissionDecision: "deny", PermissionDecisionReason: reason})
 		}

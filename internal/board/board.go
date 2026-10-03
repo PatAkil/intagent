@@ -323,6 +323,11 @@ func (b *Board) Hook(now time.Time, ev HookEvent) (HookResult, error) {
 	if ev.Member == "" || ev.SessionID == "" || ev.Agent == "" {
 		return allow, fmt.Errorf("%w: member, agent and session_id are required", ErrInvalid)
 	}
+	if !knownKinds[ev.Kind] {
+		// Before anything is created: an event this board does not know (from
+		// a newer client, say) must not bring a dormant claim back to life.
+		return allow, fmt.Errorf("%w: unknown event kind %q", ErrInvalid, ev.Kind)
+	}
 	paths, err := cleanPaths(ev.Paths)
 	if err != nil {
 		return allow, err
@@ -354,7 +359,7 @@ func (b *Board) Hook(now time.Time, ev HookEvent) (HookResult, error) {
 		b.setWorking(now, s, ev.Tool)
 	case KindPreEdit:
 		b.setWorking(now, s, ev.Tool)
-		res = b.decide(now, c, s, ev.Paths)
+		res = b.decide(now, c, s, ev.Paths, ev.NoAsk)
 		res.ClaimID = c.ID
 		if res.Decision != Allow {
 			// The edit does not run (yet), so no tool end will follow it.
@@ -368,6 +373,8 @@ func (b *Board) Hook(now time.Time, ev HookEvent) (HookResult, error) {
 		res.Context = b.deliver(now, c, s)
 	case KindToolEnd:
 		b.setWorking(now, s, "")
+		// A shell command may have written files without saying which.
+		b.reconcile(now, c, s, ev.Footprint)
 		res.Context = b.deliver(now, c, s)
 	case KindStop:
 		s.Phase = PhaseWaiting
@@ -398,6 +405,11 @@ func (b *Board) Hook(now time.Time, ev HookEvent) (HookResult, error) {
 		b.releaseIfDone(now, c)
 	}
 	return res, nil
+}
+
+var knownKinds = map[Kind]bool{
+	KindSessionStart: true, KindPrompt: true, KindPreEdit: true, KindPostEdit: true, KindToolStart: true,
+	KindToolEnd: true, KindStop: true, KindSessionEnd: true, KindHeartbeat: true,
 }
 
 func (b *Board) setWorking(now time.Time, s *Session, tool string) {
@@ -706,9 +718,10 @@ func ackKey(c Conflict) string {
 }
 
 // decide applies the policy to the conflicts on every path being written.
-func (b *Board) decide(now time.Time, c *Claim, s *Session, paths []PathRef) HookResult {
+func (b *Board) decide(now time.Time, c *Claim, s *Session, paths []PathRef, noAsk bool) HookResult {
 	live, liveSess := b.liveClaims(now), b.liveSessions(now)
 	var refused, asked, warned, all []Conflict
+	var warnKeys []string
 	if s.Acked == nil {
 		s.Acked = map[string]bool{}
 	}
@@ -719,29 +732,63 @@ func (b *Board) decide(now time.Time, c *Claim, s *Session, paths []PathRef) Hoo
 			if cf.Severity == Nearby {
 				key = "nearby|" + cf.ClaimID + "|" + p.Area
 			}
-			switch b.cfg.Policy.action(cf.Severity) {
-			case Deny:
+			switch action := b.cfg.Policy.action(cf.Severity); {
+			case action == Deny:
 				refused = append(refused, cf)
-			case Ask:
+			case action == Ask && !noAsk:
 				asked = append(asked, cf)
-			case Bump:
-				if !s.Acked[key] {
-					s.Acked[key] = true
-					refused = append(refused, cf)
-				}
-			case Warn:
-				if !s.Acked[key] {
-					s.Acked[key] = true
-					warned = append(warned, cf)
-				}
+			case action == Ask && !s.Acked[key]:
+				s.Acked[key] = true
+				asked = append(asked, cf)
+			case action == Bump && !s.Acked[key]:
+				s.Acked[key] = true
+				refused = append(refused, cf)
+			case action == Warn && !s.Acked[key]:
+				warned = append(warned, cf)
+				warnKeys = append(warnKeys, key)
 			}
 		}
 	}
 	res := HookResult{Decision: Allow, Conflicts: all}
-	st := b.statsOf(c.Repo, now)
+	switch {
+	case len(refused) > 0:
+		res.Decision = Refuse
+		res.Reason = b.renderRefusal(now, refused, b.cfg.Policy)
+	case len(asked) > 0:
+		res.Decision = DecideAsk
+		res.Reason = b.renderRefusal(now, asked, b.cfg.Policy)
+	case len(warned) > 0:
+		res.Context = b.renderWarnings(now, warned)
+		// A warning counts as told only once it is shown, not when a refusal
+		// of the same edit hid it.
+		for _, k := range warnKeys {
+			s.Acked[k] = true
+		}
+	}
+	b.count(now, c.Repo, all, refused, asked, warned)
+	acted := refused
+	if len(acted) == 0 {
+		acted = asked
+	}
+	if len(acted) == 0 {
+		acted = warned
+	}
+	if len(acted) > 0 {
+		top := mostSevere(acted)
+		b.record(Activity{At: now, Kind: "conflict", Repo: c.Repo, Member: c.Member, ClaimID: c.ID, Session: s.ID, Agent: s.Agent,
+			Paths: pathsOf(paths), Severity: top.Severity, Decision: res.Decision,
+			Text: fmt.Sprintf("%s → %s (%s)", top.Path, top.Member, top.Why)})
+	}
+	return res
+}
+
+// count adds one checked edit to the repository's stats, under its most
+// severe conflict and what was done about it.
+func (b *Board) count(now time.Time, repo string, all, refused, asked, warned []Conflict) {
+	st := b.statsOf(repo, now)
 	st.Checks++
 	if len(all) > 0 {
-		switch all[0].Severity {
+		switch mostSevere(all).Severity {
 		case Block:
 			st.Blocks++
 		case Overlap:
@@ -766,29 +813,17 @@ func (b *Board) decide(now time.Time, c *Claim, s *Session, paths []PathRef) Hoo
 	case len(warned) > 0:
 		st.Warned++
 	}
-	switch {
-	case len(refused) > 0:
-		res.Decision = Refuse
-		res.Reason = b.renderRefusal(now, refused, b.cfg.Policy)
-	case len(asked) > 0:
-		res.Decision = DecideAsk
-		res.Reason = b.renderRefusal(now, asked, b.cfg.Policy)
-	case len(warned) > 0:
-		res.Context = b.renderWarnings(now, warned)
-	}
-	if len(refused)+len(asked)+len(warned) > 0 {
-		top := all[0]
-		for _, list := range [][]Conflict{refused, asked, warned} {
-			if len(list) > 0 {
-				top = list[0]
-				break
-			}
+}
+
+// mostSevere is the first of the most severe conflicts in a non-empty list.
+func mostSevere(list []Conflict) Conflict {
+	top := list[0]
+	for _, cf := range list[1:] {
+		if cf.Severity > top.Severity {
+			top = cf
 		}
-		b.record(Activity{At: now, Kind: "conflict", Repo: c.Repo, Member: c.Member, ClaimID: c.ID, Session: s.ID, Agent: s.Agent,
-			Paths: pathsOf(paths), Severity: top.Severity, Decision: res.Decision,
-			Text: fmt.Sprintf("%s → %s (%s)", top.Path, top.Member, top.Why)})
 	}
-	return res
+	return top
 }
 
 // --- inbox ---------------------------------------------------------------

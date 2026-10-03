@@ -121,7 +121,7 @@ func TestCodexParseAndPatchPaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ev.Kind != board.KindPreEdit || strings.Join(ev.Paths, ",") != "hello.txt,src/a.go,src/b.go,old/c.go" {
+	if ev.Kind != board.KindPreEdit || !ev.NoAsk || strings.Join(ev.Paths, ",") != "hello.txt,src/a.go,src/b.go,old/c.go" {
 		t.Fatalf("apply_patch event = %+v", ev)
 	}
 
@@ -196,7 +196,7 @@ const cuPre = `{"conversation_id":"c1","generation_id":"g1","model":"m","session
 func TestCursorEditsAreCheckedBeforeTheWrite(t *testing.T) {
 	cu := Cursor{}
 	ev, err := cu.Parse([]byte(cuPre))
-	want := Event{Kind: board.KindPreEdit, Name: "preToolUse", SessionID: "c1", Cwd: "/ws", Tool: "Write", Paths: []string{"/ws/src/a.ts"}}
+	want := Event{Kind: board.KindPreEdit, Name: "preToolUse", SessionID: "c1", Cwd: "/ws", Tool: "Write", Paths: []string{"/ws/src/a.ts"}, NoAsk: true}
 	if err != nil || !reflect.DeepEqual(ev, want) {
 		t.Fatalf("preToolUse Write = %+v, %v", ev, err)
 	}
@@ -298,7 +298,7 @@ func TestGemini(t *testing.T) {
 	gm := Gemini{}
 	ev, err := gm.Parse([]byte(gmPre))
 	want := Event{Kind: board.KindPreEdit, Name: "BeforeTool", SessionID: "52096186-aa", Cwd: "/abs/proj", Tool: "write_file",
-		Paths: []string{"/abs/proj/claimed.go"}, LateContext: true}
+		Paths: []string{"/abs/proj/claimed.go"}, LateContext: true, NoAsk: true}
 	if err != nil || !reflect.DeepEqual(ev, want) {
 		t.Fatalf("BeforeTool = %+v, %v", ev, err)
 	}

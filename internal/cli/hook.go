@@ -92,7 +92,7 @@ func (a *App) handleHook(ctx context.Context, ad hook.Adapter, ev hook.Event) (h
 	}
 	hev := board.HookEvent{
 		Kind: ev.Kind, Agent: ad.Agent(), SessionID: ev.SessionID, Where: ws.where, Tool: ev.Tool, Paths: refs,
-		LateContext: ev.LateContext,
+		LateContext: ev.LateContext, NoAsk: ev.NoAsk,
 	}
 	if ws.settings.SharePrompts {
 		hev.Prompt = ev.Prompt

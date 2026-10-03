@@ -31,7 +31,14 @@ type Event struct {
 	// LateContext says the agent drops context given at this point, so the
 	// board should hold it for the next event.
 	LateContext bool
+	// NoAsk says the agent cannot put a question to its person here; the
+	// board then lets the retry of an asked edit through.
+	NoAsk bool
 }
+
+// askInstead turns an "ask" into a refusal for agents that cannot ask: the
+// board lets the same edit through on its retry.
+const askInstead = "\nAsk your user whether to go ahead. If they agree, retry the same edit and intagent will let it through."
 
 // Output is what the hook process writes and how it exits.
 type Output struct {

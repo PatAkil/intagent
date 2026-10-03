@@ -62,6 +62,11 @@ func writeFile(t *testing.T, path, body string) {
 
 func newTeam(t *testing.T, members ...string) *team {
 	t.Helper()
+	return newTeamWith(t, board.DefaultConfig(), members...)
+}
+
+func newTeamWith(t *testing.T, cfg board.Config, members ...string) *team {
+	t.Helper()
 	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	t.Setenv("XDG_CACHE_HOME", t.TempDir()) // keep the hook log out of the real cache
@@ -78,7 +83,7 @@ func newTeam(t *testing.T, members ...string) *team {
 		tm.tokens[m] = tok
 		ms = append(ms, server.Member{Name: m, TokenSHA256: hash})
 	}
-	srv, err := server.New(server.Options{Members: ms, Board: board.DefaultConfig()})
+	srv, err := server.New(server.Options{Members: ms, Board: cfg})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -732,4 +737,28 @@ func must[T any](v T, err error) T {
 		panic(err)
 	}
 	return v
+}
+
+// Codex cannot ask its person before an edit: under policy "ask" the first
+// attempt is refused with the question, and the retry goes through.
+func TestAskThroughCodexLetsTheRetryThrough(t *testing.T) {
+	cfg := board.DefaultConfig()
+	cfg.Policy.Overlap = board.Ask
+	tm := newTeamWith(t, cfg, "alice", "bob")
+	a, b := tm.clone("alice"), tm.clone("bob")
+	tm.enrol(map[string]string{"alice": a, "bob": b})
+	edit := map[string]any{"tool_name": "Edit", "tool_input": map[string]any{"file_path": filepath.Join(a, "svc/pay/retry.go")}}
+	tm.as("alice", a, claudeEvent("a1", a, "UserPromptSubmit", map[string]any{"prompt": "Retry rework"}), "hook")
+	tm.as("alice", a, claudeEvent("a1", a, "PostToolUse", edit), "hook")
+
+	patch := "*** Begin Patch\n*** Update File: svc/pay/retry.go\n@@\n-package pay\n+package pay // x\n*** End Patch\n"
+	cx, _ := json.Marshal(map[string]any{"session_id": "x1", "cwd": b, "hook_event_name": "PreToolUse", "tool_name": "apply_patch",
+		"tool_input": map[string]string{"command": patch}})
+	out, _, _ := tm.as("bob", b, string(cx), "hook", "codex")
+	if dec, reason, _ := decision(t, out); dec != "deny" || !strings.Contains(reason, "If they agree, retry the same edit") {
+		t.Fatalf("first attempt: %q", out)
+	}
+	if out, _, _ := tm.as("bob", b, string(cx), "hook", "codex"); out != "" {
+		t.Fatalf("the retry was not let through: %q", out)
+	}
 }

@@ -39,7 +39,7 @@ func (Gemini) Parse(stdin []byte) (Event, error) {
 	case "BeforeTool":
 		ev.Kind = board.KindToolStart
 		if path != "" {
-			ev.Kind, ev.Paths, ev.LateContext = board.KindPreEdit, []string{path}, true
+			ev.Kind, ev.Paths, ev.LateContext, ev.NoAsk = board.KindPreEdit, []string{path}, true, true
 		}
 	case "AfterTool":
 		ev.Kind = board.KindToolEnd
@@ -69,7 +69,7 @@ func (Gemini) Render(ev Event, res board.HookResult) Output {
 		if res.Decision == board.Refuse || res.Decision == board.DecideAsk {
 			reason := res.Reason
 			if res.Decision == board.DecideAsk {
-				reason += "\nAsk your user whether to go ahead before retrying."
+				reason += askInstead
 			}
 			return jsonOut(map[string]string{"decision": "deny", "reason": reason})
 		}

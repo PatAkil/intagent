@@ -77,7 +77,7 @@ What matters:
   hook unless its hash is trusted in the user's config. `codex exec` does so silently.
 - **Strict output.** Codex rejects unknown keys, an explicit `allow`, and `ask` from `PreToolUse`; a rejected answer is
   dropped entirely. intagent allows by printing nothing, refuses with `permissionDecision: deny`, and turns `ask` into a
-  refusal that tells the agent to ask its person.
+  refusal that tells the agent to ask its person; the board then lets the same edit through on its retry.
 - **Edits are patches.** File edits arrive as `apply_patch` with the patch text in `tool_input.command`. intagent reads
   the `Add File`, `Update File`, `Delete File` and `Move to` lines. Patches piped through the shell
   (`apply_patch <<'EOF'`, optionally after `cd dir &&`) arrive as `Bash` and are parsed the same way.
@@ -113,7 +113,7 @@ What matters:
   can be refused before the write. Matchers are unanchored regular expressions; intagent anchors its own.
 - **Always valid JSON.** Cursor treats invalid JSON from a permission step as a refusal, so every answer is JSON and
   an allow is spelled out. Cursor ignores `ask` on `preToolUse` for local tools; intagent turns it into a refusal
-  that tells the agent to ask its person.
+  that tells the agent to ask its person, and lets the same edit through on its retry.
 - **One unknown event drops the file.** Cursor rejects a whole hooks file that names an event it does not know. A
   Cursor too old for `preToolUse` and `sessionStart` therefore runs none of intagent's hooks there, and its agent
   sees the team only through the MCP tools. intagent still parses the older `afterFileEdit`,
@@ -170,7 +170,7 @@ What matters:
 
 - **Its own refusal.** Gemini CLI ignores Claude's nested `permissionDecision`; it refuses on
   `{"decision": "deny", "reason": R}`, and the model reads `Tool execution blocked: R`. There is no ask, so asking
-  becomes a refusal that tells the agent to ask its person.
+  becomes a refusal that tells the agent to ask its person, and the retry goes through.
 - **No context before a tool.** Gemini drops `additionalContext` from `BeforeTool`. intagent marks those events, and
   the board holds a pre-edit's warnings for that session until its next event, normally the edit's own `AfterTool`.
 - **Exit codes.** Exit 2 or 3 blocks the tool; exit 1 only warns. intagent's hook exits 0.

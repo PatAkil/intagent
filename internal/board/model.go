@@ -296,6 +296,10 @@ type HookEvent struct {
 	Paths     []PathRef  `json:"paths,omitempty"`
 	Prompt    string     `json:"prompt,omitempty"`
 	Footprint *Footprint `json:"footprint,omitempty"`
+	// NoAsk says the agent cannot put a question to its person before an
+	// edit. An "ask" then refuses the first attempt, telling the agent to ask,
+	// and lets the retry through, the way "bump" does.
+	NoAsk bool `json:"no_ask,omitempty"`
 	// LateContext says the agent ignores context given before a tool runs;
 	// the board then holds a pre_edit's warnings until the next event that
 	// can carry them, normally the edit's own post_edit.

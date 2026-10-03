@@ -634,6 +634,95 @@ func TestRepoIDsAgreeBetweenWritersAndReaders(t *testing.T) {
 	}
 }
 
+// Shell commands report the files they wrote through the footprint that
+// follows them; teammates hear about those files at once, not at Stop.
+func TestFootprintAfterAShellCommand(t *testing.T) {
+	h := newHarness(t)
+	h.hook(KindPrompt, "alice", "a1")
+	h.hook(KindToolStart, "alice", "a1")
+	if _, err := h.b.Hook(h.now, HookEvent{Kind: KindToolEnd, Member: "alice", Agent: AgentClaudeCode, SessionID: "a1",
+		Where: whereOf("alice"), Tool: "Bash", Footprint: &Footprint{Files: refs("gen/api.go")}}); err != nil {
+		t.Fatal(err)
+	}
+	h.hook(KindPrompt, "bob", "b1")
+	res := h.hook(KindPreEdit, "bob", "b1", "gen/api.go")
+	if len(res.Conflicts) != 1 || res.Conflicts[0].Member != "alice" || res.Conflicts[0].Severity != Overlap {
+		t.Fatalf("conflicts = %+v", res.Conflicts)
+	}
+}
+
+// A warning hidden behind a refusal of the same edit is still shown later.
+func TestWarningSurvivesARefusalOfTheSameEdit(t *testing.T) {
+	h := newHarness(t)
+	h.hook(KindPrompt, "alice", "a1")
+	h.edit("alice", "a1", "svc/a.go")
+	h.hook(KindPrompt, "carol", "c1")
+	h.edit("carol", "c1", "lib/x.go")
+	h.hook(KindPrompt, "bob", "b1")
+	if res := h.hook(KindPreEdit, "bob", "b1", "svc/a.go", "lib/y.go"); res.Decision != Refuse || strings.Contains(res.Reason, "carol") {
+		t.Fatalf("first attempt: %s %q", res.Decision, res.Reason)
+	}
+	res := h.hook(KindPreEdit, "bob", "b1", "svc/a.go", "lib/y.go")
+	if res.Decision != Allow {
+		t.Fatalf("retry: %s", res.Decision)
+	}
+	mustContain(t, res.Context, "carol's agent", "same area lib")
+}
+
+// An agent that cannot ask its person is refused once with the question, and
+// the retry (after the person said yes) goes through. Others keep asking.
+func TestAskFromAnAgentThatCannotAsk(t *testing.T) {
+	h := newHarness(t, func(c *Config) { c.Policy.Overlap = Ask })
+	h.hook(KindPrompt, "alice", "a1")
+	h.edit("alice", "a1", "svc/a.go")
+	pre := func(session string, noAsk bool) Decision {
+		t.Helper()
+		res, err := h.b.Hook(h.now, HookEvent{Kind: KindPreEdit, Member: "bob", Agent: AgentCodex, SessionID: session,
+			Where: whereOf("bob"), Tool: "apply_patch", Paths: refs("svc/a.go"), NoAsk: noAsk})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res.Decision
+	}
+	if got := []Decision{pre("x1", true), pre("x1", true)}; got[0] != DecideAsk || got[1] != Allow {
+		t.Fatalf("codex: %v", got)
+	}
+	if got := []Decision{pre("c1", false), pre("c1", false)}; got[0] != DecideAsk || got[1] != DecideAsk {
+		t.Fatalf("claude: %v", got)
+	}
+}
+
+// An event the board does not know is refused before it creates anything.
+func TestUnknownKindCreatesNothing(t *testing.T) {
+	h := newHarness(t)
+	h.declare("alice", Exclusive, "x", "x/**") // no session: dormant
+	if _, err := h.b.Hook(h.now, HookEvent{Kind: "bogus", Member: "alice", Agent: AgentClaudeCode, SessionID: "a9",
+		Where: whereOf("alice")}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("err = %v", err)
+	}
+	if v := h.b.View(h.now, repo); v.Sessions != 0 || v.Claims[0].Active {
+		t.Fatalf("the rejected event brought the claim to life: %+v", v.Claims[0])
+	}
+}
+
+// One check that meets several conflicts is counted and reported under the
+// most severe of them.
+func TestCheckCountsItsMostSevereConflict(t *testing.T) {
+	h := newHarness(t)
+	h.hook(KindPrompt, "alice", "a1")
+	h.edit("alice", "a1", "a/x.go")
+	h.hook(KindPrompt, "carol", "c1")
+	h.declare("carol", Exclusive, "lock", "b/**")
+	h.hook(KindPrompt, "bob", "b1")
+	h.hook(KindPreEdit, "bob", "b1", "a/x.go", "b/y.go")
+	if st := h.b.View(h.now, repo).Stats; st.Blocks != 1 || st.Overlaps != 0 || st.Refused != 1 {
+		t.Fatalf("stats = %+v", st)
+	}
+	if acts := h.activities("conflict"); len(acts) != 1 || acts[0].Severity != Block || !strings.Contains(acts[0].Text, "carol") {
+		t.Fatalf("activity = %+v", acts)
+	}
+}
+
 func TestClean(t *testing.T) {
 	for in, want := range map[string]string{
 		"  a\n\tb  ":         "a b",

@@ -75,7 +75,7 @@ func (Cursor) Parse(stdin []byte) (Event, error) {
 	case "preToolUse":
 		ev.Kind = board.KindToolStart
 		if isWrite && path != "" {
-			ev.Kind, ev.Paths = board.KindPreEdit, []string{path}
+			ev.Kind, ev.Paths, ev.NoAsk = board.KindPreEdit, []string{path}, true
 		}
 	case "postToolUse":
 		ev.Kind = board.KindToolEnd
@@ -121,7 +121,7 @@ func (Cursor) Render(ev Event, res board.HookResult) Output {
 			// tells the agent to ask.
 			reason := res.Reason
 			if res.Decision == board.DecideAsk {
-				reason += "\nAsk your user whether to go ahead before retrying."
+				reason += askInstead
 			}
 			out["permission"] = "deny"
 			out["user_message"] = reason
