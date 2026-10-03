@@ -85,7 +85,7 @@ func (a *App) guard(ctx context.Context, args []string) error {
 	case errors.Is(err, gitx.ErrNotRepo):
 		return nil
 	case err != nil:
-		if os.Getenv("INTAGENT_FAIL") == "closed" {
+		if client.FailClosedByEnv() && !client.DisabledByEnv() && enrolledRoot(dir) != "" {
 			return exitError{code: 1, msg: fmt.Sprintf("intagent guard: %v; INTAGENT_FAIL=closed is set, so the commit is refused.", err)}
 		}
 		fmt.Fprintf(a.Err, "intagent guard: %v, so this commit was not checked against teammates' work.\n", err)

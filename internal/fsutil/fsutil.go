@@ -3,6 +3,9 @@
 package fsutil
 
 import (
+	"crypto/rand"
+	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -10,38 +13,85 @@ import (
 
 // WriteFile replaces the file at path with data, atomically: it writes a
 // temporary file in the same directory, syncs it and renames it over path, so
-// a reader sees the old contents or the new ones, never a torn mix. A symbolic
-// link at path is written through, so a file kept in a dotfiles repository
-// stays a link. The file gets perm; the directory must exist.
+// a reader sees the old contents or the new ones, never a torn mix.
+//
+// A symbolic link at path is written through, even one whose target does not
+// exist yet, so a file kept in a dotfiles repository stays a link. A new file
+// gets perm less the umask, as os.WriteFile gives it; a file replaced gets
+// perm, and keeps its owner where the process may give it back. The
+// directory must exist.
 func WriteFile(path string, data []byte, perm fs.FileMode) error {
-	if real, err := filepath.EvalSymlinks(path); err == nil {
-		path = real
+	path, err := linkTarget(path)
+	if err != nil {
+		return err
 	}
-	dir := filepath.Dir(path)
-	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*.tmp")
+	old, statErr := os.Stat(path)
+	f, err := createTemp(filepath.Dir(path), filepath.Base(path), perm)
 	if err != nil {
 		return err
 	}
 	tmp := f.Name()
 	defer func() { _ = os.Remove(tmp) }() // a no-op after the rename
-	if err := write(f, data, perm); err != nil {
+	if statErr == nil {
+		if err := f.Chmod(perm); err != nil {
+			_ = f.Close()
+			return err
+		}
+		keepOwner(f, old)
+	}
+	if err := write(f, data); err != nil {
 		return err
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		return err
 	}
-	if d, err := os.Open(dir); err == nil {
+	if d, err := os.Open(filepath.Dir(path)); err == nil {
 		_ = d.Sync() // best effort: make the rename durable
 		_ = d.Close()
 	}
 	return nil
 }
 
-func write(f *os.File, data []byte, perm fs.FileMode) error {
-	err := f.Chmod(perm)
-	if err == nil {
-		_, err = f.Write(data)
+// linkTarget follows the symbolic links at path to the file they name, which
+// need not exist.
+func linkTarget(path string) (string, error) {
+	for range maxLinks {
+		fi, err := os.Lstat(path)
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			return path, nil // a file to create
+		case err != nil:
+			return "", err
+		case fi.Mode()&fs.ModeSymlink == 0:
+			return path, nil
+		}
+		dest, err := os.Readlink(path)
+		if err != nil {
+			return "", err
+		}
+		if !filepath.IsAbs(dest) {
+			dest = filepath.Join(filepath.Dir(path), dest)
+		}
+		path = dest
 	}
+	return "", fmt.Errorf("%s: too many levels of symbolic links", path)
+}
+
+const maxLinks = 40
+
+// createTemp creates a new file beside name, with perm less the umask.
+func createTemp(dir, name string, perm fs.FileMode) (*os.File, error) {
+	for {
+		p := filepath.Join(dir, "."+name+"."+rand.Text()[:12]+".tmp")
+		f, err := os.OpenFile(p, os.O_RDWR|os.O_CREATE|os.O_EXCL, perm)
+		if !errors.Is(err, fs.ErrExist) {
+			return f, err
+		}
+	}
+}
+
+func write(f *os.File, data []byte) error {
+	_, err := f.Write(data)
 	if err == nil {
 		err = f.Sync()
 	}

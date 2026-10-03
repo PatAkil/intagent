@@ -205,8 +205,10 @@ server from starting.
 | `intagent hook [<agent>]` / `intagent mcp` | Called by agents; the hook recognises the agent from what it sends. |
 
 Environment: `INTAGENT_URL` and `INTAGENT_TOKEN` override the configuration, `INTAGENT_DISABLE=1` turns intagent
-off, `INTAGENT_FAIL=closed` refuses edits while the server is unreachable (the default is to fail open),
-`INTAGENT_TIMEOUT` bounds each request (default `2s`).
+off, `INTAGENT_FAIL=closed` refuses edits in enrolled repositories while intagent cannot check them (the server is
+unreachable, or the setup cannot be read; the default is to fail open), `INTAGENT_TIMEOUT` bounds each request
+(default `2s`). A whole hook run, git included, takes at most 8 seconds (2 at a session's end), under the timeouts
+`intagent init` gives the agents, so a longer `INTAGENT_TIMEOUT` is cut short there.
 
 ## Security model
 

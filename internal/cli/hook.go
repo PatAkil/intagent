@@ -24,6 +24,17 @@ import (
 // maxHookInput caps the hook payload read from stdin.
 const maxHookInput = 32 << 20
 
+// hookBudget bounds one hook run, git included, under the timeout intagent init
+// gives the event (10 seconds, and 3 to 5 at a session's end): an agent that
+// kills a slow hook lets the edit through, even under INTAGENT_FAIL=closed,
+// and a session end it kills goes unreported.
+func hookBudget(kind board.Kind) time.Duration {
+	if kind == board.KindSessionEnd {
+		return 2 * time.Second
+	}
+	return 8 * time.Second
+}
+
 // hook handles one agent hook event. It never blocks an agent because of its
 // own failure: any error is logged and the hook exits 0 with no output, unless
 // INTAGENT_FAIL=closed asks for edits to be refused while the server is unreachable.
@@ -64,7 +75,7 @@ func (a *App) hook(ctx context.Context, args []string) (err error) {
 	if ev.Skip || (*userLevel && projectWires(ad.Agent(), ev.Cwd)) {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(ctx, cmp.Or(a.HookBudget, 8*time.Second))
+	ctx, cancel := context.WithTimeout(ctx, cmp.Or(a.HookBudget, hookBudget(ev.Kind)))
 	defer cancel()
 	out, err := a.handleHook(ctx, ad, ev)
 	if err != nil {
@@ -93,8 +104,10 @@ func (a *App) handleHook(ctx context.Context, ad hook.Adapter, ev hook.Event) (h
 		return hook.Output{}, nil // not a git repository: nothing to coordinate
 	case err != nil:
 		// A broken .intagent.json or a failing git: say so in the hook log, and
-		// under fail-closed refuse edits rather than pass them unchecked.
-		if ev.Kind == board.KindPreEdit && os.Getenv("INTAGENT_FAIL") == "closed" {
+		// under fail-closed refuse edits in a team's repository rather than pass
+		// them unchecked. Other repositories, and writes outside, are not ours.
+		if ev.Kind == board.KindPreEdit && client.FailClosedByEnv() && !client.DisabledByEnv() &&
+			within(enrolledRoot(cwd), cwd, ev.Paths) {
 			return ad.Render(ev, board.HookResult{Decision: board.DecisionRefuse, Reason: fmt.Sprintf("[intagent] intagent could not read "+
 				"this repository's setup (%v), and INTAGENT_FAIL=closed is set in your user's environment, so edits are refused "+
 				"until it is fixed. Tell your user.", err)}), err
@@ -122,7 +135,11 @@ func (a *App) handleHook(ctx context.Context, ad hook.Adapter, ev hook.Event) (h
 	ctx, cancel := context.WithTimeout(ctx, ws.settings.Timeout+2*time.Second)
 	defer cancel()
 	if ev.Footprint && (ev.Kind != board.KindToolEnd || footprintDue(ws.wt.Root, ev.SessionID)) {
-		fp, err := ws.footprint(ctx)
+		// Git gets half the time left, so a slow one cannot keep the event
+		// itself from reaching the server.
+		fctx, fcancel := context.WithTimeout(ctx, halfLeft(ctx))
+		fp, err := ws.footprint(fctx)
+		fcancel()
 		if err != nil {
 			hookLog("footprint: %v", err)
 		} else {
@@ -144,6 +161,14 @@ func (a *App) handleHook(ctx context.Context, ad hook.Adapter, ev hook.Event) (h
 		return hook.Output{}, err
 	}
 	return ad.Render(ev, res), nil
+}
+
+// halfLeft is half the time until ctx's deadline.
+func halfLeft(ctx context.Context) time.Duration {
+	if d, ok := ctx.Deadline(); ok {
+		return time.Until(d) / 2
+	}
+	return time.Hour
 }
 
 // offBoard answers when the repository is a team's but this member cannot

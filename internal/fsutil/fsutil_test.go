@@ -119,3 +119,54 @@ func TestLockSerialisesWriters(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// A dotfiles link whose target does not exist yet is written through, and
+// stays a link, whether it names its target absolutely or relatively.
+func TestWriteFileFollowsDanglingLinks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symbolic links need privileges on Windows")
+	}
+	for name, relative := range map[string]bool{"absolute": false, "relative": true} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(dir, "dotfiles"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			target := filepath.Join(dir, "dotfiles", "config.toml")
+			dest := target
+			if relative {
+				dest = filepath.Join("dotfiles", "config.toml")
+			}
+			link := filepath.Join(dir, "config.toml")
+			if err := os.Symlink(dest, link); err != nil {
+				t.Fatal(err)
+			}
+			if err := WriteFile(link, []byte("new"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if fi, err := os.Lstat(link); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+				t.Fatalf("the link was replaced: %v, %v", fi, err)
+			}
+			if got, _ := os.ReadFile(target); string(got) != "new" {
+				t.Fatalf("the target = %q", got)
+			}
+		})
+	}
+}
+
+func TestWriteFileStopsAtLinkLoops(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symbolic links need privileges on Windows")
+	}
+	dir := t.TempDir()
+	a, b := filepath.Join(dir, "a"), filepath.Join(dir, "b")
+	if err := os.Symlink(b, a); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(a, b); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteFile(a, nil, 0o600); err == nil {
+		t.Fatal("wrote through a loop of links")
+	}
+}

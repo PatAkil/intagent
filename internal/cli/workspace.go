@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/patakil/intagent/internal/board"
 	"github.com/patakil/intagent/internal/client"
@@ -60,6 +61,40 @@ func openWorkspace(ctx context.Context, dir string) (*workspace, error) {
 		w.client = client.New(st.URL, st.Token, st.Timeout)
 	}
 	return w, nil
+}
+
+// enrolledRoot finds, without git, the root of the worktree containing dir,
+// and returns it if a team enrolled the repository; "" otherwise. When the
+// workspace cannot be opened, it tells a team repository from any other.
+func enrolledRoot(dir string) string {
+	for d := filepath.Clean(dir); ; d = filepath.Dir(d) {
+		if _, err := os.Lstat(filepath.Join(d, ".git")); err == nil {
+			if _, err := os.Stat(filepath.Join(d, client.RepoFileName)); err == nil {
+				return d
+			}
+			return ""
+		}
+		if filepath.Dir(d) == d {
+			return ""
+		}
+	}
+}
+
+// within reports whether any of paths, relative to base unless absolute, is
+// inside root.
+func within(root, base string, paths []string) bool {
+	if root == "" {
+		return false
+	}
+	for _, p := range paths {
+		if !filepath.IsAbs(p) {
+			p = filepath.Join(base, p)
+		}
+		if rel, err := filepath.Rel(root, p); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 // errNotConnected explains how to connect when settings are incomplete.

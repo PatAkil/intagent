@@ -1194,3 +1194,51 @@ func TestHookKeepsToItsBudget(t *testing.T) {
 		t.Fatalf("a hook out of time under fail-closed: %q", out)
 	}
 }
+
+// Under fail-closed, a setup intagent cannot read refuses edits in the team's
+// repository only: not writes outside it, not repositories no team enrolled,
+// and not while INTAGENT_DISABLE switches intagent off.
+func TestBrokenSetupRefusesOnlyTeamEdits(t *testing.T) {
+	tm := newTeam(t, "alice")
+	a := tm.clone("alice")
+	tm.enrol(map[string]string{"alice": a})
+	writeFile(t, filepath.Join(a, ".intagent.json"), `{"url": "`+tm.url+`",}`)
+	t.Setenv("INTAGENT_FAIL", "Closed")
+	inside := claudeEvent("a1", a, "PreToolUse", map[string]any{"tool_name": "Edit", "tool_input": map[string]any{"file_path": filepath.Join(a, "README.md")}})
+	if out, _, _ := tm.as("alice", a, inside, "hook"); !strings.Contains(out, `"deny"`) {
+		t.Fatalf("an edit in the team's repository: %q", out)
+	}
+	outside := claudeEvent("a1", a, "PreToolUse", map[string]any{"tool_name": "Write",
+		"tool_input": map[string]any{"file_path": filepath.Join(t.TempDir(), "plan.md")}})
+	if out, _, _ := tm.as("alice", a, outside, "hook"); out != "" {
+		t.Fatalf("a write outside the repository: %q", out)
+	}
+	t.Setenv("INTAGENT_DISABLE", "1")
+	if out, _, _ := tm.as("alice", a, inside, "hook"); out != "" {
+		t.Fatalf("with INTAGENT_DISABLE=1: %q", out)
+	}
+	t.Setenv("INTAGENT_DISABLE", "")
+	// A corrupt user config breaks every repository's setup, a personal one's too.
+	personal := t.TempDir()
+	gitRun(t, personal, "init", "-q")
+	writeFile(t, filepath.Join(tm.dir, "alice.json"), "{oops")
+	edit := claudeEvent("p1", personal, "PreToolUse", map[string]any{"tool_name": "Edit", "tool_input": map[string]any{"file_path": filepath.Join(personal, "main.go")}})
+	if out, _, _ := tm.as("alice", personal, edit, "hook"); out != "" {
+		t.Fatalf("a repository no team enrolled: %q", out)
+	}
+}
+
+// A hook finishes before the agent that runs it gives up on it.
+func TestHookBudgetFitsEveryWiredTimeout(t *testing.T) {
+	for name, wiring := range map[string][]hookWire{"claude": claudeWiring, "codex": codexWiring, "gemini": geminiWiring, "cursor": cursorWiring} {
+		for _, w := range wiring {
+			kind := board.KindPrompt
+			if strings.EqualFold(w.event, "SessionEnd") {
+				kind = board.KindSessionEnd
+			}
+			if budget, limit := hookBudget(kind), time.Duration(w.timeout)*time.Second; budget >= limit-500*time.Millisecond {
+				t.Errorf("%s %s: hook budget %s, agent timeout %s", name, w.event, budget, limit)
+			}
+		}
+	}
+}

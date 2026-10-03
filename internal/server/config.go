@@ -61,17 +61,24 @@ func ValidMemberName(name string) bool { return memberName.MatchString(name) }
 
 // LoadFileConfig reads a configuration file. A missing file is an error.
 func LoadFileConfig(path string) (FileConfig, error) {
-	var fc FileConfig
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return fc, err
+		return FileConfig{}, err
 	}
+	return parseFileConfig(path, data)
+}
+
+func parseFileConfig(path string, data []byte) (FileConfig, error) {
+	var fc FileConfig
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields() // a misspelt setting must not be silently ignored
 	if err := dec.Decode(&fc); err != nil {
 		return fc, fmt.Errorf("%s: %w", path, err)
 	}
-	return fc, fc.validate()
+	if err := fc.validate(); err != nil {
+		return fc, fmt.Errorf("%s: %w", path, err)
+	}
+	return fc, nil
 }
 
 func (fc FileConfig) validate() error {
@@ -157,12 +164,14 @@ func AddMember(path, name string, replace bool) (string, error) {
 		return "", err
 	}
 	defer unlock()
+	// A file the server would refuse is fixed first: a token added to it
+	// would not work until it is.
 	var fc FileConfig
 	data, err := os.ReadFile(path)
 	switch {
 	case err == nil:
-		if err := json.Unmarshal(data, &fc); err != nil {
-			return "", fmt.Errorf("%s: %w", path, err)
+		if fc, err = parseFileConfig(path, data); err != nil {
+			return "", err
 		}
 	case !errors.Is(err, os.ErrNotExist):
 		return "", err

@@ -31,10 +31,40 @@ func TestTOMLDocFindsWhatPeopleWrite(t *testing.T) {
 			t.Errorf("%s: %d project tables after set:\n%s", tt.name, n, doc.String())
 		}
 	}
-	// A table it cannot recognise is left alone rather than declared twice.
-	doc := &tomlDoc{lines: []string{`[ projects . "/repo" ]`, `trust_level = "untrusted"`}}
-	if _, err := doc.set(`[projects."/repo"]`, "trust_level", `"trusted"`); err == nil || !strings.Contains(err.Error(), "yourself") {
-		t.Fatalf("set over an unrecognised table: %v\n%s", err, doc.String())
+	// A header with spaces, or an escape, is the same table.
+	for _, h := range []string{`[ projects . "/repo" ]`, `[projects."/repo"]`} {
+		doc := &tomlDoc{lines: []string{h, `trust_level = "untrusted"`}}
+		if prev, err := doc.set(`[projects."/repo"]`, "trust_level", `"trusted"`); err != nil || prev != `"untrusted"` ||
+			doc.String() != h+"\ntrust_level = \"trusted\"\n" {
+			t.Fatalf("set in %s: %q %v\n%s", h, prev, err, doc.String())
+		}
+	}
+}
+
+// Lines that look like a header or a key inside a multi-line value are not
+// one, and a key with "=" inside its quotes is one key.
+func TestTOMLDocReadsMultiLineValues(t *testing.T) {
+	for name, text := range map[string]string{
+		"'=' in a dotted key":   `projects."/srv/a=b".trust_level = "untrusted"`,
+		"'=' in a quoted key":   "[projects]\n\"/srv/a=b\" = { trust_level = \"untrusted\" }",
+		"after a nested array":  "matrix = [\n  [1, 2],\n]\nprojects = { \"/srv/a=b\" = { trust_level = \"untrusted\" } }",
+		"after a string":        "notes = \"\"\"\n[NOTE] keep this\n\"\"\"\nprojects = { \"/srv/a=b\" = { trust_level = \"untrusted\" } }",
+		"an unreadable line":    "[projects]\nthis is not toml",
+		"an unterminated array": "matrix = [\n  1,",
+	} {
+		doc := &tomlDoc{lines: strings.Split(text, "\n")}
+		if _, err := doc.set(`[projects."/srv/a=b"]`, "trust_level", `"trusted"`); err == nil {
+			t.Errorf("%s: set wrote\n%s", name, doc.String())
+		}
+	}
+	// A header inside a multi-line string is no table to edit, and does not
+	// end the one it sits in.
+	doc := &tomlDoc{lines: strings.Split("[projects.\"/repo\"]\nnote = '''\n[projects.\"/other\"]\n'''\ntrust_level = \"untrusted\"", "\n")}
+	if prev, err := doc.set(`[projects."/repo"]`, "trust_level", `"trusted"`); err != nil || prev != `"untrusted"` {
+		t.Fatalf("set past a multi-line string: %q %v\n%s", prev, err, doc.String())
+	}
+	if got := doc.get(`[projects."/other"]`, "trust_level"); got != "" {
+		t.Fatalf("read a table out of a string: %q", got)
 	}
 }
 

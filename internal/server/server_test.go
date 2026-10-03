@@ -474,6 +474,11 @@ func TestConfigFiles(t *testing.T) {
 	if err != nil || tok2 == tok {
 		t.Fatalf("rotate: %v", err)
 	}
+	broken := filepath.Join(t.TempDir(), "team.json")
+	_ = os.WriteFile(broken, []byte(`{"members":[],"webhook":{"url":"https://hooks.example.com/x","events":["session.stuck"]}}`), 0o600)
+	if _, err := AddMember(broken, "bob", false); err == nil || !strings.Contains(err.Error(), "session.stuck") {
+		t.Fatalf("token add to a file the server would refuse: %v", err)
+	}
 	if _, err := AddMember(path, "Bad Name", false); err == nil {
 		t.Fatal("accepted an invalid member name")
 	}

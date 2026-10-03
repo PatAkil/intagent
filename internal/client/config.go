@@ -171,11 +171,8 @@ func Resolve(root string) (Settings, error) {
 	if v := os.Getenv("INTAGENT_TOKEN"); v != "" {
 		s.Token = v
 	}
-	switch strings.ToLower(os.Getenv("INTAGENT_DISABLE")) {
-	case "1", "true", "yes":
-		s.Disabled = true
-	}
-	s.FailClosed = strings.EqualFold(os.Getenv("INTAGENT_FAIL"), "closed")
+	s.Disabled = DisabledByEnv()
+	s.FailClosed = FailClosedByEnv()
 	if v := os.Getenv("INTAGENT_TIMEOUT"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil && d > 0 {
 			s.Timeout = d
@@ -183,6 +180,19 @@ func Resolve(root string) (Settings, error) {
 	}
 	return s, nil
 }
+
+// DisabledByEnv reports whether INTAGENT_DISABLE switches intagent off.
+func DisabledByEnv() bool {
+	switch strings.ToLower(os.Getenv("INTAGENT_DISABLE")) {
+	case "1", "true", "yes":
+		return true
+	}
+	return false
+}
+
+// FailClosedByEnv reports whether INTAGENT_FAIL=closed asks for edits to be
+// refused when intagent cannot check them.
+func FailClosedByEnv() bool { return strings.EqualFold(os.Getenv("INTAGENT_FAIL"), "closed") }
 
 // Ready reports whether the settings name a server and a token.
 func (s Settings) Ready() bool { return !s.Disabled && s.URL != "" && s.Token != "" }
