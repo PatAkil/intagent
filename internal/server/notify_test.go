@@ -76,7 +76,7 @@ func TestWebhookFilters(t *testing.T) {
 			t.Errorf("wants(%+v) = %v", c.a, !c.want)
 		}
 	}
-	custom := newNotifier(WebhookConfig{URL: "http://x", Events: []string{"note.sent"}}, nil)
+	custom := newNotifier(WebhookConfig{URL: "http://x", Events: []board.ActivityKind{board.ActivityNoteSent}}, nil)
 	if !custom.wants(board.Activity{Kind: "note.sent"}) || custom.wants(board.Activity{Kind: "session.stalled"}) {
 		t.Error("custom event list not honoured")
 	}
@@ -90,7 +90,7 @@ func TestWebhookEscapesSlackMarkup(t *testing.T) {
 	if strings.ContainsAny(got, "<>") || !strings.Contains(got, "&lt;!channel&gt; &amp; &lt;https://evil.example|the runbook&gt;") {
 		t.Fatalf("text = %s", got)
 	}
-	for _, kind := range []string{"session.stalled", "session.gone", "conflict", "other"} {
+	for _, kind := range []board.ActivityKind{"session.stalled", "session.gone", "conflict", "other"} {
 		a := board.Activity{Kind: kind, Member: "m", Agent: "a", Repo: "r", Text: "t"}
 		if s := describeActivity(a); strings.ContainsAny(s, "<>&") {
 			t.Errorf("%s: the template itself uses Slack markup: %s", kind, s)

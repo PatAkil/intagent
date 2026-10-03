@@ -91,6 +91,11 @@ func (fc FileConfig) validate() error {
 	if u := fc.Webhook.URL; u != "" && !strings.HasPrefix(u, "https://") && !strings.HasPrefix(u, "http://") {
 		return fmt.Errorf("webhook.url %q must be an http or https URL", u)
 	}
+	for _, e := range fc.Webhook.Events {
+		if _, err := board.ParseActivityKind(string(e)); err != nil {
+			return fmt.Errorf("webhook.events: %w", err)
+		}
+	}
 	for _, a := range []board.Action{fc.Policy.Block, fc.Policy.Overlap, fc.Policy.Nearby} {
 		if a == "" {
 			continue

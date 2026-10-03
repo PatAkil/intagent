@@ -490,6 +490,7 @@ func TestConfigFiles(t *testing.T) {
 		`{"members":[{"name":"a","token_sha256":"zz"}]}`,
 		`{"members":[{"name":"a","token_sha256":"` + HashToken("x") + `"},{"name":"a","token_sha256":"` + HashToken("y") + `"}]}`,
 		`{"policy":{"block":"explode"}}`,
+		`{"webhook":{"url":"https://hooks.example.com/x","events":["session.stuck"]}}`,
 		`{"stall_after":"soon"}`,
 	} {
 		_ = os.WriteFile(bad, []byte(body), 0o600)

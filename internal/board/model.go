@@ -3,6 +3,8 @@ package board
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
 )
 
@@ -335,18 +337,57 @@ type Conflict struct {
 	SameClaim bool      `json:"same_claim,omitempty"`
 }
 
+// ActivityKind names what an activity records.
+type ActivityKind string
+
+// Activity kinds, as the feed, the dashboard and webhooks name them.
+const (
+	ActivityClaimOpened         ActivityKind = "claim.opened"
+	ActivityClaimReleased       ActivityKind = "claim.released"
+	ActivityClaimForgotten      ActivityKind = "claim.forgotten"
+	ActivitySessionStarted      ActivityKind = "session.started"
+	ActivitySessionEnded        ActivityKind = "session.ended"
+	ActivitySessionRecovered    ActivityKind = "session.recovered"
+	ActivitySessionStalled      ActivityKind = "session.stalled"
+	ActivitySessionGone         ActivityKind = "session.gone"
+	ActivityFileChanged         ActivityKind = "file.changed"
+	ActivityFootprintReconciled ActivityKind = "footprint.reconciled"
+	ActivityConflict            ActivityKind = "conflict"
+	ActivityIntentDeclared      ActivityKind = "intent.declared"
+	ActivityIntentReleased      ActivityKind = "intent.released"
+	ActivityNoteSent            ActivityKind = "note.sent"
+)
+
+var activityKinds = []ActivityKind{
+	ActivityClaimOpened, ActivityClaimReleased, ActivityClaimForgotten, ActivitySessionStarted, ActivitySessionEnded, ActivitySessionRecovered,
+	ActivitySessionStalled, ActivitySessionGone, ActivityFileChanged, ActivityFootprintReconciled,
+	ActivityConflict, ActivityIntentDeclared, ActivityIntentReleased, ActivityNoteSent,
+}
+
+// ParseActivityKind validates an activity kind's name.
+func ParseActivityKind(s string) (ActivityKind, error) {
+	if k := ActivityKind(s); slices.Contains(activityKinds, k) {
+		return k, nil
+	}
+	names := make([]string, len(activityKinds))
+	for i, k := range activityKinds {
+		names[i] = string(k)
+	}
+	return "", fmt.Errorf("unknown activity kind %q: want one of %s", s, strings.Join(names, ", "))
+}
+
 // Activity is a record of something that happened, for the dashboard feed.
 type Activity struct {
-	Seq      uint64    `json:"seq"`
-	At       time.Time `json:"at"`
-	Kind     string    `json:"kind"`
-	Repo     string    `json:"repo"`
-	Member   string    `json:"member,omitempty"`
-	ClaimID  string    `json:"claim_id,omitempty"`
-	Session  string    `json:"session,omitempty"`
-	Agent    Agent     `json:"agent,omitempty"`
-	Paths    []string  `json:"paths,omitempty"`
-	Text     string    `json:"text,omitempty"`
-	Severity Severity  `json:"severity,omitempty"`
-	Decision Decision  `json:"decision,omitempty"`
+	Seq      uint64       `json:"seq"`
+	At       time.Time    `json:"at"`
+	Kind     ActivityKind `json:"kind"`
+	Repo     string       `json:"repo"`
+	Member   string       `json:"member,omitempty"`
+	ClaimID  string       `json:"claim_id,omitempty"`
+	Session  string       `json:"session,omitempty"`
+	Agent    Agent        `json:"agent,omitempty"`
+	Paths    []string     `json:"paths,omitempty"`
+	Text     string       `json:"text,omitempty"`
+	Severity Severity     `json:"severity,omitempty"`
+	Decision Decision     `json:"decision,omitempty"`
 }

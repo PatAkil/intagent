@@ -99,7 +99,7 @@ func (h *harness) declare(member string, mode Mode, summary string, patterns ...
 	return res
 }
 
-func (h *harness) activities(kind string) []Activity {
+func (h *harness) activities(kind ActivityKind) []Activity {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	var out []Activity

@@ -291,7 +291,7 @@ func (b *Board) claimFor(now time.Time, member string, w Where) *Claim {
 	}
 	b.claims[c.ID] = c
 	b.byKey[c.key()] = c.ID
-	b.record(Activity{At: now, Kind: "claim.opened", Repo: c.Repo, Member: member, ClaimID: c.ID, Text: c.Branch})
+	b.record(Activity{At: now, Kind: ActivityClaimOpened, Repo: c.Repo, Member: member, ClaimID: c.ID, Text: c.Branch})
 	return c
 }
 
@@ -310,7 +310,7 @@ func (b *Board) sessionFor(now time.Time, ev HookEvent, c *Claim) *Session {
 			Phase:     PhaseWaiting,
 		}
 		b.sessions[key] = s
-		b.record(Activity{At: now, Kind: "session.started", Repo: c.Repo, Member: ev.Member, ClaimID: c.ID, Session: ev.SessionID, Agent: ev.Agent})
+		b.record(Activity{At: now, Kind: ActivitySessionStarted, Repo: c.Repo, Member: ev.Member, ClaimID: c.ID, Session: ev.SessionID, Agent: ev.Agent})
 	}
 	s.ClaimID = c.ID
 	return s
@@ -440,7 +440,7 @@ func (b *Board) Hook(now time.Time, ev HookEvent) (HookResult, error) {
 		s.Phase = PhaseEnded
 		clearTools(s)
 		b.reconcile(now, c, s, ev.Footprint)
-		b.record(Activity{At: now, Kind: "session.ended", Repo: c.Repo, Member: c.Member, ClaimID: c.ID, Session: s.ID, Agent: s.Agent})
+		b.record(Activity{At: now, Kind: ActivitySessionEnded, Repo: c.Repo, Member: c.Member, ClaimID: c.ID, Session: s.ID, Agent: s.Agent})
 	case KindHeartbeat:
 		if s.Phase == PhaseEnded {
 			s.Phase = PhaseWaiting
@@ -454,7 +454,7 @@ func (b *Board) Hook(now time.Time, ev HookEvent) (HookResult, error) {
 	s.LastSeen = now
 	c.UpdatedAt = now
 	if is := b.state(now, s); is != was && (was == StateStalled || was == StateGone) {
-		b.record(Activity{At: now, Kind: "session.recovered", Repo: c.Repo, Member: c.Member, ClaimID: c.ID, Session: s.ID, Agent: s.Agent})
+		b.record(Activity{At: now, Kind: ActivitySessionRecovered, Repo: c.Repo, Member: c.Member, ClaimID: c.ID, Session: s.ID, Agent: s.Agent})
 	}
 	s.Reported = b.state(now, s)
 	if ev.Kind == KindSessionEnd {
@@ -575,7 +575,7 @@ func (b *Board) reconcile(now time.Time, c *Claim, s *Session, fp *Footprint) {
 	c.Footprint = next
 	c.FootprintTruncated = fp.Truncated || len(fp.Files) > len(files)
 	if len(added) > 0 || removed > 0 {
-		b.record(Activity{At: now, Kind: "footprint.reconciled", Repo: c.Repo, Member: c.Member, ClaimID: c.ID, Session: s.ID, Agent: s.Agent,
+		b.record(Activity{At: now, Kind: ActivityFootprintReconciled, Repo: c.Repo, Member: c.Member, ClaimID: c.ID, Session: s.ID, Agent: s.Agent,
 			Text: fmt.Sprintf("%d changed files (+%d, -%d)", len(next), len(added), removed)})
 	}
 	if len(added) > 0 {
@@ -623,7 +623,7 @@ func (b *Board) touch(now time.Time, c *Claim, s *Session, paths []PathRef) {
 		c.Footprint[p.Path] = &Touch{Area: p.Area, At: now, Session: s.Key}
 		fresh = append(fresh, p)
 	}
-	b.record(Activity{At: now, Kind: "file.changed", Repo: c.Repo, Member: c.Member, ClaimID: c.ID, Session: s.ID, Agent: s.Agent, Paths: pathsOf(paths)})
+	b.record(Activity{At: now, Kind: ActivityFileChanged, Repo: c.Repo, Member: c.Member, ClaimID: c.ID, Session: s.ID, Agent: s.Agent, Paths: pathsOf(paths)})
 	if len(fresh) > 0 {
 		b.alertOthers(now, c, fresh)
 	}
@@ -676,7 +676,7 @@ func (b *Board) reportUnchecked(now time.Time, c *Claim, s *Session, added []Pat
 				continue
 			}
 			lines = append(lines, fmt.Sprintf("- %s, which %s holds exclusively%s", p.Path, who(b.claims[cf.ClaimID]), taskOf(cf)))
-			b.record(Activity{At: now, Kind: "conflict", Repo: c.Repo, Member: c.Member, ClaimID: c.ID, Session: s.ID, Agent: s.Agent,
+			b.record(Activity{At: now, Kind: ActivityConflict, Repo: c.Repo, Member: c.Member, ClaimID: c.ID, Session: s.ID, Agent: s.Agent,
 				Paths: []string{p.Path}, Severity: Block, Decision: Allow,
 				Text: fmt.Sprintf("%s → %s (changed without a check, inside their exclusive intent)", p.Path, cf.Member)})
 			break
@@ -733,11 +733,11 @@ func (b *Board) releaseIfDone(now time.Time, c *Claim) bool {
 	if len(c.Intents) > 0 || len(c.Footprint) > 0 || b.liveClaims(now)[c.ID] {
 		return false
 	}
-	b.deleteClaim(now, c, "claim.released")
+	b.deleteClaim(now, c, ActivityClaimReleased)
 	return true
 }
 
-func (b *Board) deleteClaim(now time.Time, c *Claim, kind string) {
+func (b *Board) deleteClaim(now time.Time, c *Claim, kind ActivityKind) {
 	delete(b.claims, c.ID)
 	delete(b.byKey, c.key())
 	b.record(Activity{At: now, Kind: kind, Repo: c.Repo, Member: c.Member, ClaimID: c.ID, Text: c.Branch})
@@ -934,7 +934,7 @@ func (b *Board) decide(now time.Time, c *Claim, s *Session, paths []PathRef, noA
 	b.count(now, c.Repo, all, refused, asked, warned, fresh)
 	if fresh {
 		top := mostSevere(acted)
-		b.record(Activity{At: now, Kind: "conflict", Repo: c.Repo, Member: c.Member, ClaimID: c.ID, Session: s.ID, Agent: s.Agent,
+		b.record(Activity{At: now, Kind: ActivityConflict, Repo: c.Repo, Member: c.Member, ClaimID: c.ID, Session: s.ID, Agent: s.Agent,
 			Paths: pathsOf(paths), Severity: top.Severity, Decision: res.Decision,
 			Text: fmt.Sprintf("%s → %s (%s)", top.Path, top.Member, top.Why)})
 	}
@@ -1127,7 +1127,7 @@ func (b *Board) Declare(now time.Time, r DeclareRequest) (DeclareResult, error) 
 	b.tellIntent(now, c, res.Accepted, res.Overlaps)
 	if len(res.Accepted) > 0 {
 		b.statsOf(c.Repo, now).Intents += len(res.Accepted)
-		b.record(Activity{At: now, Kind: "intent.declared", Repo: c.Repo, Member: c.Member, ClaimID: c.ID,
+		b.record(Activity{At: now, Kind: ActivityIntentDeclared, Repo: c.Repo, Member: c.Member, ClaimID: c.ID,
 			Paths: intentPatterns(res.Accepted), Text: fmt.Sprintf("%s: %s", mode, summary)})
 	}
 	res.Text = renderDeclare(now, res, b.cfg.Policy)
@@ -1266,7 +1266,7 @@ func (b *Board) Release(now time.Time, r ReleaseRequest) (int, error) {
 	c.Intents = keep
 	c.UpdatedAt = now
 	if len(gone) > 0 {
-		b.record(Activity{At: now, Kind: "intent.released", Repo: c.Repo, Member: c.Member, ClaimID: c.ID, Paths: gone})
+		b.record(Activity{At: now, Kind: ActivityIntentReleased, Repo: c.Repo, Member: c.Member, ClaimID: c.ID, Paths: gone})
 	}
 	return len(gone), nil
 }
@@ -1364,7 +1364,7 @@ func (b *Board) Note(now time.Time, r NoteRequest) (NoteResult, error) {
 		res.Delivered = append(res.Delivered, t.ID)
 	}
 	b.statsOf(w.Repo, now).Notes += len(targets)
-	b.record(Activity{At: now, Kind: "note.sent", Repo: w.Repo, Member: r.Member, ClaimID: from.ID, Text: fmt.Sprintf("to %s: %s", to, text)})
+	b.record(Activity{At: now, Kind: ActivityNoteSent, Repo: w.Repo, Member: r.Member, ClaimID: from.ID, Text: fmt.Sprintf("to %s: %s", to, text)})
 	return res, nil
 }
 
@@ -1432,7 +1432,11 @@ func (b *Board) Sweep(now time.Time) {
 				if st == StateStalled && s.Tool != "" {
 					text = fmt.Sprintf("inside %s for %s", s.Tool, ago(now, s.ToolSince))
 				}
-				b.record(Activity{At: now, Kind: "session." + string(st), Repo: repo, Member: member, ClaimID: s.ClaimID, Session: s.ID, Agent: s.Agent, Text: text})
+				kind := ActivitySessionGone
+				if st == StateStalled {
+					kind = ActivitySessionStalled
+				}
+				b.record(Activity{At: now, Kind: kind, Repo: repo, Member: member, ClaimID: s.ClaimID, Session: s.ID, Agent: s.Agent, Text: text})
 			}
 			s.Reported = st
 			changed = true
@@ -1455,10 +1459,10 @@ func (b *Board) Sweep(now time.Time) {
 		}
 		switch {
 		case len(c.Intents) == 0 && len(c.Footprint) == 0 && !b.hasSessions(c.ID):
-			b.deleteClaim(now, c, "claim.released")
+			b.deleteClaim(now, c, ActivityClaimReleased)
 			changed = true
 		case now.Sub(c.UpdatedAt) > b.cfg.ForgetAfter:
-			b.deleteClaim(now, c, "claim.forgotten")
+			b.deleteClaim(now, c, ActivityClaimForgotten)
 			changed = true
 		}
 	}

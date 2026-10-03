@@ -21,11 +21,11 @@ type WebhookConfig struct {
 	URL string `json:"url"`
 	// Events lists activity kinds to send. Empty means DefaultWebhookEvents.
 	// "conflict" sends only refused or asked edits, never warnings.
-	Events []string `json:"events,omitempty"`
+	Events []board.ActivityKind `json:"events,omitempty"`
 }
 
 // DefaultWebhookEvents are the activities worth interrupting a person for.
-var DefaultWebhookEvents = []string{"session.stalled", "session.gone", "conflict"}
+var DefaultWebhookEvents = []board.ActivityKind{board.ActivitySessionStalled, board.ActivitySessionGone, board.ActivityConflict}
 
 // webhookPayload is Slack-compatible ("text") and carries the activity for other consumers.
 type webhookPayload struct {
@@ -51,7 +51,7 @@ func (n *notifier) wants(a board.Activity) bool {
 	if !slices.Contains(n.cfg.Events, a.Kind) {
 		return false
 	}
-	if a.Kind == "conflict" {
+	if a.Kind == board.ActivityConflict {
 		// Refusals and questions, and changes made inside a teammate's
 		// reservation without a check.
 		return a.Decision == board.Refuse || a.Decision == board.DecideAsk || a.Severity == board.Block
