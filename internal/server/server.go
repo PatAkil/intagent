@@ -366,7 +366,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"member": memberFrom(r), "version": Version, "policy": s.board.Config().Policy, "demo": s.demo})
+	writeJSON(w, http.StatusOK, board.Whoami{Member: memberFrom(r), Version: Version, Policy: s.board.Config().Policy, Demo: s.demo})
 }
 
 func (s *Server) handleHook(w http.ResponseWriter, r *http.Request) {
@@ -409,13 +409,7 @@ func (s *Server) handleRelease(w http.ResponseWriter, r *http.Request) {
 		writeBoardError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]int{"released": n})
-}
-
-// CheckResponse is the answer to POST /v1/check.
-type CheckResponse struct {
-	Conflicts []board.Conflict `json:"conflicts"`
-	Text      string           `json:"text"`
+	writeJSON(w, http.StatusOK, board.ReleaseResult{Released: n})
 }
 
 func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
@@ -433,7 +427,7 @@ func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
 	if cs == nil {
 		cs = []board.Conflict{}
 	}
-	writeJSON(w, http.StatusOK, CheckResponse{Conflicts: cs, Text: board.RenderConflicts(now, cs)})
+	writeJSON(w, http.StatusOK, board.CheckResult{Conflicts: cs, Text: board.RenderConflicts(now, cs)})
 }
 
 func (s *Server) handleNote(w http.ResponseWriter, r *http.Request) {

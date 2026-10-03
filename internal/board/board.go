@@ -1337,6 +1337,27 @@ type CheckRequest struct {
 	Paths  []PathRef `json:"paths"`
 }
 
+// CheckResult is the answer to POST /v1/check: the conflicts, and the same as text.
+type CheckResult struct {
+	Conflicts []Conflict `json:"conflicts"`
+	Text      string     `json:"text"`
+}
+
+// ReleaseResult is the answer to POST /v1/intents/release.
+type ReleaseResult struct {
+	Released int `json:"released"`
+}
+
+// Whoami is the answer to GET /v1/whoami: the member a token belongs to, and
+// the server they reach.
+type Whoami struct {
+	Member  string `json:"member"`
+	Version string `json:"version"`
+	Policy  Policy `json:"policy"`
+	// Demo is true for 'intagent demo', whose agents are simulated.
+	Demo bool `json:"demo,omitempty"`
+}
+
 // Check lists conflicts for paths without changing anything.
 func (b *Board) Check(now time.Time, r CheckRequest) ([]Conflict, error) {
 	w, err := cleanWhere(r.Where)

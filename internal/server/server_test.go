@@ -265,7 +265,7 @@ func TestCollisionOverHTTP(t *testing.T) {
 		t.Fatalf("bob posing as alice was allowed: %+v", res)
 	}
 
-	var chk CheckResponse
+	var chk board.CheckResult
 	ts.do(t, "POST", "/v1/check", "bob", board.CheckRequest{Where: where("bob"), Paths: []board.PathRef{{Path: "svc/pay/x.go"}}}, &chk)
 	if len(chk.Conflicts) != 1 || !strings.Contains(chk.Text, "block") {
 		t.Fatalf("check: %+v", chk)

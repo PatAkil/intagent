@@ -108,22 +108,14 @@ func (c *Client) Declare(ctx context.Context, r board.DeclareRequest) (board.Dec
 
 // Release releases intents and returns how many were released.
 func (c *Client) Release(ctx context.Context, r board.ReleaseRequest) (int, error) {
-	var res struct {
-		Released int `json:"released"`
-	}
+	var res board.ReleaseResult
 	err := c.do(ctx, http.MethodPost, "/v1/intents/release", r, &res)
 	return res.Released, err
 }
 
-// CheckResult is who else matters to some paths.
-type CheckResult struct {
-	Conflicts []board.Conflict `json:"conflicts"`
-	Text      string           `json:"text"`
-}
-
 // Check asks who else is working on paths.
-func (c *Client) Check(ctx context.Context, r board.CheckRequest) (CheckResult, error) {
-	var res CheckResult
+func (c *Client) Check(ctx context.Context, r board.CheckRequest) (board.CheckResult, error) {
+	var res board.CheckResult
 	err := c.do(ctx, http.MethodPost, "/v1/check", r, &res)
 	return res, err
 }
@@ -156,16 +148,9 @@ func (c *Client) Repos(ctx context.Context) ([]board.RepoSummary, error) {
 	return rs, err
 }
 
-// Whoami describes the member the token belongs to.
-type Whoami struct {
-	Member  string       `json:"member"`
-	Version string       `json:"version"`
-	Policy  board.Policy `json:"policy"`
-}
-
 // Whoami asks the server who the token belongs to.
-func (c *Client) Whoami(ctx context.Context) (Whoami, error) {
-	var w Whoami
+func (c *Client) Whoami(ctx context.Context) (board.Whoami, error) {
+	var w board.Whoami
 	err := c.do(ctx, http.MethodGet, "/v1/whoami", nil, &w)
 	return w, err
 }
