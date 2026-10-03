@@ -23,6 +23,8 @@ jobs:
         run: go test -race -count=1 ./...
       - name: Build
         run: go build ./cmd/intagent
+      - name: Vet for Windows (its file lock is Windows-only code)
+        run: GOOS=windows go vet ./...
 
   lint:
     runs-on: ubuntu-latest
