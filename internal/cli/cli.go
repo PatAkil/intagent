@@ -129,9 +129,11 @@ type exitError struct {
 func (e exitError) Error() string { return e.msg }
 
 // parse parses a command's flags wherever they stand among its arguments
-// ("declare 'web/**' -x" is "declare -x 'web/**'"); after "--" everything is an
-// argument. -h and --help come back as flag.ErrHelp, anything else wrong as
-// errUsage, the usage having been printed.
+// ("declare 'web/**' -x" is "declare -x 'web/**'"). Only the command's own
+// flags move: anything else that starts with a dash ("->" in a note) stays
+// an argument, and so does everything after "--". Before the first argument,
+// an unknown flag or -h is reported as usual. -h and --help come back as
+// flag.ErrHelp, anything else wrong as errUsage, the usage having been printed.
 func parse(fs *flag.FlagSet, args []string) error {
 	var flags, pos []string
 	for i := 0; i < len(args); i++ {
@@ -140,16 +142,14 @@ func parse(fs *flag.FlagSet, args []string) error {
 			pos = append(pos, args[i+1:]...)
 			break
 		}
-		if len(arg) < 2 || arg[0] != '-' {
+		name, _, _ := strings.Cut(strings.TrimLeft(arg, "-"), "=")
+		f := fs.Lookup(name)
+		if len(arg) < 2 || arg[0] != '-' || (f == nil && len(pos) > 0) {
 			pos = append(pos, arg)
 			continue
 		}
 		flags = append(flags, arg)
-		name := strings.TrimLeft(arg, "-")
-		if strings.Contains(name, "=") {
-			continue
-		}
-		if f := fs.Lookup(name); f != nil && !isBoolFlag(f) && i+1 < len(args) {
+		if f != nil && !strings.Contains(arg, "=") && !isBoolFlag(f) && i+1 < len(args) {
 			flags = append(flags, args[i+1])
 			i++
 		}
@@ -162,6 +162,13 @@ func parse(fs *flag.FlagSet, args []string) error {
 		return flag.ErrHelp
 	}
 	return errUsage
+}
+
+// flagSet reports whether a flag was given on the command line.
+func flagSet(fs *flag.FlagSet, name string) bool {
+	set := false
+	fs.Visit(func(f *flag.Flag) { set = set || f.Name == name })
+	return set
 }
 
 func isBoolFlag(f *flag.Flag) bool {

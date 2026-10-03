@@ -84,7 +84,11 @@ func (ct codexTrust) apply() ([]string, error) {
 	var notes []string
 	changed := false
 	for _, w := range wants {
-		switch prev := doc.set(w[0], w[1], w[2]); prev {
+		prev, err := doc.set(w[0], w[1], w[2])
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", ct.config, err)
+		}
+		switch prev {
 		case w[2]:
 			notes = append(notes, "already trusted: "+w[3])
 		case "":
@@ -96,14 +100,18 @@ func (ct codexTrust) apply() ([]string, error) {
 	if !changed {
 		return notes, nil
 	}
-	if err := os.MkdirAll(filepath.Dir(ct.config), 0o700); err != nil {
+	target := ct.config
+	if real, err := filepath.EvalSymlinks(target); err == nil {
+		target = real // a dotfiles link stays a link
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
 		return nil, err
 	}
-	tmp := ct.config + ".intagent.tmp"
+	tmp := target + ".intagent.tmp"
 	if err := os.WriteFile(tmp, []byte(doc.String()), perm); err != nil {
 		return nil, err
 	}
-	return notes, os.Rename(tmp, ct.config)
+	return notes, os.Rename(tmp, target)
 }
 
 // problems says what keeps Codex from running intagent's hooks, if anything.
@@ -171,7 +179,7 @@ func (d *tomlDoc) String() string {
 // table returns the header's line and the end of its table, or -1, -1.
 func (d *tomlDoc) table(header string) (int, int) {
 	for i, l := range d.lines {
-		if strings.TrimSpace(l) == header {
+		if tomlHeader(l) == header {
 			end := i + 1
 			for end < len(d.lines) && !strings.HasPrefix(strings.TrimSpace(d.lines[end]), "[") {
 				end++
@@ -180,6 +188,42 @@ func (d *tomlDoc) table(header string) (int, int) {
 		}
 	}
 	return -1, -1
+}
+
+// tomlHeader normalises a table header line: no trailing comment, and
+// single-quoted keys written double-quoted, as tomlString writes them.
+func tomlHeader(line string) string {
+	line = strings.TrimSpace(line)
+	if !strings.HasPrefix(line, "[") || strings.HasPrefix(line, "[[") {
+		return ""
+	}
+	var b strings.Builder
+	for i := 0; i < len(line); i++ {
+		switch c := line[i]; c {
+		case '"':
+			j := i + 1
+			for j < len(line) && line[j] != '"' {
+				if line[j] == '\\' {
+					j++
+				}
+				j++
+			}
+			b.WriteString(line[i:min(j+1, len(line))])
+			i = j
+		case '\'':
+			j := strings.IndexByte(line[i+1:], '\'')
+			if j < 0 {
+				return line
+			}
+			b.WriteString(tomlString(line[i+1 : i+1+j]))
+			i += j + 1
+		case '#':
+			return strings.TrimSpace(b.String())
+		default:
+			b.WriteByte(c)
+		}
+	}
+	return strings.TrimSpace(b.String())
 }
 
 // get returns a key's value in a table, without a trailing comment, or "".
@@ -194,23 +238,31 @@ func (d *tomlDoc) get(header, key string) string {
 }
 
 // set sets a key in a table, adding the table or the key if needed, and
-// returns the value it had.
-func (d *tomlDoc) set(header, key, value string) string {
+// returns the value it had. It refuses rather than add a second copy of a
+// table it did not recognise, which would make the file invalid.
+func (d *tomlDoc) set(header, key, value string) (string, error) {
 	i, end := d.table(header)
 	if i < 0 {
+		name := strings.Trim(header, "[]")
+		for _, l := range d.lines {
+			if strings.HasPrefix(strings.TrimSpace(l), "[") && strings.Contains(l, name[strings.IndexByte(name, '.')+1:]) {
+				return "", fmt.Errorf("it already has a table like %s that intagent cannot edit safely; "+
+					"set %s = %s in it yourself", header, key, value)
+			}
+		}
 		d.lines = append(d.lines, "", header, key+" = "+value)
-		return ""
+		return "", nil
 	}
 	for j := i + 1; j < end; j++ {
 		if k, v, ok := tomlKey(d.lines[j]); ok && k == key {
 			if v != value {
 				d.lines[j] = key + " = " + value
 			}
-			return v
+			return v, nil
 		}
 	}
 	d.lines = slices.Insert(d.lines, i+1, key+" = "+value)
-	return ""
+	return "", nil
 }
 
 func tomlKey(line string) (key, value string, ok bool) {
@@ -218,6 +270,9 @@ func tomlKey(line string) (key, value string, ok bool) {
 	k, v = strings.TrimSpace(k), strings.TrimSpace(v)
 	if !ok || k == "" || strings.HasPrefix(k, "#") {
 		return "", "", false
+	}
+	if len(k) >= 2 && (k[0] == '"' || k[0] == '\'') && k[len(k)-1] == k[0] {
+		k = k[1 : len(k)-1] // "trust_level" = ...
 	}
 	if strings.HasPrefix(v, `"`) {
 		for i := 1; i < len(v); i++ {

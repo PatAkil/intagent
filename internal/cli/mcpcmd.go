@@ -213,6 +213,8 @@ func (w *workspace) patterns(base string, in []string) []string {
 	}
 	out := make([]string, 0, len(in))
 	for _, p := range in {
+		// A trailing slash says "this directory and all below"; keep it.
+		dir := strings.HasSuffix(p, "/") || strings.HasSuffix(p, string(filepath.Separator))
 		switch {
 		case filepath.IsAbs(p):
 			if rel, ok := w.wt.Rel(p); ok {
@@ -220,6 +222,9 @@ func (w *workspace) patterns(base string, in []string) []string {
 			}
 		case prefix != "":
 			p = path.Join(prefix, filepath.ToSlash(p))
+		}
+		if dir && !strings.HasSuffix(p, "/") {
+			p += "/"
 		}
 		out = append(out, p)
 	}

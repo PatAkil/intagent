@@ -63,10 +63,6 @@ func (a *App) initRepo(ctx context.Context, args []string) error {
 	if err := parse(fs, args); err != nil {
 		return err
 	}
-	agents, err := parseAgents(*agentList)
-	if err != nil {
-		return err
-	}
 	dir, err := a.workdir()
 	if err != nil {
 		return err
@@ -77,6 +73,14 @@ func (a *App) initRepo(ctx context.Context, args []string) error {
 	}
 	root := wt.Root
 	rc, _, err := client.LoadRepoConfig(root)
+	if err != nil {
+		return err
+	}
+	// Without --agents, a re-run keeps the agents the team chose.
+	if !flagSet(fs, "agents") && len(rc.Agents) > 0 {
+		*agentList = strings.Join(rc.Agents, ",")
+	}
+	agents, err := parseAgents(*agentList)
 	if err != nil {
 		return err
 	}

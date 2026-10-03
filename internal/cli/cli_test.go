@@ -922,3 +922,47 @@ func TestGeminiUserHookStandsAsideForTheProject(t *testing.T) {
 		t.Fatalf("in a subdirectory the user's hook must answer: %q", out)
 	}
 }
+
+// Re-running init (to trust Codex, add the git hook or after an upgrade)
+// keeps the agents the team chose.
+func TestInitRerunKeepsTheTeamsAgents(t *testing.T) {
+	tm := newTeam(t, "alice")
+	a := tm.clone("alice")
+	if out, errOut, code := tm.as("alice", a, "", "init", "--url", tm.url, "--agents", "claude-code,codex"); code != 0 {
+		t.Fatalf("init: %s %s", out, errOut)
+	}
+	writeFile(t, filepath.Join(a, ".gemini/settings.json"), "{ // the team's own, with comments\n}\n")
+	if out, errOut, code := tm.as("alice", a, "", "init", "--trust-codex"); code != 0 {
+		t.Fatalf("re-run: %s %s", out, errOut)
+	}
+	var rc struct{ Agents []string }
+	readJSON(t, filepath.Join(a, ".intagent.json"), &rc)
+	if strings.Join(rc.Agents, ",") != "claude-code,codex" {
+		t.Fatalf("agents = %v", rc.Agents)
+	}
+	if _, err := os.Stat(filepath.Join(a, ".cursor")); err == nil {
+		t.Fatal("the re-run wired Cursor")
+	}
+}
+
+func TestCLIArgumentsKeepTheirShape(t *testing.T) {
+	tm := newTeam(t, "alice", "bob")
+	a, b := tm.clone("alice"), tm.clone("bob")
+	tm.enrol(map[string]string{"alice": a, "bob": b})
+	// A directory typed with a slash in a subdirectory stays a directory.
+	if out, errOut, code := tm.as("alice", filepath.Join(a, "svc"), "", "declare", "-x", "-m", "conf", "conf.d/"); code != 0 || !strings.Contains(out, "svc/conf.d/**") {
+		t.Fatalf("declare conf.d/: %d %s %s", code, out, errOut)
+	}
+	// Note text may hold dashes, even -h.
+	tm.as("bob", b, claudeEvent("b1", b, "UserPromptSubmit", map[string]any{"prompt": "x"}), "hook")
+	for _, text := range [][]string{{"renaming", "retry", "->", "backoff"}, {"intagent", "-h", "lists", "commands"}} {
+		args := append([]string{"note", "bob"}, text...)
+		if out, errOut, code := tm.as("alice", a, "", args...); code != 0 || !strings.Contains(out, "Note queued") {
+			t.Fatalf("note %v: %d %s %s", text, code, out, errOut)
+		}
+	}
+	out, _, _ := tm.as("bob", b, claudeEvent("b1", b, "PostToolUse", map[string]any{"tool_name": "Bash", "tool_input": map[string]any{"command": "ls"}}), "hook")
+	if !strings.Contains(out, "renaming retry -> backoff") || !strings.Contains(out, "intagent -h lists commands") {
+		t.Fatalf("notes as delivered: %s", out)
+	}
+}

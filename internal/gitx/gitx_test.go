@@ -238,3 +238,20 @@ func TestAreas(t *testing.T) {
 		t.Errorf("fallback to markers = %q", got)
 	}
 }
+
+// Before the first commit, staged and untracked files are both new.
+func TestChangesBeforeTheFirstCommit(t *testing.T) {
+	dir := t.TempDir()
+	git(t, dir, "init", "-q", "-b", "main")
+	write(t, dir, "svc/a.go", "package svc\n")
+	write(t, dir, "svc/b.go", "package svc\n")
+	git(t, dir, "add", "svc/a.go")
+	w, err := Open(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files, _, err := w.Changes(context.Background(), 0)
+	if err != nil || strings.Join(files, ",") != "svc/a.go,svc/b.go" {
+		t.Fatalf("changes = %v, %v", files, err)
+	}
+}

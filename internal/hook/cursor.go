@@ -149,9 +149,9 @@ func (Cursor) Render(ev Event, res board.HookResult) Output {
 }
 
 func jsonOut(v any) Output {
-	b, err := json.Marshal(v)
+	b, err := marshal(v)
 	if err != nil {
 		return Output{Stdout: []byte("{}\n")}
 	}
-	return Output{Stdout: append(b, '\n')}
+	return Output{Stdout: b}
 }

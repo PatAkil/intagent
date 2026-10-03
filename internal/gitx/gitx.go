@@ -197,7 +197,10 @@ func (w *Worktree) Changes(ctx context.Context, limit int) ([]string, bool, erro
 		if base != "HEAD" {
 			return nil, false, err
 		}
-		tracked = nil // a repository without commits yet
+		// No commits yet: everything in the index is new.
+		if tracked, err = run(ctx, w.Root, "ls-files", "-z"); err != nil {
+			return nil, false, err
+		}
 	}
 	add(tracked)
 	untracked, err := run(ctx, w.Root, "ls-files", "--others", "--exclude-standard", "-z")

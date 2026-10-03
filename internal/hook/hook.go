@@ -5,6 +5,7 @@
 package hook
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -102,13 +103,25 @@ type hookSpecific struct {
 }
 
 func specific(h hookSpecific) Output {
-	b, err := json.Marshal(struct {
+	b, err := marshal(struct {
 		HookSpecificOutput hookSpecific `json:"hookSpecificOutput"`
 	}{h})
 	if err != nil {
 		return Output{}
 	}
-	return Output{Stdout: append(b, '\n')}
+	return Output{Stdout: b}
+}
+
+// marshal writes JSON as agents read it: one line, with "<", ">" and "&" as
+// they are rather than escaped for HTML.
+func marshal(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }
 
 // stringField reads a string field from a raw JSON object.
