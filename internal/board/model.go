@@ -230,9 +230,11 @@ type Session struct {
 	StartedAt time.Time `json:"started_at"`
 	LastSeen  time.Time `json:"last_seen"`
 	Phase     Phase     `json:"phase"`
-	// Tool is the tool call in progress, if any, and ToolSince when it began.
+	// Tool is the latest tool call in progress, if any; ToolSince is when the
+	// session went into tools, and InFlight how many calls are running.
 	Tool      string    `json:"tool,omitempty"`
 	ToolSince time.Time `json:"tool_since,omitzero"`
+	InFlight  int       `json:"in_flight,omitempty"`
 	// Acked holds the conflicts this session has already been told about.
 	Acked map[string]bool `json:"acked,omitempty"`
 	// Reported is the last derived state announced as an activity.

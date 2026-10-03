@@ -83,6 +83,7 @@ const (
 // Board holds every claim and session the server knows about.
 type Board struct {
 	mu       sync.Mutex
+	notifyMu sync.Mutex // orders notifications; taken before mu is released
 	cfg      Config
 	claims   map[string]*Claim
 	byKey    map[string]string
@@ -101,7 +102,8 @@ type Board struct {
 type Option func(*Board)
 
 // WithNotify registers fn to receive new activities. It is called without the
-// board's lock held, in the order activities happened.
+// board's lock held, one call at a time, in the order activities happened; it
+// must not block or call back into the board.
 func WithNotify(fn func([]Activity)) Option { return func(b *Board) { b.notify = fn } }
 
 // WithIDs replaces the random ID generator, for tests.
@@ -149,13 +151,20 @@ func (b *Board) Version() uint64 {
 func (b *Board) lock() { b.mu.Lock() }
 
 // unlock releases the lock and then hands pending activities to the notifier.
+// The notifier's own lock is taken before the board's is released, so two
+// writers cannot hand over their activities out of order: a stream that skips
+// what it has seen would otherwise lose the earlier ones for good.
 func (b *Board) unlock() {
 	acts := b.pending
 	b.pending = nil
-	b.mu.Unlock()
-	if len(acts) > 0 && b.notify != nil {
-		b.notify(acts)
+	if len(acts) == 0 || b.notify == nil {
+		b.mu.Unlock()
+		return
 	}
+	b.notifyMu.Lock()
+	b.mu.Unlock()
+	defer b.notifyMu.Unlock()
+	b.notify(acts)
 }
 
 func (b *Board) record(a Activity) {
@@ -348,41 +357,42 @@ func (b *Board) Hook(now time.Time, ev HookEvent) (HookResult, error) {
 		if s.Phase == PhaseEnded {
 			s.Phase = PhaseWaiting
 		}
-		s.Tool = ""
+		clearTools(s)
 		b.reconcile(now, c, s, ev.Footprint)
 		res.Context = joinBlocks(b.renderStart(now, c), b.deliver(now, c, s))
 	case KindPrompt:
-		b.setWorking(now, s, "")
+		s.Phase = PhaseWorking
+		clearTools(s)
 		b.taskFromPrompt(c, s, ev.Prompt)
 		res.Context = b.deliver(now, c, s)
 	case KindToolStart:
-		b.setWorking(now, s, ev.Tool)
+		startTool(now, s, ev.Tool)
 	case KindPreEdit:
-		b.setWorking(now, s, ev.Tool)
+		startTool(now, s, ev.Tool)
 		res = b.decide(now, c, s, ev.Paths, ev.NoAsk)
 		res.ClaimID = c.ID
 		if res.Decision != Allow {
 			// The edit does not run (yet), so no tool end will follow it.
-			b.setWorking(now, s, "")
+			endTool(s)
 		} else if ev.LateContext && res.Context != "" {
 			s.Pending, res.Context = joinBlocks(s.Pending, res.Context), ""
 		}
 	case KindPostEdit:
-		b.setWorking(now, s, "")
+		endTool(s)
 		b.touch(now, c, s, ev.Paths)
 		res.Context = b.deliver(now, c, s)
 	case KindToolEnd:
-		b.setWorking(now, s, "")
+		endTool(s)
 		// A shell command may have written files without saying which.
 		b.reconcile(now, c, s, ev.Footprint)
 		res.Context = b.deliver(now, c, s)
 	case KindStop:
 		s.Phase = PhaseWaiting
-		s.Tool = ""
+		clearTools(s)
 		b.reconcile(now, c, s, ev.Footprint)
 	case KindSessionEnd:
 		s.Phase = PhaseEnded
-		s.Tool = ""
+		clearTools(s)
 		b.reconcile(now, c, s, ev.Footprint)
 		b.record(Activity{At: now, Kind: "session.ended", Repo: c.Repo, Member: c.Member, ClaimID: c.ID, Session: s.ID, Agent: s.Agent})
 	case KindHeartbeat:
@@ -412,14 +422,34 @@ var knownKinds = map[Kind]bool{
 	KindToolEnd: true, KindStop: true, KindSessionEnd: true, KindHeartbeat: true,
 }
 
-func (b *Board) setWorking(now time.Time, s *Session, tool string) {
+// startTool records a tool call starting. Agents run tools in parallel, so
+// the session counts them: it is inside a tool, with the longer stall
+// threshold, until the last one ends.
+func startTool(now time.Time, s *Session, tool string) {
 	s.Phase = PhaseWorking
-	s.Tool = tool
-	if tool != "" {
+	if s.InFlight == 0 {
 		s.ToolSince = now
-	} else {
-		s.ToolSince = time.Time{}
 	}
+	s.InFlight++
+	s.Tool = tool
+}
+
+// endTool records a tool call ending.
+func endTool(s *Session) {
+	s.Phase = PhaseWorking
+	if s.InFlight > 0 {
+		s.InFlight--
+	}
+	if s.InFlight == 0 {
+		clearTools(s)
+	}
+}
+
+// clearTools forgets the tools in flight, at the boundaries where none can be:
+// a prompt, a stop, the session's start and end. An end event that never came
+// cannot keep a session inside a tool past them.
+func clearTools(s *Session) {
+	s.InFlight, s.Tool, s.ToolSince = 0, "", time.Time{}
 }
 
 func (b *Board) taskFromPrompt(c *Claim, s *Session, prompt string) {
@@ -624,7 +654,9 @@ func (b *Board) conflictsFor(now time.Time, self *Claim, selfSession string, p P
 		}
 	}
 	if self != nil {
-		if t, ok := self.Footprint[p.Path]; ok && t.Session != "" && t.Session != selfSession && liveSess[t.Session] {
+		// Only a hook says which session wrote a file; a file git found was
+		// written by someone in this worktree, perhaps the asking session.
+		if t, ok := self.Footprint[p.Path]; ok && !t.FromGit && t.Session != "" && t.Session != selfSession && liveSess[t.Session] {
 			out = append(out, Conflict{
 				Path: p.Path, Severity: Overlap, ClaimID: self.ID, Member: self.Member, Branch: self.Branch, Task: self.Task,
 				Why: "another live session in this same worktree changed this file", Since: t.At, Active: true, SameClaim: true,

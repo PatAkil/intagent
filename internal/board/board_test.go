@@ -723,6 +723,95 @@ func TestCheckCountsItsMostSevereConflict(t *testing.T) {
 	}
 }
 
+// However many writers race, the notifier sees every activity once and in
+// sequence order, so a stream that skips what it has seen loses nothing.
+func TestNotificationsArriveInOrder(t *testing.T) {
+	var mu sync.Mutex
+	var seqs []uint64
+	b := New(DefaultConfig(), WithNotify(func(acts []Activity) {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, a := range acts {
+			seqs = append(seqs, a.Seq)
+		}
+	}))
+	var wg sync.WaitGroup
+	for g := 0; g < 16; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			m := fmt.Sprintf("m%d", g)
+			for i := 0; i < 20; i++ {
+				ev := HookEvent{Kind: KindSessionStart, Member: m, Agent: AgentCodex, SessionID: fmt.Sprintf("s%d", i), Where: whereOf(m)}
+				_, _ = b.Hook(t0, ev)
+				ev.Kind = KindSessionEnd
+				_, _ = b.Hook(t0, ev)
+			}
+		}(g)
+	}
+	wg.Wait()
+	if len(seqs) == 0 {
+		t.Fatal("no activities")
+	}
+	for i, s := range seqs {
+		if s != uint64(i+1) {
+			t.Fatalf("activity %d has seq %d: out of order or lost", i+1, s)
+		}
+	}
+}
+
+// Agents run tools in parallel: a short tool ending must not make a session
+// with a long tool still running look stalled.
+func TestParallelToolsKeepTheSessionInATool(t *testing.T) {
+	h := newHarness(t)
+	h.hook(KindPrompt, "alice", "a1")
+	tool := func(kind Kind, name string) {
+		t.Helper()
+		if _, err := h.b.Hook(h.now, HookEvent{Kind: kind, Member: "alice", Agent: AgentClaudeCode, SessionID: "a1",
+			Where: whereOf("alice"), Tool: name}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tool(KindToolStart, "Bash")
+	tool(KindToolStart, "Read")
+	tool(KindToolEnd, "Read")
+	h.advance(11 * time.Minute)
+	if s := h.b.View(h.now, repo).Claims[0].Sessions[0]; s.State != StateWorking || s.Tool == "" {
+		t.Fatalf("with Bash still running: %s in %q", s.State, s.Tool)
+	}
+	tool(KindToolEnd, "Bash")
+	if got := h.toolOf("alice"); got != "" {
+		t.Fatalf("after both ended the session is in %q", got)
+	}
+	// A prompt clears tools whose end never came.
+	tool(KindToolStart, "Bash")
+	h.hook(KindPrompt, "alice", "a1")
+	if got := h.toolOf("alice"); got != "" {
+		t.Fatalf("after a prompt the session is in %q", got)
+	}
+}
+
+// A file found by a git scan has no known author in its worktree: the session
+// that ran the scan (a watcher, say) must not make the writer's next edit of it
+// look like a clash.
+func TestGitFoundFilesBelongToNoSessionInTheirWorktree(t *testing.T) {
+	h := newHarness(t)
+	h.hook(KindPrompt, "alice", "a1")
+	if _, err := h.b.Hook(h.now, HookEvent{Kind: KindHeartbeat, Member: "alice", Agent: AgentWatch, SessionID: "w1",
+		Where: whereOf("alice"), Footprint: &Footprint{Files: refs("gen/x.go")}}); err != nil {
+		t.Fatal(err)
+	}
+	if res := h.hook(KindPreEdit, "alice", "a1", "gen/x.go"); res.Decision != Allow || len(res.Conflicts) != 0 {
+		t.Fatalf("the writer's own file: %s %+v", res.Decision, res.Conflicts)
+	}
+	// A file another session reported writing is still its own.
+	h.hook(KindPrompt, "alice", "a2")
+	h.edit("alice", "a2", "lib/y.go")
+	if res := h.hook(KindPreEdit, "alice", "a1", "lib/y.go"); res.Decision != Refuse {
+		t.Fatalf("a file the other session wrote: %s", res.Decision)
+	}
+}
+
 func TestClean(t *testing.T) {
 	for in, want := range map[string]string{
 		"  a\n\tb  ":         "a b",
