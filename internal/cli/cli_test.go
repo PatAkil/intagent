@@ -13,6 +13,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"math/big"
 	"net"
 	"net/http"
@@ -21,6 +22,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -757,19 +759,7 @@ func TestServeHTTPS(t *testing.T) {
 	if code := app.Run(context.Background(), []string{"serve", "--tls-cert", certFile}); code == 0 || !strings.Contains(errb.String(), "go together") {
 		t.Fatalf("cert without key: %d %s", code, errb.String())
 	}
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := ln.Addr().String()
-	_ = ln.Close()
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan int)
-	go func() {
-		done <- app.Run(ctx, []string{"serve", "--config", filepath.Join(dir, "team.json"), "--addr", addr, "--data", "",
-			"--tls-cert", certFile, "--tls-key", keyFile})
-	}()
-	defer func() { cancel(); <-done }()
+	addr := startServe(t, app, "--config", filepath.Join(dir, "team.json"), "--tls-cert", certFile, "--tls-key", keyFile)
 	pool := x509.NewCertPool()
 	pool.AddCert(must(x509.ParseCertificate(der)))
 	hc := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}, ForceAttemptHTTP2: true},
@@ -786,6 +776,76 @@ func TestServeHTTPS(t *testing.T) {
 		t.Fatalf("https healthz: %v %v", resp, err)
 	}
 	_ = resp.Body.Close()
+}
+
+// startServe runs serve on a free port until the test ends, and returns the
+// address it listens on.
+func startServe(t *testing.T, app *App, args ...string) string {
+	t.Helper()
+	return start(t, app, append([]string{"serve", "--data", ""}, args...)...)
+}
+
+// start runs a command that listens (serve or demo) on a free port until the
+// test ends, and returns the address it listens on.
+func start(t *testing.T, app *App, args ...string) string {
+	t.Helper()
+	listening := make(chan string, 1)
+	app.Listening = func(addr string) { listening <- addr }
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan int, 1)
+	go func() { done <- app.Run(ctx, append(args, "--addr", "127.0.0.1:0")) }()
+	select {
+	case addr := <-listening:
+		t.Cleanup(func() { cancel(); <-done })
+		return addr
+	case code := <-done:
+		cancel()
+		t.Fatalf("%s exited with %d before it listened", args[0], code)
+		return ""
+	}
+}
+
+// The demo needs no setup: its dashboard and board open without a token, say
+// they are a demo, and fill with simulated agents.
+func TestDemoServesItsDashboard(t *testing.T) {
+	var out, errb safeBuffer
+	addr := start(t, &App{In: strings.NewReader(""), Out: &out, Err: &errb, Version: "test", Dir: t.TempDir()}, "demo")
+	get := func(path string) (int, string) {
+		resp, err := http.Get("http://" + addr + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		body, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(body)
+	}
+	if code, body := get("/"); code != http.StatusOK || !strings.Contains(body, "<html") {
+		t.Fatalf("dashboard: %d %.200s", code, body)
+	}
+	if code, body := get("/v1/whoami"); code != http.StatusOK || !strings.Contains(body, `"demo":true`) {
+		t.Fatalf("whoami: %d %s", code, body)
+	}
+	if !strings.Contains(out.String(), "open http://"+addr+"/") {
+		t.Fatalf("demo did not say where to look: %q", out.String())
+	}
+}
+
+// safeBuffer is a buffer a running command writes while its test reads it.
+type safeBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *safeBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *safeBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
 }
 
 func must[T any](v T, err error) T {
@@ -1054,20 +1114,9 @@ func TestServeReloadsMembers(t *testing.T) {
 		return strings.TrimSpace(strings.Split(out.String(), "\n")[2])
 	}
 	run("token", "add", "alice", "--config", cfg)
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := ln.Addr().String()
-	_ = ln.Close()
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan int)
-	go func() {
-		var out, errb bytes.Buffer
-		app := &App{In: strings.NewReader(""), Out: &out, Err: &errb, Version: "test", Dir: dir, TeamFilePoll: 20 * time.Millisecond}
-		done <- app.Run(ctx, []string{"serve", "--config", cfg, "--addr", addr, "--data", ""})
-	}()
-	defer func() { cancel(); <-done }()
+	var out, errb bytes.Buffer
+	addr := startServe(t, &App{In: strings.NewReader(""), Out: &out, Err: &errb, Version: "test", Dir: dir, TeamFilePoll: 20 * time.Millisecond},
+		"--config", cfg)
 	whoami := func(tok string) int {
 		req, _ := http.NewRequest(http.MethodGet, "http://"+addr+"/v1/whoami", nil)
 		req.Header.Set("Authorization", "Bearer "+tok)

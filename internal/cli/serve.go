@@ -67,6 +67,9 @@ func (a *App) serve(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	if a.Listening != nil {
+		a.Listening(ln.Addr().String())
+	}
 	url := "http://" + ln.Addr().String()
 	if tlsConfig != nil {
 		ln, url = tls.NewListener(ln, tlsConfig), "https://"+ln.Addr().String()

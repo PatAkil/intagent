@@ -43,6 +43,9 @@ func (a *App) demo(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	if a.Listening != nil {
+		a.Listening(ln.Addr().String())
+	}
 	fmt.Fprintf(a.Out, "intagent demo: open http://%s/ to watch four simulated agents collide and coordinate.\nNothing is saved. Ctrl-C to stop.\n", ln.Addr())
 	go simulate(ctx, srv.Board(), 3*time.Second)
 	return srv.Serve(ctx, ln)

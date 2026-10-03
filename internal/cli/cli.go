@@ -27,6 +27,9 @@ type App struct {
 	// TeamFilePoll is how often serve looks for changes to the team file.
 	// Zero means 2 seconds.
 	TeamFilePoll time.Duration
+	// Listening, if set, is told the address serve and demo listen on, so a
+	// test can give them port 0.
+	Listening func(addr string)
 }
 
 const usage = `intagent: intent for agents. Every coding agent on your team sees what the
