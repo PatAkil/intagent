@@ -41,7 +41,7 @@ What matters:
   does not treat them as a task description.
 - **Start directory.** Claude reads `.claude/settings.json` only from the directory it starts in. Starting it in a
   subdirectory skips the project's hooks. `intagent init --user` also installs the hooks in `~/.claude/settings.json`;
-  they do nothing in repositories without `.intagent.json`.
+  they do nothing in repositories without `.intagent.json`, and Claude runs an identical project and user hook once.
 - **Trust.** In a folder you have not trusted, interactive sessions hold back hooks until you accept the trust dialog,
   and every session ignores the project's `permissions.allow`. Headless runs therefore need
   `--allowedTools 'mcp__intagent__*'` for the MCP tools (hooks run regardless). Claude asks each person once to
@@ -123,6 +123,8 @@ What matters:
   from (`cursor_version`, or a lower-case event name with a `conversation_id`), and writes the identical command in
   both files: Cursor drops an imported hook whose command equals one of its own for the same event.
 - **Sessions** are `conversation_id`; paths resolve against `workspace_roots[0]`.
+- **Open the repository, not a subfolder.** Cursor reads project hooks from the folder it opened. For a subfolder,
+  `intagent init --user` covers it: Cursor imports the Claude Code hooks that puts in `~/.claude/settings.json`.
 - **Windows.** Cursor runs hooks in PowerShell there, which cannot run the guarded command; Cursor carries on without
   intagent (it fails open). Untested.
 
@@ -175,6 +177,9 @@ What matters:
   the board holds a pre-edit's warnings for that session until its next event, normally the edit's own `AfterTool`.
 - **Exit codes.** Exit 2 or 3 blocks the tool; exit 1 only warns. intagent's hook exits 0.
 - **Timeouts are milliseconds** (intagent writes 10 000).
+- **Start directory.** Gemini reads `.gemini/settings.json` only from the directory it starts in. `intagent init --user`
+  also installs the hooks in `~/.gemini/settings.json`, marked `--user`: that copy stands aside wherever the start
+  directory wires intagent itself, so each event is handled once.
 - **Trust.** Gemini runs a project's hooks only in trusted folders; headless runs need `GEMINI_CLI_TRUST_WORKSPACE=true`
   or `--skip-trust`. It also asks for review when a project hook's command changes.
 - **MCP environment.** Gemini withholds variables whose names look like secrets (`*TOKEN*`, `*KEY*`) from MCP

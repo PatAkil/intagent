@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"strings"
 	"time"
 
 	"github.com/patakil/intagent/internal/board"
@@ -33,8 +34,9 @@ func (a *App) hook(ctx context.Context, args []string) (err error) {
 	}()
 	fs := a.flags("hook", "hook [claude-code|codex|cursor|copilot|gemini] < event.json")
 	agentFlag := fs.String("agent", "", "the agent (alternative to the positional argument)")
-	if err := fs.Parse(args); err != nil {
-		return errUsage
+	userLevel := fs.Bool("user", false, "installed in the user's settings: stand aside where the project wires this agent itself")
+	if err := parse(fs, args); err != nil {
+		return err
 	}
 	name := *agentFlag
 	if name == "" && fs.NArg() > 0 {
@@ -55,7 +57,7 @@ func (a *App) hook(ctx context.Context, args []string) (err error) {
 		hookLog("%v", err)
 		return nil
 	}
-	if ev.Skip {
+	if ev.Skip || (*userLevel && projectWires(ad.Agent(), ev.Cwd)) {
 		return nil
 	}
 	out, err := a.handleHook(ctx, ad, ev)
@@ -162,4 +164,14 @@ func hookLog(format string, args ...any) {
 	}
 	log.New(f, "", log.LstdFlags).Printf(format, args...)
 	_ = f.Close() // nothing useful to do if the log cannot be written
+}
+
+// projectWires reports whether the project at dir wires an agent's hooks
+// itself, where that agent reads them, so a user-level copy need not run.
+func projectWires(agent board.Agent, dir string) bool {
+	if agent != board.AgentGemini || dir == "" {
+		return false
+	}
+	data, err := os.ReadFile(filepath.Join(dir, ".gemini", "settings.json"))
+	return err == nil && strings.Contains(string(data), "intagent hook gemini")
 }

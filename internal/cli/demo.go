@@ -18,8 +18,8 @@ import (
 func (a *App) demo(ctx context.Context, args []string) error {
 	fs := a.flags("demo", "demo [--addr 127.0.0.1:7400]")
 	addr := fs.String("addr", "127.0.0.1:7400", "address to listen on")
-	if err := fs.Parse(args); err != nil {
-		return errUsage
+	if err := parse(fs, args); err != nil {
+		return err
 	}
 	var members []server.Member
 	for _, m := range []string{"alice", "bob", "carol", "dana"} {

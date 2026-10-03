@@ -30,8 +30,8 @@ func (a *App) board(ctx context.Context, args []string) error {
 	repo := fs.String("repo", "", "repository id (default: this repository)")
 	asJSON := fs.Bool("json", false, "print the board as JSON")
 	every := fs.Duration("watch", 0, "redraw at this interval, e.g. 5s")
-	if err := fs.Parse(args); err != nil {
-		return errUsage
+	if err := parse(fs, args); err != nil {
+		return err
 	}
 	ws, _, err := a.here(ctx)
 	if err != nil {
@@ -74,8 +74,8 @@ func (a *App) board(ctx context.Context, args []string) error {
 
 func (a *App) check(ctx context.Context, args []string) error {
 	fs := a.flags("check", "check <path>...")
-	if err := fs.Parse(args); err != nil {
-		return errUsage
+	if err := parse(fs, args); err != nil {
+		return err
 	}
 	if fs.NArg() == 0 {
 		fs.Usage()
@@ -101,8 +101,8 @@ func (a *App) declare(ctx context.Context, args []string) error {
 	fs := a.flags("declare", "declare [-x] -m <summary> <glob>...")
 	summary := fs.String("m", "", "one line: what you are changing and why (required)")
 	exclusive := fs.Bool("x", false, "exclusive: refuse other members' agents while this worktree is active")
-	if err := fs.Parse(args); err != nil {
-		return errUsage
+	if err := parse(fs, args); err != nil {
+		return err
 	}
 	if fs.NArg() == 0 || strings.TrimSpace(*summary) == "" {
 		fs.Usage()
@@ -129,8 +129,8 @@ func (a *App) declare(ctx context.Context, args []string) error {
 
 func (a *App) release(ctx context.Context, args []string) error {
 	fs := a.flags("release", "release [<glob>...]")
-	if err := fs.Parse(args); err != nil {
-		return errUsage
+	if err := parse(fs, args); err != nil {
+		return err
 	}
 	ws, dir, err := a.here(ctx)
 	if err != nil {
@@ -146,8 +146,8 @@ func (a *App) release(ctx context.Context, args []string) error {
 
 func (a *App) note(ctx context.Context, args []string) error {
 	fs := a.flags("note", "note <member|claim|path> <text>...")
-	if err := fs.Parse(args); err != nil {
-		return errUsage
+	if err := parse(fs, args); err != nil {
+		return err
 	}
 	if fs.NArg() < 2 {
 		fs.Usage()

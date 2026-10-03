@@ -108,12 +108,22 @@ func trimSpace(b []byte) []byte {
 }
 
 func (s *Server) handle(ctx context.Context, line []byte) {
+	if line = trimSpace(line); len(line) > 0 && line[0] == '[' && json.Valid(line) {
+		// MCP has no batches since 2025-06-18.
+		s.reply(json.RawMessage("null"), nil, &rpcError{Code: codeInvalidRequest, Message: "batches are not supported"})
+		return
+	}
 	var req request
 	if err := json.Unmarshal(line, &req); err != nil {
 		s.reply(json.RawMessage("null"), nil, &rpcError{Code: codeParse, Message: "parse error"})
 		return
 	}
-	notification := len(req.ID) == 0 || string(req.ID) == "null"
+	if string(req.ID) == "null" {
+		// MCP requires an id that is not null; only a missing id makes a notification.
+		s.reply(req.ID, nil, &rpcError{Code: codeInvalidRequest, Message: "id must not be null"})
+		return
+	}
+	notification := len(req.ID) == 0
 	if req.JSONRPC != "2.0" || req.Method == "" {
 		if !notification {
 			s.reply(req.ID, nil, &rpcError{Code: codeInvalidRequest, Message: "invalid request"})

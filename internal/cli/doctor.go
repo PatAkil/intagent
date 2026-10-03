@@ -6,14 +6,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
 // doctor checks every link between this worktree, its agents and the server.
 func (a *App) doctor(ctx context.Context, args []string) error {
 	fs := a.flags("doctor", "doctor")
-	if err := fs.Parse(args); err != nil {
-		return errUsage
+	if err := parse(fs, args); err != nil {
+		return err
 	}
 	problems := 0
 	ok := func(format string, v ...any) { fmt.Fprintf(a.Out, "  ok   "+format+"\n", v...) }
@@ -58,30 +59,81 @@ func (a *App) doctor(ctx context.Context, args []string) error {
 			ok("policy: block=%s overlap=%s nearby=%s", who.Policy.Block, who.Policy.Overlap, who.Policy.Nearby)
 		}
 	}
-	check := func(rel, needle, what string) {
-		data, err := os.ReadFile(filepath.Join(root, rel))
-		switch {
-		case err != nil:
-			info("%s: %s not found", what, rel)
-		case strings.Contains(string(data), needle):
-			ok("%s: %s", what, rel)
-		default:
-			bad("%s: %s is not wired for this version of intagent; run 'intagent init'", what, rel)
+	wired := ws.settings.Repo.Agents
+	if len(wired) == 0 {
+		// Enrolled by an older intagent: check what is there.
+		for _, ag := range agentNames {
+			if _, err := os.Stat(filepath.Join(root, agentFiles[ag][0])); err == nil {
+				wired = append(wired, ag)
+			}
 		}
 	}
-	// Older installs passed arguments separately, which Cursor drops.
-	check(".claude/settings.json", hookCommand, "Claude Code hooks")
-	check(".mcp.json", "intagent", "Claude Code MCP server")
-	check(".codex/hooks.json", "intagent hook codex", "Codex hooks")
-	check(".codex/config.toml", "[mcp_servers.intagent]", "Codex MCP server")
-	check(".cursor/hooks.json", hookCommand, "Cursor hooks")
-	check(".gemini/settings.json", geminiCommand, "Gemini CLI hooks")
+	for _, ag := range agentNames {
+		if !slices.Contains(wired, ag) {
+			info("%s: not wired in this repository", agentTitles[ag])
+			continue
+		}
+		for _, c := range agentChecks[ag] {
+			data, err := os.ReadFile(filepath.Join(root, c.rel))
+			switch {
+			case err != nil:
+				bad("%s: %s is missing; run 'intagent init'", c.what, c.rel)
+			case strings.Contains(string(data), c.needle):
+				ok("%s: %s", c.what, c.rel)
+			default:
+				bad("%s: %s is not wired for this version of intagent; run 'intagent init'", c.what, c.rel)
+			}
+		}
+	}
+	if slices.Contains(wired, "codex") {
+		a.doctorCodexTrust(ctx, ws, ok, bad)
+	}
 	if dir != root {
-		info("Claude Code reads project hooks only from the directory it starts in; start it at %s, or run 'intagent init --user'", root)
+		info("you are in a subdirectory: Claude Code and Gemini CLI read project hooks only from the directory they start in, " +
+			"and Cursor from the folder it opened. Start them at " + root + ", or run 'intagent init --user' once to cover " +
+			"Claude Code, Gemini CLI and (through Claude's user hooks) Cursor everywhere")
 	}
 	if problems > 0 {
 		return exitError{code: 1, msg: fmt.Sprintf("\n%d thing(s) to fix.", problems)}
 	}
 	fmt.Fprintln(a.Out, "\nAll connected.")
 	return nil
+}
+
+var agentTitles = map[string]string{"claude-code": "Claude Code and Copilot CLI", "codex": "Codex", "cursor": "Cursor", "gemini": "Gemini CLI"}
+
+type wiringCheck struct{ rel, needle, what string }
+
+// agentChecks are what doctor looks for in each agent's files.
+var agentChecks = map[string][]wiringCheck{
+	"claude-code": {
+		{".claude/settings.json", hookCommand, "Claude Code hooks (Copilot CLI runs them too)"},
+		{".mcp.json", "intagent", "Claude Code MCP server"},
+	},
+	"codex": {
+		{".codex/hooks.json", codexCommand, "Codex hooks"},
+		{".codex/config.toml", "[mcp_servers.intagent]", "Codex MCP server"},
+	},
+	"cursor": {{".cursor/hooks.json", hookCommand, "Cursor hooks"}},
+	"gemini": {{".gemini/settings.json", geminiCommand, "Gemini CLI hooks"}},
+}
+
+// doctorCodexTrust checks the two trust gates without which Codex silently
+// runs none of the project's hooks.
+func (a *App) doctorCodexTrust(ctx context.Context, ws *workspace, ok, bad func(string, ...any)) {
+	ct, err := codexTrustFor(ctx, ws.wt)
+	if err != nil {
+		bad("Codex trust: %v", err)
+		return
+	}
+	missing, err := ct.problems()
+	switch {
+	case err != nil:
+		bad("Codex trust: %v", err)
+	case len(missing) > 0:
+		bad("Codex will not run intagent's hooks: %s does not trust %s; run 'intagent init --trust-codex'",
+			ct.config, strings.Join(missing, ", "))
+	default:
+		ok("Codex trusts this project and intagent's hooks (%s)", ct.config)
+	}
 }

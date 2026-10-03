@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,6 +26,18 @@ type RepoConfig struct {
 	Areas []string `json:"areas,omitempty"`
 	// Ignore lists patterns intagent should not report, e.g. generated files.
 	Ignore []string `json:"ignore,omitempty"`
+	// Agents lists the agents init wired up, the ones doctor checks.
+	Agents []string `json:"agents,omitempty"`
+}
+
+// CheckURL accepts an http or https URL with a host: anything else would be
+// committed to the repository and fail every teammate's hook silently.
+func CheckURL(u string) error {
+	p, err := url.Parse(u)
+	if err != nil || (p.Scheme != "http" && p.Scheme != "https") || p.Host == "" {
+		return fmt.Errorf("%q is not a server URL; give it as https://host[:port]", u)
+	}
+	return nil
 }
 
 // ServerCredentials holds a member's token for one server.

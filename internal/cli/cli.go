@@ -33,7 +33,8 @@ Run the team server (one per team):
 
 Set up, once per person and once per repository:
   intagent login --url <server>            save your token for a server
-  intagent init [--url <server>]           enrol this repository for Claude Code, Codex and Cursor
+  intagent init [--url <server>]           enrol this repository for Claude Code, Codex, Cursor,
+                                           Copilot CLI and Gemini CLI
   intagent doctor                          check that everything is connected
 
 See and steer the work:
@@ -44,7 +45,7 @@ See and steer the work:
   intagent note <member|claim|path> <text> leave a note for another member's agents
 
 Called by agents and git:
-  intagent hook [<agent>]                   handle one hook event from stdin
+  intagent hook [<agent>]                  handle one hook event from stdin
   intagent mcp                             serve intagent's tools over MCP on stdio
   intagent watch                           report this worktree for agents without hooks
   intagent guard                           pre-commit check against exclusive intents
@@ -126,6 +127,47 @@ type exitError struct {
 }
 
 func (e exitError) Error() string { return e.msg }
+
+// parse parses a command's flags wherever they stand among its arguments
+// ("declare 'web/**' -x" is "declare -x 'web/**'"); after "--" everything is an
+// argument. -h and --help come back as flag.ErrHelp, anything else wrong as
+// errUsage, the usage having been printed.
+func parse(fs *flag.FlagSet, args []string) error {
+	var flags, pos []string
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			pos = append(pos, args[i+1:]...)
+			break
+		}
+		if len(arg) < 2 || arg[0] != '-' {
+			pos = append(pos, arg)
+			continue
+		}
+		flags = append(flags, arg)
+		name := strings.TrimLeft(arg, "-")
+		if strings.Contains(name, "=") {
+			continue
+		}
+		if f := fs.Lookup(name); f != nil && !isBoolFlag(f) && i+1 < len(args) {
+			flags = append(flags, args[i+1])
+			i++
+		}
+	}
+	err := fs.Parse(append(append(flags, "--"), pos...))
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, flag.ErrHelp):
+		return flag.ErrHelp
+	}
+	return errUsage
+}
+
+func isBoolFlag(f *flag.Flag) bool {
+	b, ok := f.Value.(interface{ IsBoolFlag() bool })
+	return ok && b.IsBoolFlag()
+}
 
 func (a *App) flags(name, synopsis string) *flag.FlagSet {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)

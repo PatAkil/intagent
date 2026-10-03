@@ -18,8 +18,8 @@ func (a *App) watch(ctx context.Context, args []string) error {
 	every := fs.Duration("interval", 20*time.Second, "how often to report")
 	agent := fs.String("agent", string(board.AgentWatch), "what to call this session on the board")
 	once := fs.Bool("once", false, "report once and exit")
-	if err := fs.Parse(args); err != nil {
-		return errUsage
+	if err := parse(fs, args); err != nil {
+		return err
 	}
 	ws, _, err := a.here(ctx)
 	if err != nil {
@@ -44,7 +44,9 @@ func (a *App) watch(ctx context.Context, args []string) error {
 		return err
 	}
 	if *once {
-		return send(ctx, board.KindHeartbeat)
+		// Report the footprint and leave: the board keeps the work, but no
+		// session that looks like it is still running.
+		return send(ctx, board.KindSessionEnd)
 	}
 	fmt.Fprintf(a.Err, "Reporting %s to %s every %s. Ctrl-C to stop.\n", ws.wt.Root, ws.settings.URL, *every)
 	t := time.NewTicker(*every)
@@ -68,8 +70,8 @@ func (a *App) watch(ctx context.Context, args []string) error {
 // It never blocks a commit because the server is unreachable.
 func (a *App) guard(ctx context.Context, args []string) error {
 	fs := a.flags("guard", "guard")
-	if err := fs.Parse(args); err != nil {
-		return errUsage
+	if err := parse(fs, args); err != nil {
+		return err
 	}
 	dir, err := a.workdir()
 	if err != nil {

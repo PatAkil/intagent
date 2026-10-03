@@ -107,7 +107,8 @@ intagent doctor
 (`.claude/settings.json` hooks, `.mcp.json`), Codex (`.codex/hooks.json`, `.codex/config.toml`), Cursor
 (`.cursor/hooks.json`, `.cursor/mcp.json`) and Gemini CLI (`.gemini/settings.json`); GitHub Copilot CLI runs Claude
 Code's. It merges into existing files,
-keeps everyone else's hooks, and replaces only its own, so running it again after an upgrade migrates the wiring.
+keeps everyone else's hooks, and replaces only its own, so running it again after an upgrade migrates the wiring. It
+reads every file first: one it cannot edit (JSON with comments, say) stops it before anything is written.
 The hooks do nothing for a teammate who has not installed intagent. Add `--git-hook` for a pre-commit guard and
 `--areas 'services/*,libs/*'` to define your monorepo's areas.
 
@@ -115,7 +116,7 @@ The hooks do nothing for a teammate who has not installed intagent. Add `--git-h
 
 | Agent | Before a write | After a write | Context to the agent | MCP tools | Notes |
 |---|---|---|---|---|---|
-| **Claude Code** | refuse, bump, ask or warn | recorded | session start, every prompt, around each edit | yes | Hooks load from the directory Claude starts in; run `intagent init --user` to also install them in your user settings. In a folder you have not trusted, Claude ignores the project's `permissions.allow`; headless runs need `--allowedTools 'mcp__intagent__*'`. |
+| **Claude Code** | refuse, bump, ask or warn | recorded | session start, every prompt, around each edit | yes | Hooks load from the directory Claude starts in; `intagent init --user` also installs them in your user settings (and covers Gemini CLI, and Cursor opened on a subfolder). In a folder you have not trusted, Claude ignores the project's `permissions.allow`; headless runs need `--allowedTools 'mcp__intagent__*'`. |
 | **Codex** | refuse, bump or warn (`apply_patch`, including patches piped through the shell; an ask refuses once and tells the agent to ask you; its retry goes through) | recorded | session start, every prompt, around each edit | yes | Codex runs project hooks only for trusted projects and trusted hooks: `intagent init --trust-codex` writes both to your `~/.codex/config.toml`. |
 | **Cursor** | refuse, bump or warn (`Write` and `Delete`; an ask refuses once and tells the agent to ask you; its retry goes through) | recorded | session start, every prompt, around each edit | yes | Needs a Cursor with `preToolUse` hooks: an older one rejects the whole hooks file and gets only the MCP tools. Cursor also runs the hooks in `.claude/settings.json`; intagent writes the same command in both files, so each runs once. |
 | **GitHub Copilot CLI** | refuse, bump, ask or warn (`create`, `edit`) | recorded | session start, every prompt, around each edit | yes (`.mcp.json`) | Runs the hooks in `.claude/settings.json`; nothing more to install. |
@@ -175,7 +176,7 @@ refused or put to a person (warnings are not sent).
 | `intagent demo` | A dashboard with four simulated agents; nothing is saved. |
 | `intagent serve` | Run the team server and dashboard. |
 | `intagent token add <name> [--rotate]` | Add a member, or rotate their token. |
-| `intagent login --url <server>` | Save your token for a server (to `~/.config/intagent/config.json`, mode 0600). |
+| `intagent login --url <server>` | Save your token for a server, mode 0600, in your user config directory (`~/.config/intagent/` on Linux, `~/Library/Application Support/intagent/` on macOS). `--share-prompts off` keeps your prompts off the board. |
 | `intagent init` | Enrol a repository and wire up its agents. |
 | `intagent doctor` | Check every link between this worktree, its agents and the server. |
 | `intagent board [--watch 5s] [--json]` | Who is working on what in this repository. |
@@ -193,6 +194,9 @@ off, `INTAGENT_FAIL=closed` refuses edits while the server is unreachable (the d
 
 ## Security model
 
+- What teammates see: your agents' sessions, the files your worktree changed against the default branch, the intents
+  your agents declare, and, unless you turn it off with `intagent login --share-prompts off`, the first line of each
+  session's first prompt as its task. Only repositories whose team committed `.intagent.json` are reported.
 - Tokens are stored on the server only as SHA-256 hashes and compared in constant time. The member is always taken
   from the token, never from the request.
 - Writes accept only bearer tokens. Signing in to the dashboard exchanges the token for a session cookie (HttpOnly,

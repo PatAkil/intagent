@@ -25,8 +25,8 @@ func (a *App) serve(ctx context.Context, args []string) error {
 	level := fs.String("log-level", "info", "debug, info, warn or error")
 	tlsCert := fs.String("tls-cert", "", "serve HTTPS with this certificate chain (PEM), with --tls-key")
 	tlsKey := fs.String("tls-key", "", "the certificate's private key (PEM)")
-	if err := fs.Parse(args); err != nil {
-		return errUsage
+	if err := parse(fs, args); err != nil {
+		return err
 	}
 	if (*tlsCert == "") != (*tlsKey == "") {
 		return errors.New("--tls-cert and --tls-key go together")
@@ -83,8 +83,8 @@ func (a *App) token(_ context.Context, args []string) error {
 	fs := a.flags("token add", "token add <name> [--config team.json] [--rotate]")
 	cfgPath := fs.String("config", "team.json", "team configuration file to update")
 	rotate := fs.Bool("rotate", false, "issue a new token for an existing member")
-	if err := fs.Parse(reorder(args[1:])); err != nil {
-		return errUsage
+	if err := parse(fs, args[1:]); err != nil {
+		return err
 	}
 	if fs.NArg() != 1 {
 		fs.Usage()
@@ -100,35 +100,28 @@ func (a *App) token(_ context.Context, args []string) error {
 	return nil
 }
 
-// reorder moves flags before positional arguments, so "add alice --rotate" works.
-func reorder(args []string) []string {
-	var flags, pos []string
-	for i := 0; i < len(args); i++ {
-		if strings.HasPrefix(args[i], "-") {
-			flags = append(flags, args[i])
-			if !strings.Contains(args[i], "=") && args[i] != "--rotate" && args[i] != "-rotate" && i+1 < len(args) {
-				flags = append(flags, args[i+1])
-				i++
-			}
-			continue
-		}
-		pos = append(pos, args[i])
-	}
-	return append(flags, pos...)
-}
-
 func (a *App) login(ctx context.Context, args []string) error {
-	fs := a.flags("login", "login --url <server> [--token <token>]")
+	fs := a.flags("login", "login --url <server> [--token <token>] [--share-prompts on|off]")
 	url := fs.String("url", "", "the team server, e.g. https://intagent.example.com")
 	token := fs.String("token", "", "your token (read from stdin if omitted)")
 	noVerify := fs.Bool("no-verify", false, "save without contacting the server")
-	if err := fs.Parse(args); err != nil {
-		return errUsage
+	share := fs.String("share-prompts", "", "on: the first line of a session's first prompt becomes its task on the board; off: it does not")
+	if err := parse(fs, args); err != nil {
+		return err
+	}
+	if *share != "" && *share != "on" && *share != "off" {
+		return errors.New("--share-prompts is on or off")
 	}
 	u := client.NormalizeURL(*url)
+	if u == "" && *share != "" {
+		return a.setSharePrompts(*share == "on")
+	}
 	if u == "" {
 		fs.Usage()
 		return errUsage
+	}
+	if err := client.CheckURL(u); err != nil {
+		return err
 	}
 	tok := strings.TrimSpace(*token)
 	if tok == "" {
@@ -168,6 +161,31 @@ func (a *App) login(ctx context.Context, args []string) error {
 		fmt.Fprintf(a.Out, "Logged in to %s as %s. Saved to %s.\n", u, who, p)
 	} else {
 		fmt.Fprintf(a.Out, "Saved your token for %s to %s.\n", u, p)
+	}
+	if *share != "" {
+		return a.setSharePrompts(*share == "on")
+	}
+	if uc.SharePrompts == nil || *uc.SharePrompts {
+		fmt.Fprintln(a.Out, "The first line of each agent session's first prompt is shown to your team as its task; "+
+			"'intagent login --share-prompts off' keeps prompts to yourself.")
+	}
+	return nil
+}
+
+// setSharePrompts saves whether prompts may describe a session's task.
+func (a *App) setSharePrompts(on bool) error {
+	uc, p, err := client.LoadUserConfig()
+	if err != nil {
+		return err
+	}
+	uc.SharePrompts = &on
+	if err := client.SaveUserConfig(p, uc); err != nil {
+		return err
+	}
+	if on {
+		fmt.Fprintln(a.Out, "Prompts are shared: the first line of a session's first prompt becomes its task on the board.")
+	} else {
+		fmt.Fprintln(a.Out, "Prompts stay private: a session's task comes only from the intents its agent declares.")
 	}
 	return nil
 }

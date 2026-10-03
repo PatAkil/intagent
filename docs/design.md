@@ -94,7 +94,7 @@ An exclusive intent that overlaps another active exclusive intent is refused; th
 instead. Intents end when released, when the claim is released, or (for enforcement) when the claim goes dormant.
 
 The first line of a session's first prompt becomes the claim's task summary unless the member turns prompt sharing
-off. An explicit `declare_intent` summary replaces it.
+off (`intagent login --share-prompts off`). An explicit `declare_intent` summary replaces it.
 
 ## Footprint from git
 
@@ -152,7 +152,6 @@ All endpoints take and return JSON and require `Authorization: Bearer <token>`, 
 | `POST /v1/intents/release` | MCP, CLI | Release some or all intents. |
 | `POST /v1/check` | MCP, CLI, guard | Who else claims or touched these paths. Read-only. |
 | `POST /v1/notes` | MCP, CLI | Send a note to a claim or a member. |
-| `POST /v1/footprint` | watch, guard | Report a git footprint without a hook session. |
 | `GET /v1/board` | CLI, dashboard | Every claim and session in a repo, with derived states. |
 | `GET /v1/stream` | dashboard | Server-sent events. |
 | `GET /v1/whoami` | CLI | The member a token belongs to. |

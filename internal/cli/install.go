@@ -62,6 +62,11 @@ const codexCommand = "intagent hook codex"
 // Code's hooks, so it names its adapter.
 const geminiCommand = "{ command -v intagent >/dev/null && intagent hook gemini || true; }"
 
+// geminiUserCommand is the same hook in the user's settings, for Gemini
+// started in a subdirectory. Gemini runs both when it starts at the root, so
+// this one stands aside where the project wires Gemini itself.
+const geminiUserCommand = "{ command -v intagent >/dev/null && intagent hook gemini --user || true; }"
+
 // geminiWiring times out in seconds here; Gemini CLI counts milliseconds.
 var geminiWiring = []hookWire{
 	{"SessionStart", "", 10},
@@ -397,62 +402,6 @@ func tomlString(s string) string {
 	return `"` + r.Replace(s) + `"`
 }
 
-// trustCodex appends project trust and hook trust for intagent's handlers to
-// the user's Codex config. It only appends entries that are not present, so
-// it never rewrites a table the user or Codex already wrote.
-func trustCodex(codexConfig string, roots []string, hooksFiles []string) ([]string, error) {
-	existing, err := os.ReadFile(codexConfig)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return nil, err
-	}
-	text := string(existing)
-	var add strings.Builder
-	var notes []string
-	for _, root := range roots {
-		header := "[projects." + tomlString(root) + "]"
-		if strings.Contains(text, header) {
-			notes = append(notes, "project already listed: "+root)
-			continue
-		}
-		fmt.Fprintf(&add, "\n%s\ntrust_level = \"trusted\"\n", header)
-		notes = append(notes, "trusted project "+root)
-	}
-	for _, hf := range hooksFiles {
-		entries, err := codexTrustEntries(hf)
-		if err != nil {
-			return nil, err
-		}
-		keys := make([]string, 0, len(entries))
-		for k := range entries {
-			keys = append(keys, k)
-		}
-		slices.Sort(keys)
-		for _, k := range keys {
-			if strings.Contains(text, tomlString(k)) {
-				notes = append(notes, "hook already listed: "+k)
-				continue
-			}
-			fmt.Fprintf(&add, "\n[hooks.state.%s]\ntrusted_hash = %s\n", tomlString(k), tomlString(entries[k]))
-			notes = append(notes, "trusted hook "+k)
-		}
-	}
-	if add.Len() == 0 {
-		return notes, nil
-	}
-	if err := os.MkdirAll(filepath.Dir(codexConfig), 0o700); err != nil {
-		return nil, err
-	}
-	f, err := os.OpenFile(codexConfig, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
-	if err != nil {
-		return nil, err
-	}
-	if _, err := f.WriteString("\n# Added by 'intagent init --trust-codex'" + add.String()); err != nil {
-		_ = f.Close()
-		return nil, err
-	}
-	return notes, f.Close()
-}
-
 // installGemini writes Gemini CLI's hooks and MCP server into
 // .gemini/settings.json.
 func installGemini(root string) (bool, error) {
@@ -475,6 +424,23 @@ func installGemini(root string) (bool, error) {
 	if !changed {
 		return false, nil
 	}
+	return true, writeJSONObject(p, m)
+}
+
+// installGeminiUser writes Gemini CLI's hooks into a user settings file.
+func installGeminiUser(p string) (bool, error) {
+	m, err := readJSONObject(p)
+	if err != nil {
+		return false, err
+	}
+	hooks := asMap(m["hooks"])
+	changed := mergeHooks(hooks, geminiWiring, func(w hookWire) map[string]any {
+		return map[string]any{"type": "command", "command": geminiUserCommand, "name": "intagent", "timeout": w.timeout * 1000}
+	})
+	if !changed {
+		return false, nil
+	}
+	m["hooks"] = hooks
 	return true, writeJSONObject(p, m)
 }
 

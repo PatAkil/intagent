@@ -70,6 +70,14 @@ func newTeamWith(t *testing.T, cfg board.Config, members ...string) *team {
 	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	t.Setenv("XDG_CACHE_HOME", t.TempDir()) // keep the hook log out of the real cache
+	t.Setenv("HOME", t.TempDir())           // and init --user and Codex trust out of real settings
+	t.Setenv("CODEX_HOME", t.TempDir())
+	bin := t.TempDir() // doctor wants intagent on PATH; a stub will do
+	writeFile(t, filepath.Join(bin, "intagent"), "#!/bin/sh\nexit 0\n")
+	if err := os.Chmod(filepath.Join(bin, "intagent"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	for _, k := range []string{"INTAGENT_URL", "INTAGENT_TOKEN", "INTAGENT_DISABLE", "INTAGENT_FAIL", "CLAUDE_PROJECT_DIR"} {
 		t.Setenv(k, "")
 	}
@@ -538,9 +546,26 @@ func TestWatchReportsFootprint(t *testing.T) {
 	if out, errOut, code := tm.as("alice", a, "", "watch", "--once"); code != 0 {
 		t.Fatalf("watch: %s %s", out, errOut)
 	}
+	// The file is on the board, and no session is left looking alive.
 	out, _, _ := tm.as("alice", a, "", "board")
-	if !strings.Contains(out, "svc/pay/new.go") || !strings.Contains(out, "watch") {
-		t.Fatalf("board after watch:\n%s", out)
+	if !strings.Contains(out, "svc/pay/new.go") || !strings.Contains(out, "0 live sessions") {
+		t.Fatalf("board after watch --once:\n%s", out)
+	}
+}
+
+func TestLoginChecksTheURLAndSwitchesPromptSharing(t *testing.T) {
+	tm := newTeam(t, "alice")
+	a := tm.clone("alice")
+	if _, errOut, code := tm.as("alice", a, "", "login", "--url", "127.0.0.1:7400", "--token", "x"); code == 0 || !strings.Contains(errOut, "not a server URL") {
+		t.Fatalf("login without a scheme: %d %s", code, errOut)
+	}
+	tm.enrol(map[string]string{"alice": a})
+	if out, _, code := tm.as("alice", a, "", "login", "--share-prompts", "off"); code != 0 || !strings.Contains(out, "Prompts stay private") {
+		t.Fatalf("share-prompts off: %d %s", code, out)
+	}
+	tm.as("alice", a, claudeEvent("a1", a, "UserPromptSubmit", map[string]any{"prompt": "Draft the layoff memo"}), "hook")
+	if out, _, _ := tm.as("alice", a, "", "board"); strings.Contains(out, "layoff") {
+		t.Fatalf("a private prompt reached the board:\n%s", out)
 	}
 }
 
@@ -553,7 +578,7 @@ func TestDoctorAndHelp(t *testing.T) {
 	}
 	tm.enrol(map[string]string{"alice": a})
 	out, _, _ = tm.as("alice", a, "", "doctor")
-	if !strings.Contains(out, "knows you as alice") || !strings.Contains(out, "Claude Code hooks: .claude/settings.json") {
+	if !strings.Contains(out, "knows you as alice") || !strings.Contains(out, "Claude Code hooks (Copilot CLI runs them too): .claude/settings.json") {
 		t.Fatalf("doctor after init:\n%s", out)
 	}
 	// Wiring from before the shell form breaks under Cursor; doctor says so.
@@ -794,5 +819,105 @@ func TestHooksIgnoreRepositoriesThatDidNotEnrol(t *testing.T) {
 	// Commands a person types still work with the override.
 	if out, errOut, code := tm.as("bob", personal, "", "board"); code != 0 {
 		t.Fatalf("board: %s %s", out, errOut)
+	}
+}
+
+// init reads every file it would edit first: one it cannot edit leaves the
+// repository untouched, instead of half wired.
+func TestInitWritesNothingWhenAFileCannotBeEdited(t *testing.T) {
+	tm := newTeam(t, "alice")
+	a := tm.clone("alice")
+	writeFile(t, filepath.Join(a, ".gemini/settings.json"), "{\n  // the team's comment\n  \"theme\": \"dark\"\n}\n")
+	before := snapshotFiles(t, a)
+	_, errOut, code := tm.as("alice", a, "", "init", "--url", tm.url)
+	if code == 0 || !strings.Contains(errOut, "Nothing was written") || !strings.Contains(errOut, "--agents") {
+		t.Fatalf("init over a commented file: %d %s", code, errOut)
+	}
+	if after := snapshotFiles(t, a); after != before {
+		t.Fatal("init wrote files before failing")
+	}
+	for _, bad := range []string{"127.0.0.1:7400", "intagent.example.com", "ftp://x"} {
+		if _, errOut, code := tm.as("alice", a, "", "init", "--url", bad, "--agents", "claude-code"); code == 0 || !strings.Contains(errOut, "not a server URL") {
+			t.Fatalf("init --url %s: %d %s", bad, code, errOut)
+		}
+	}
+	if _, errOut, code := tm.as("alice", a, "", "init", "--url", tm.url, "--agents", "claude-code,aider"); code == 0 || !strings.Contains(errOut, `unknown agent "aider"`) {
+		t.Fatalf("unknown agent: %d %s", code, errOut)
+	}
+	// Leaving Gemini out works, and doctor does not ask to wire it.
+	if out, errOut, code := tm.as("alice", a, "", "init", "--url", tm.url, "--agents", "claude-code"); code != 0 {
+		t.Fatalf("init --agents claude-code: %s %s", out, errOut)
+	}
+	tm.as("alice", a, "", "login", "--url", tm.url, "--token", tm.tokens["alice"])
+	out, _, code := tm.as("alice", a, "", "doctor")
+	if code != 0 || !strings.Contains(out, "Gemini CLI: not wired in this repository") || strings.Contains(out, "FIX") {
+		t.Fatalf("doctor with Claude Code only: %d\n%s", code, out)
+	}
+}
+
+// --trust-codex corrects what would stop Codex (a project marked untrusted, a
+// hash from an older command) and keeps everything else in the file.
+func TestTrustCodexCorrectsEntriesAndDoctorChecksThem(t *testing.T) {
+	tm := newTeam(t, "alice")
+	a := tm.clone("alice")
+	tm.enrol(map[string]string{"alice": a})
+	cfg := filepath.Join(os.Getenv("CODEX_HOME"), "config.toml")
+	key := filepath.Join(a, ".codex/hooks.json") + ":stop:0:0"
+	writeFile(t, cfg, "model = \"gpt-6\"  # mine\n\n[projects.\""+a+"\"]\ntrust_level = \"untrusted\"\n\n[hooks.state.\""+key+"\"]\ntrusted_hash = \"sha256:old\"\n")
+	out, _, code := tm.as("alice", a, "", "doctor")
+	if code != 1 || !strings.Contains(out, "Codex will not run intagent's hooks") || !strings.Contains(out, "of intagent's 6 hooks") {
+		t.Fatalf("doctor before trusting: %d\n%s", code, out)
+	}
+	out, errOut, code := tm.as("alice", a, "", "init", "--trust-codex")
+	if code != 0 || !strings.Contains(out, `it had trust_level = "untrusted"`) || !strings.Contains(out, `it had trusted_hash = "sha256:old"`) {
+		t.Fatalf("init --trust-codex: %d %s %s", code, out, errOut)
+	}
+	data, _ := os.ReadFile(cfg)
+	if !strings.HasPrefix(string(data), "model = \"gpt-6\"  # mine\n") || strings.Contains(string(data), "untrusted") || strings.Count(string(data), "[projects.") != 1 {
+		t.Fatalf("config.toml:\n%s", data)
+	}
+	if out, _, code := tm.as("alice", a, "", "doctor"); code != 0 || !strings.Contains(out, "Codex trusts this project") {
+		t.Fatalf("doctor after trusting: %d\n%s", code, out)
+	}
+	if out, _, _ := tm.as("alice", a, "", "init", "--trust-codex"); strings.Contains(out, "it had") {
+		t.Fatalf("second --trust-codex changed something:\n%s", out)
+	}
+}
+
+func TestFlagsMayFollowArguments(t *testing.T) {
+	tm := newTeam(t, "alice")
+	a := tm.clone("alice")
+	tm.enrol(map[string]string{"alice": a})
+	out, errOut, code := tm.as("alice", a, "", "declare", "-m", "rework web", "web/**", "-x")
+	if code != 0 || !strings.Contains(out, "Declared exclusive intent on web/**.") {
+		t.Fatalf("declare with -x last: %d %s %s", code, out, errOut)
+	}
+	if _, errOut, code := tm.as("alice", a, "", "declare", "-h"); code != 0 || !strings.Contains(errOut, "usage: intagent declare") {
+		t.Fatalf("declare -h: %d %s", code, errOut)
+	}
+}
+
+// Gemini runs project and user hooks alike: the user-level copy stands aside
+// where the directory Gemini started in wires intagent itself.
+func TestGeminiUserHookStandsAsideForTheProject(t *testing.T) {
+	tm := newTeam(t, "alice", "bob")
+	a, b := tm.clone("alice"), tm.clone("bob")
+	tm.enrol(map[string]string{"alice": a, "bob": b})
+	if out, errOut, code := tm.as("bob", b, "", "init", "--user"); code != 0 || !strings.Contains(out, filepath.Join(os.Getenv("HOME"), ".gemini", "settings.json")) {
+		t.Fatalf("init --user: %d %s %s", code, out, errOut)
+	}
+	tm.as("alice", a, "", "declare", "-x", "-m", "Pay", "svc/pay/**")
+	tm.as("alice", a, claudeEvent("a1", a, "UserPromptSubmit", map[string]any{"prompt": "pay"}), "hook")
+	before := func(cwd string) string {
+		ev, _ := json.Marshal(map[string]any{"session_id": "g1", "cwd": cwd, "hook_event_name": "BeforeTool", "tool_name": "write_file",
+			"tool_input": map[string]string{"file_path": filepath.Join(b, "svc/pay/retry.go")}})
+		out, _, _ := tm.as("bob", b, string(ev), "hook", "gemini", "--user")
+		return out
+	}
+	if out := before(b); out != "" {
+		t.Fatalf("at the root the project's hook answers, not the user's: %q", out)
+	}
+	if out := before(filepath.Join(b, "svc")); !strings.Contains(out, `"decision":"deny"`) {
+		t.Fatalf("in a subdirectory the user's hook must answer: %q", out)
 	}
 }

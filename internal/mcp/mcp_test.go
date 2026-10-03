@@ -125,4 +125,16 @@ func TestMalformedInput(t *testing.T) {
 	if r := msgs[3]["result"].(map[string]any); r["isError"] != true {
 		t.Errorf("bad arguments should be a tool error: %v", r)
 	}
+	// A batch, and a request whose id is null, are invalid requests; a
+	// notification (no id at all) still gets no answer.
+	msgs = run(t, `[{"jsonrpc":"2.0","id":1,"method":"ping"}]`+"\n"+`{"jsonrpc":"2.0","id":null,"method":"ping"}`+"\n"+
+		`{"jsonrpc":"2.0","method":"notifications/initialized"}`+"\n")
+	if len(msgs) != 2 {
+		t.Fatalf("replies = %v", msgs)
+	}
+	for i, m := range msgs {
+		if got := m["error"].(map[string]any)["code"].(float64); got != codeInvalidRequest || m["id"] != nil {
+			t.Errorf("reply %d = %v", i, m)
+		}
+	}
 }
