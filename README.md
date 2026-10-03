@@ -148,6 +148,11 @@ Each severity maps to an action, set in `team.json`:
 Actions: `deny` (refuse every time), `ask` (the person decides; headless agents treat it as a refusal), `bump`
 (refuse once with an explanation, allow the retry), `warn` (allow, with context), `off`.
 
+Changes made through the shell cannot be checked before they happen. When git later shows one inside an active
+teammate's exclusive intent, the agent is told and the change is recorded as a breach, which the webhook sends; under
+`block: warn` it is a warning instead, and under `block: off` nothing. A teammate's change inside your reservation,
+made after you declared it, does not bump your own agent: it is warned instead.
+
 **Start with radar mode.** To measure how often agents would collide before enforcing anything, run a pilot with
 `{"policy": {"block": "warn", "overlap": "warn", "nearby": "off"}}`. The dashboard counts every check, overlap,
 refusal and alert per repository.
