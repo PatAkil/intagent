@@ -231,10 +231,12 @@ type Session struct {
 	LastSeen  time.Time `json:"last_seen"`
 	Phase     Phase     `json:"phase"`
 	// Tool is the latest tool call in progress, if any; ToolSince is when the
-	// session went into tools, and InFlight how many calls are running.
-	Tool      string    `json:"tool,omitempty"`
-	ToolSince time.Time `json:"tool_since,omitzero"`
-	InFlight  int       `json:"in_flight,omitempty"`
+	// session went into tools. Calls holds the running calls an agent gave
+	// ids for, and InFlight counts those it gave none for.
+	Tool      string          `json:"tool,omitempty"`
+	ToolSince time.Time       `json:"tool_since,omitzero"`
+	Calls     map[string]bool `json:"calls,omitempty"`
+	InFlight  int             `json:"in_flight,omitempty"`
 	// Acked holds the conflicts this session has already been told about.
 	Acked map[string]bool `json:"acked,omitempty"`
 	// Reported is the last derived state announced as an activity.
@@ -295,6 +297,7 @@ type HookEvent struct {
 	SessionID string     `json:"session_id"`
 	Where     Where      `json:"where"`
 	Tool      string     `json:"tool,omitempty"`
+	ToolUseID string     `json:"tool_use_id,omitempty"`
 	Paths     []PathRef  `json:"paths,omitempty"`
 	Prompt    string     `json:"prompt,omitempty"`
 	Footprint *Footprint `json:"footprint,omitempty"`

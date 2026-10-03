@@ -30,6 +30,7 @@ type claudeInput struct {
 	HookEventName string          `json:"hook_event_name"`
 	ToolName      string          `json:"tool_name"`
 	ToolInput     json.RawMessage `json:"tool_input"`
+	ToolUseID     string          `json:"tool_use_id"`
 	Prompt        string          `json:"prompt"`
 }
 
@@ -49,7 +50,7 @@ func (c ClaudeCode) Parse(stdin []byte) (Event, error) {
 	if err := json.Unmarshal(stdin, &in); err != nil {
 		return Event{}, fmt.Errorf("claude-code hook payload: %w", err)
 	}
-	ev := Event{Name: in.HookEventName, SessionID: in.SessionID, Cwd: in.Cwd, Tool: in.ToolName}
+	ev := Event{Name: in.HookEventName, SessionID: in.SessionID, Cwd: in.Cwd, Tool: in.ToolName, ToolUseID: in.ToolUseID}
 	field, isEdit := claudeEditPath[in.ToolName]
 	switch in.HookEventName {
 	case "SessionStart":

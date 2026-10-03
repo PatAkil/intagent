@@ -27,6 +27,7 @@ type cursorInput struct {
 	WorkspaceRoots []string        `json:"workspace_roots"`
 	ToolName       string          `json:"tool_name"`
 	ToolInput      json.RawMessage `json:"tool_input"`
+	ToolUseID      string          `json:"tool_use_id"`
 	FilePath       string          `json:"file_path"`
 	Prompt         string          `json:"prompt"`
 	Cwd            string          `json:"cwd"`
@@ -57,7 +58,7 @@ func (Cursor) Parse(stdin []byte) (Event, error) {
 	if session == "" {
 		session = in.SessionID
 	}
-	ev := Event{Name: in.HookEventName, SessionID: session, Tool: in.ToolName}
+	ev := Event{Name: in.HookEventName, SessionID: session, Tool: in.ToolName, ToolUseID: in.ToolUseID}
 	// Paths resolve against the workspace; a shell command reports its own cwd.
 	if len(in.WorkspaceRoots) > 0 {
 		ev.Cwd = in.WorkspaceRoots[0]

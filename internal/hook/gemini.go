@@ -26,7 +26,7 @@ func (Gemini) Parse(stdin []byte) (Event, error) {
 	if err := json.Unmarshal(stdin, &in); err != nil {
 		return Event{}, fmt.Errorf("gemini hook payload: %w", err)
 	}
-	ev := Event{Name: in.HookEventName, SessionID: in.SessionID, Cwd: in.Cwd, Tool: in.ToolName}
+	ev := Event{Name: in.HookEventName, SessionID: in.SessionID, Cwd: in.Cwd, Tool: in.ToolName, ToolUseID: in.ToolUseID}
 	path := ""
 	if geminiEditTools[in.ToolName] {
 		path = stringField(in.ToolInput, "file_path")

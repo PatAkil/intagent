@@ -93,7 +93,7 @@ func (a *App) handleHook(ctx context.Context, ad hook.Adapter, ev hook.Event) (h
 		return hook.Output{}, nil // writes outside the repository
 	}
 	hev := board.HookEvent{
-		Kind: ev.Kind, Agent: ad.Agent(), SessionID: ev.SessionID, Where: ws.where, Tool: ev.Tool, Paths: refs,
+		Kind: ev.Kind, Agent: ad.Agent(), SessionID: ev.SessionID, Where: ws.where, Tool: ev.Tool, ToolUseID: ev.ToolUseID, Paths: refs,
 		LateContext: ev.LateContext, NoAsk: ev.NoAsk,
 	}
 	if ws.settings.SharePrompts {

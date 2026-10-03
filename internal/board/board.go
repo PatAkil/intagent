@@ -199,10 +199,16 @@ func cleanPaths(in []PathRef) ([]PathRef, error) {
 	}
 	out := make([]PathRef, 0, len(in))
 	seen := map[string]bool{}
+	var first error
 	for _, p := range in {
 		c, err := glob.CleanPath(p.Path)
 		if err != nil {
-			return nil, fmt.Errorf("%w: %w", ErrInvalid, err)
+			// One path intagent cannot show (a control character, say) must not
+			// let the rest of the edit through unchecked.
+			if first == nil {
+				first = err
+			}
+			continue
 		}
 		if seen[c] {
 			continue
@@ -215,6 +221,9 @@ func cleanPaths(in []PathRef) ([]PathRef, error) {
 			}
 		}
 		out = append(out, PathRef{Path: c, Area: area})
+	}
+	if len(out) == 0 && first != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInvalid, first)
 	}
 	return out, nil
 }
@@ -330,6 +339,7 @@ func (b *Board) Hook(now time.Time, ev HookEvent) (HookResult, error) {
 	ev.SessionID = Clean(ev.SessionID, 200)
 	ev.Agent = Agent(ident(string(ev.Agent), 40))
 	ev.Tool = ident(ev.Tool, 60)
+	ev.ToolUseID = Clean(ev.ToolUseID, 200)
 	if ev.Member == "" || ev.SessionID == "" || ev.Agent == "" {
 		return allow, fmt.Errorf("%w: member, agent and session_id are required", ErrInvalid)
 	}
@@ -367,23 +377,24 @@ func (b *Board) Hook(now time.Time, ev HookEvent) (HookResult, error) {
 		b.taskFromPrompt(c, s, ev.Prompt)
 		res.Context = b.deliver(now, c, s)
 	case KindToolStart:
-		startTool(now, s, ev.Tool)
+		startTool(now, s, ev.Tool, ev.ToolUseID)
 	case KindPreEdit:
-		startTool(now, s, ev.Tool)
+		startTool(now, s, ev.Tool, ev.ToolUseID)
 		res = b.decide(now, c, s, ev.Paths, ev.NoAsk)
 		res.ClaimID = c.ID
-		if res.Decision != Allow {
-			// The edit does not run (yet), so no tool end will follow it.
-			endTool(s)
+		if res.Decision == Refuse || (res.Decision == DecideAsk && ev.NoAsk) {
+			// The edit does not run, so no tool end will follow it. (An ask that
+			// the person answers runs, or not, and the agent reports either.)
+			endTool(s, ev.ToolUseID)
 		} else if ev.LateContext && res.Context != "" {
 			s.Pending, res.Context = joinBlocks(s.Pending, res.Context), ""
 		}
 	case KindPostEdit:
-		endTool(s)
+		endTool(s, ev.ToolUseID)
 		b.touch(now, c, s, ev.Paths)
 		res.Context = b.deliver(now, c, s)
 	case KindToolEnd:
-		endTool(s)
+		endTool(s, ev.ToolUseID)
 		// A shell command may have written files without saying which.
 		b.reconcile(now, c, s, ev.Footprint)
 		res.Context = b.deliver(now, c, s)
@@ -426,31 +437,47 @@ var knownKinds = map[Kind]bool{
 // startTool records a tool call starting. Agents run tools in parallel, so
 // the session counts them: it is inside a tool, with the longer stall
 // threshold, until the last one ends.
-func startTool(now time.Time, s *Session, tool string) {
+//
+// Calls are tracked by the id the agent gives them, so an end reported twice
+// (a refused call that the agent also reports as failed) or never cannot
+// shift the count; calls without an id are counted.
+func startTool(now time.Time, s *Session, tool, id string) {
 	s.Phase = PhaseWorking
-	if s.InFlight == 0 {
+	if !inTool(s) {
 		s.ToolSince = now
 	}
-	s.InFlight++
+	if id == "" {
+		s.InFlight++
+	} else {
+		if s.Calls == nil {
+			s.Calls = map[string]bool{}
+		}
+		s.Calls[id] = true
+	}
 	s.Tool = tool
 }
 
 // endTool records a tool call ending.
-func endTool(s *Session) {
+func endTool(s *Session, id string) {
 	s.Phase = PhaseWorking
-	if s.InFlight > 0 {
+	switch {
+	case id != "":
+		delete(s.Calls, id)
+	case s.InFlight > 0:
 		s.InFlight--
 	}
-	if s.InFlight == 0 {
+	if !inTool(s) {
 		clearTools(s)
 	}
 }
+
+func inTool(s *Session) bool { return s.InFlight > 0 || len(s.Calls) > 0 }
 
 // clearTools forgets the tools in flight, at the boundaries where none can be:
 // a prompt, a stop, the session's start and end. An end event that never came
 // cannot keep a session inside a tool past them.
 func clearTools(s *Session) {
-	s.InFlight, s.Tool, s.ToolSince = 0, "", time.Time{}
+	s.InFlight, s.Calls, s.Tool, s.ToolSince = 0, nil, "", time.Time{}
 }
 
 func (b *Board) taskFromPrompt(c *Claim, s *Session, prompt string) {
@@ -754,7 +781,7 @@ func ackKey(c Conflict) string {
 func (b *Board) decide(now time.Time, c *Claim, s *Session, paths []PathRef, noAsk bool) HookResult {
 	live, liveSess := b.liveClaims(now), b.liveSessions(now)
 	var refused, asked, warned, all []Conflict
-	var warnKeys []string
+	var askKeys, warnKeys []string
 	if s.Acked == nil {
 		s.Acked = map[string]bool{}
 	}
@@ -771,8 +798,8 @@ func (b *Board) decide(now time.Time, c *Claim, s *Session, paths []PathRef, noA
 			case action == Ask && !noAsk:
 				asked = append(asked, cf)
 			case action == Ask && !s.Acked[key]:
-				s.Acked[key] = true
 				asked = append(asked, cf)
+				askKeys = append(askKeys, key)
 			case action == Bump && !s.Acked[key]:
 				s.Acked[key] = true
 				refused = append(refused, cf)
@@ -790,6 +817,11 @@ func (b *Board) decide(now time.Time, c *Claim, s *Session, paths []PathRef, noA
 	case len(asked) > 0:
 		res.Decision = DecideAsk
 		res.Reason = b.renderRefusal(now, asked, b.cfg.Policy)
+		// An agent that cannot ask was told to ask its person; its retry is the
+		// answer. Not when a refusal of the same edit hid the question.
+		for _, k := range askKeys {
+			s.Acked[k] = true
+		}
 	case len(warned) > 0:
 		res.Context = b.renderWarnings(now, warned)
 		// A warning counts as told only once it is shown, not when a refusal

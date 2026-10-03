@@ -812,6 +812,92 @@ func TestGitFoundFilesBelongToNoSessionInTheirWorktree(t *testing.T) {
 	}
 }
 
+// A question hidden behind a refusal of the same edit is not answered by the
+// retry: the agent that cannot ask hears it on the retry instead.
+func TestAskHiddenBehindARefusalIsStillAsked(t *testing.T) {
+	h := newHarness(t, func(c *Config) { c.Policy.Overlap = Ask })
+	h.hook(KindPrompt, "carol", "c1")
+	h.edit("carol", "c1", "svc/pay/retry.go")
+	h.hook(KindPrompt, "alice", "a1")
+	h.declare("alice", Exclusive, "Retry rework", "svc/pay/**")
+	ev := HookEvent{Kind: KindPreEdit, Member: "bob", Agent: AgentCodex, SessionID: "b1", Where: whereOf("bob"), Tool: "apply_patch",
+		Paths: refs("svc/pay/retry.go"), NoAsk: true}
+	if res, _ := h.b.Hook(h.now, ev); res.Decision != Refuse || strings.Contains(res.Reason, "carol") {
+		t.Fatalf("first: %s %q", res.Decision, res.Reason)
+	}
+	if _, err := h.b.Release(h.now, ReleaseRequest{Member: "alice", Where: whereOf("alice")}); err != nil {
+		t.Fatal(err)
+	}
+	res, _ := h.b.Hook(h.now, ev)
+	if res.Decision != DecideAsk || !strings.Contains(res.Reason, "carol") {
+		t.Fatalf("after alice released: %s %q", res.Decision, res.Reason)
+	}
+	if res, _ := h.b.Hook(h.now, ev); res.Decision != Allow {
+		t.Fatalf("after asking: %s", res.Decision)
+	}
+}
+
+// An edit the person is asked about may still run; its end must not end a
+// parallel tool that is still running.
+func TestAnAskedEditKeepsParallelToolsCounted(t *testing.T) {
+	h := newHarness(t, func(c *Config) { c.Policy.Overlap = Ask })
+	h.hook(KindPrompt, "alice", "a1")
+	h.edit("alice", "a1", "svc/a.go")
+	h.hook(KindPrompt, "bob", "b1")
+	if _, err := h.b.Hook(h.now, HookEvent{Kind: KindToolStart, Member: "bob", Agent: AgentClaudeCode, SessionID: "b1",
+		Where: whereOf("bob"), Tool: "Bash"}); err != nil {
+		t.Fatal(err)
+	}
+	if res := h.hook(KindPreEdit, "bob", "b1", "svc/a.go"); res.Decision != DecideAsk {
+		t.Fatalf("pre_edit: %s", res.Decision)
+	}
+	h.hook(KindPostEdit, "bob", "b1", "svc/a.go") // the person said yes
+	if got := h.toolOf("bob"); got == "" {
+		t.Fatal("the asked edit's end also ended the running Bash")
+	}
+}
+
+// One path intagent cannot use does not let the rest of the edit through.
+func TestOneOddPathDoesNotUnblockTheRest(t *testing.T) {
+	h := newHarness(t)
+	h.hook(KindPrompt, "alice", "a1")
+	h.declare("alice", Exclusive, "Retry rework", "svc/pay/**")
+	res, err := h.b.Hook(h.now, HookEvent{Kind: KindPreEdit, Member: "bob", Agent: AgentCodex, SessionID: "b1", Where: whereOf("bob"),
+		Tool: "apply_patch", Paths: refs("svc/pay/retry.go", "docs/a\nb.md")})
+	if err != nil || res.Decision != Refuse {
+		t.Fatalf("decision %s, err %v", res.Decision, err)
+	}
+}
+
+// Calls are paired by id: a refused call that the agent also reports as
+// failed (Cursor does) ends once, not twice.
+func TestToolCallsArePairedByID(t *testing.T) {
+	h := newHarness(t)
+	h.hook(KindPrompt, "alice", "a1")
+	h.declare("alice", Exclusive, "Retry rework", "svc/pay/**")
+	call := func(kind Kind, tool, id string, paths ...string) Decision {
+		t.Helper()
+		res, err := h.b.Hook(h.now, HookEvent{Kind: kind, Member: "bob", Agent: AgentCursor, SessionID: "b1", Where: whereOf("bob"),
+			Tool: tool, ToolUseID: id, Paths: refs(paths...)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res.Decision
+	}
+	call(KindToolStart, "Shell", "t1")
+	if d := call(KindPreEdit, "Write", "t2", "svc/pay/retry.go"); d != Refuse {
+		t.Fatalf("pre_edit: %s", d)
+	}
+	call(KindToolEnd, "Write", "t2") // postToolUseFailure for the denied call
+	if got := h.toolOf("bob"); got == "" {
+		t.Fatal("the refused call's failure report ended the running shell command")
+	}
+	call(KindToolEnd, "Shell", "t1")
+	if got := h.toolOf("bob"); got != "" {
+		t.Fatalf("after the shell command ended: %q", got)
+	}
+}
+
 func TestClean(t *testing.T) {
 	for in, want := range map[string]string{
 		"  a\n\tb  ":         "a b",

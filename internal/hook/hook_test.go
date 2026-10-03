@@ -21,7 +21,7 @@ func TestClaudeCodeParse(t *testing.T) {
 		name, payload string
 		want          Event
 	}{
-		{"pre edit", ccPreEdit, Event{Kind: board.KindPreEdit, Name: "PreToolUse", SessionID: "918b46a0-37d8-4501-b2b8-1f36670f1113", Cwd: "/lab", Tool: "Edit", Paths: []string{"/lab/notes.txt"}}},
+		{"pre edit", ccPreEdit, Event{Kind: board.KindPreEdit, Name: "PreToolUse", SessionID: "918b46a0-37d8-4501-b2b8-1f36670f1113", Cwd: "/lab", Tool: "Edit", ToolUseID: "toolu_01", Paths: []string{"/lab/notes.txt"}}},
 		{"notebook", `{"session_id":"s","cwd":"/lab","hook_event_name":"PostToolUse","tool_name":"NotebookEdit","tool_input":{"notebook_path":"/lab/a.ipynb","new_source":"x"}}`,
 			Event{Kind: board.KindPostEdit, Name: "PostToolUse", SessionID: "s", Cwd: "/lab", Tool: "NotebookEdit", Paths: []string{"/lab/a.ipynb"}}},
 		{"write", `{"session_id":"s","cwd":"/lab","hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{"file_path":"/lab/new.go","content":"x"}}`,
@@ -196,7 +196,7 @@ const cuPre = `{"conversation_id":"c1","generation_id":"g1","model":"m","session
 func TestCursorEditsAreCheckedBeforeTheWrite(t *testing.T) {
 	cu := Cursor{}
 	ev, err := cu.Parse([]byte(cuPre))
-	want := Event{Kind: board.KindPreEdit, Name: "preToolUse", SessionID: "c1", Cwd: "/ws", Tool: "Write", Paths: []string{"/ws/src/a.ts"}, NoAsk: true}
+	want := Event{Kind: board.KindPreEdit, Name: "preToolUse", SessionID: "c1", Cwd: "/ws", Tool: "Write", ToolUseID: "t1", Paths: []string{"/ws/src/a.ts"}, NoAsk: true}
 	if err != nil || !reflect.DeepEqual(ev, want) {
 		t.Fatalf("preToolUse Write = %+v, %v", ev, err)
 	}

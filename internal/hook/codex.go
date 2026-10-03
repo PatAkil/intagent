@@ -25,6 +25,7 @@ type codexInput struct {
 	ToolName      string          `json:"tool_name"`
 	ToolInput     json.RawMessage `json:"tool_input"`
 	ToolResponse  json.RawMessage `json:"tool_response"`
+	ToolUseID     string          `json:"tool_use_id"`
 	Prompt        string          `json:"prompt"`
 }
 
@@ -34,7 +35,7 @@ func (Codex) Parse(stdin []byte) (Event, error) {
 	if err := json.Unmarshal(stdin, &in); err != nil {
 		return Event{}, fmt.Errorf("codex hook payload: %w", err)
 	}
-	ev := Event{Name: in.HookEventName, SessionID: in.SessionID, Cwd: in.Cwd, Tool: in.ToolName}
+	ev := Event{Name: in.HookEventName, SessionID: in.SessionID, Cwd: in.Cwd, Tool: in.ToolName, ToolUseID: in.ToolUseID}
 	command := stringField(in.ToolInput, "command")
 	switch in.HookEventName {
 	case "SessionStart":

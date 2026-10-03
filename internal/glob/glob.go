@@ -88,15 +88,14 @@ func hasDrive(p string) bool {
 // Match reports whether pattern covers the file or directory at name. Both
 // must already be clean; an invalid pattern matches nothing.
 func Match(pattern, name string) bool {
-	return match(strings.Split(pattern, "/"), strings.Split(name, "/"), "")
+	return match(strings.Split(pattern, "/"), strings.Split(name, "/"))
 }
 
-// match matches segments; last is the pattern segment matched before p.
-func match(p, s []string, last string) bool {
+func match(p, s []string) bool {
 	for len(p) > 0 {
 		if p[0] == "**" {
 			for k := 0; k <= len(s); k++ {
-				if match(p[1:], s[k:], "**") {
+				if match(p[1:], s[k:]) {
 					return true
 				}
 			}
@@ -108,11 +107,10 @@ func match(p, s []string, last string) bool {
 		if ok, err := path.Match(p[0], s[0]); err != nil || !ok {
 			return false
 		}
-		last, p, s = p[0], p[1:], s[1:]
+		p, s = p[1:], s[1:]
 	}
-	// The pattern is used up: it matched name itself, or a directory above it
-	// unless what it named is a file.
-	return len(s) == 0 || mayBeDir(last)
+	// The pattern is used up: it matched name itself or a directory above it.
+	return true
 }
 
 // Overlap reports whether some path could be covered by both patterns. It
@@ -131,14 +129,12 @@ type overlapper struct {
 }
 
 func (o *overlapper) overlap(i, j int) bool {
-	switch {
-	case i == len(o.a) && j == len(o.b):
+	if i == len(o.a) || j == len(o.b) {
+		// One pattern is used up, so it covers the whole subtree the other is in:
+		// a name without wildcards may be a directory (src/Acme.Payments,
+		// conf.d). This makes **/*.proto overlap docs/readme.md, an extra
+		// warning taken over a missed clash.
 		return true
-	case i == len(o.a):
-		// a is used up: it covers what lies below it, unless it names a file.
-		return mayBeDir(o.a[i-1])
-	case j == len(o.b):
-		return mayBeDir(o.b[j-1])
 	}
 	key := [2]int{i, j}
 	if v, ok := o.memo[key]; ok {
@@ -180,30 +176,6 @@ func segmentsOverlap(a, b string) bool {
 }
 
 func hasMeta(s string) bool { return strings.ContainsAny(s, `*?[\`) }
-
-// mayBeDir reports whether a pattern's last segment could name a directory,
-// with files below it. Only a literal name with a file extension (readme.md,
-// retry.go) is taken for a file; anything else (Makefile, v1.2, a wildcard)
-// may be a directory, since a missed overlap is worse than an extra warning.
-func mayBeDir(seg string) bool {
-	if hasMeta(seg) {
-		return true
-	}
-	dot := strings.LastIndexByte(seg, '.')
-	if dot <= 0 || dot == len(seg)-1 || len(seg)-dot > 11 {
-		return true
-	}
-	ext := seg[dot+1:]
-	if !unicode.IsLetter(rune(ext[0])) {
-		return true
-	}
-	for _, r := range ext {
-		if !unicode.IsLetter(r) && !unicode.IsDigit(r) {
-			return true
-		}
-	}
-	return false
-}
 
 func literalPrefix(s string) string {
 	if i := strings.IndexAny(s, `*?[\`); i >= 0 {

@@ -17,6 +17,7 @@ permission `mcp__intagent__*`.
 | `UserPromptSubmit` | (all) | `prompt` (first line becomes the task, unless sharing is off) | `additionalContext`: news from the team |
 | `PreToolUse` | `Edit\|Write\|MultiEdit\|NotebookEdit\|Bash` | `pre_edit` for file writes, `tool_start` for Bash | `permissionDecision: deny` with a reason, `ask`, or `additionalContext` |
 | `PostToolUse` | same | `post_edit`, or `tool_end` + git footprint after Bash | `additionalContext`: news from the team |
+| `PostToolUseFailure` | same | `tool_end`: a failed call is no longer running | `additionalContext` |
 | `Stop` | (all) | `stop` + git footprint | nothing |
 | `SessionEnd` | (all) | `session_end` + git footprint (timeout 5 s; Claude's default budget is 1.5 s) | nothing |
 
@@ -104,6 +105,7 @@ Claude Code's, with a 10 s timeout.
 | `beforeSubmitPrompt` | (all) | `prompt` | `continue: true` and `additional_context` |
 | `preToolUse` | `^(Write\|Delete\|Shell)$` | `pre_edit` for `Write` and `Delete` (`tool_input.file_path`), `tool_start` for `Shell` | `permission: deny` with `user_message` and `agent_message`, or `permission: allow`; `additional_context` |
 | `postToolUse` | same | `post_edit`, or `tool_end` + git footprint after `Shell` | `additional_context` |
+| `postToolUseFailure` | same | `tool_end` (also sent for a call intagent refused) | `additional_context` |
 | `stop` | (all) | `stop` + git footprint | `{}` |
 | `sessionEnd` | (all) | `session_end` + git footprint | `{}` |
 
@@ -122,7 +124,8 @@ What matters:
   `command`, and sends them Cursor's payloads. intagent recognises a Cursor payload whichever file the hook came
   from (`cursor_version`, or a lower-case event name with a `conversation_id`), and writes the identical command in
   both files: Cursor drops an imported hook whose command equals one of its own for the same event.
-- **Sessions** are `conversation_id`; paths resolve against `workspace_roots[0]`.
+- **Sessions** are `conversation_id`; paths resolve against `workspace_roots[0]`. Tool calls are paired by
+  `tool_use_id`, so a refused call reported again as failed ends once.
 - **Open the repository, not a subfolder.** Cursor reads project hooks from the folder it opened. For a subfolder,
   `intagent init --user` covers it: Cursor imports the Claude Code hooks that puts in `~/.claude/settings.json`.
 - **Windows.** Cursor runs hooks in PowerShell there, which cannot run the guarded command; Cursor carries on without

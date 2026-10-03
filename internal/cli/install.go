@@ -28,6 +28,7 @@ var claudeWiring = []hookWire{
 	{"UserPromptSubmit", "", 10},
 	{"PreToolUse", "Edit|Write|MultiEdit|NotebookEdit|Bash", 10},
 	{"PostToolUse", "Edit|Write|MultiEdit|NotebookEdit|Bash", 10},
+	{"PostToolUseFailure", "Edit|Write|MultiEdit|NotebookEdit|Bash", 10},
 	{"Stop", "", 10},
 	{"SessionEnd", "", 5},
 }
@@ -84,6 +85,7 @@ var cursorWiring = []hookWire{
 	{"beforeSubmitPrompt", "", 10},
 	{"preToolUse", "^(Write|Delete|Shell)$", 10},
 	{"postToolUse", "^(Write|Delete|Shell)$", 10},
+	{"postToolUseFailure", "^(Write|Delete|Shell)$", 10},
 	{"stop", "", 10},
 	{"sessionEnd", "", 10},
 }

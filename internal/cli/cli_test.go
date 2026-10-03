@@ -415,7 +415,8 @@ func TestInitMigratesOldWiring(t *testing.T) {
 			t.Errorf("Cursor's %s has %d handlers matching Claude's %s", cu, n, ce)
 		}
 	}
-	if len(ours) != len(imported) {
+	// Claude's PostToolUseFailure is not imported by Cursor, which has its own.
+	if len(ours) != len(imported)+1 || ours["PostToolUseFailure"] != 1 || len(cursor.Hooks["postToolUseFailure"]) != 1 {
 		t.Errorf("intagent handlers on %v", ours)
 	}
 }

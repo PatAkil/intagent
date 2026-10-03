@@ -21,9 +21,12 @@ type Event struct {
 	Name      string
 	SessionID string
 	// Cwd is the agent's working directory; relative Paths resolve against it.
-	Cwd   string
-	Tool  string
-	Paths []string
+	Cwd  string
+	Tool string
+	// ToolUseID identifies the tool call, when the agent gives one, so its
+	// start and end can be paired.
+	ToolUseID string
+	Paths     []string
 	// Prompt is the user's prompt on prompt events.
 	Prompt string
 	// Footprint asks the caller to reconcile the worktree's git changes.

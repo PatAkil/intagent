@@ -109,12 +109,12 @@ func TestOverlap(t *testing.T) {
 		{"a/*/c", "a/b/d", false},
 		{"a/*/c", "a/b/c/d", true},
 		{"src/[ab]/x.go", "src/a/x.go", true},
-		// A file covers nothing below it; anything else might be a directory.
-		{"**/*.proto", "docs/readme.md", false},
-		{"**/*_test.go", "services/payments/retry.go", false},
-		{"**/*.proto", "docs", true},
-		{"**/*.proto", "build/Makefile", true},
-		{"**/*.proto", "pkg/v1.2", true},
+		// A name without wildcards may be a directory, dots or not: a missed
+		// clash is worse than the extra warning **/*.proto gets for a file.
+		{"**/*.proto", "docs/readme.md", true},
+		{"src/Acme.Payments", "src/Acme.Payments/**", true},
+		{"conf.d", "conf.d/**", true},
+		{"docs/readme.md", "docs/*/**", true},
 		{"**/*.proto", "conf.d/**", true},
 		{"docs/readme.md", "docs/readme.md", true},
 		{"**/readme.md", "docs/readme.md", true},
