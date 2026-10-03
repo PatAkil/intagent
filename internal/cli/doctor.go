@@ -76,23 +76,23 @@ func (a *App) doctor(ctx context.Context, args []string) error {
 	wired := ws.settings.Repo.Agents
 	if len(wired) == 0 {
 		// Enrolled by an older intagent: check what is there.
-		for _, ag := range agentNames {
-			if _, err := os.Stat(filepath.Join(root, agentFiles[ag][0])); err == nil {
-				wired = append(wired, ag)
+		for _, w := range wirings {
+			if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(w.files[0]))); err == nil {
+				wired = append(wired, w.name)
 			}
 		}
 	}
-	for _, ag := range agentNames {
-		if !slices.Contains(wired, ag) {
-			info("%s: not wired in this repository", agentTitles[ag])
+	for _, w := range wirings {
+		if !slices.Contains(wired, w.name) {
+			info("%s: not wired in this repository", w.title)
 			continue
 		}
-		for _, c := range agentChecks[ag] {
-			data, err := os.ReadFile(filepath.Join(root, c.rel))
+		for _, c := range w.checks {
+			data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(c.rel)))
 			switch {
 			case err != nil:
 				bad("%s: %s is missing; run 'intagent init'", c.what, c.rel)
-			case strings.Contains(string(data), c.needle):
+			case c.wired(data):
 				ok("%s: %s", c.what, c.rel)
 			default:
 				bad("%s: %s is not wired for this version of intagent; run 'intagent init'", c.what, c.rel)
@@ -112,24 +112,6 @@ func (a *App) doctor(ctx context.Context, args []string) error {
 	}
 	fmt.Fprintln(a.Out, "\nAll connected.")
 	return nil
-}
-
-var agentTitles = map[string]string{"claude-code": "Claude Code and Copilot CLI", "codex": "Codex", "cursor": "Cursor", "gemini": "Gemini CLI"}
-
-type wiringCheck struct{ rel, needle, what string }
-
-// agentChecks are what doctor looks for in each agent's files.
-var agentChecks = map[string][]wiringCheck{
-	"claude-code": {
-		{".claude/settings.json", hookCommand, "Claude Code hooks (Copilot CLI runs them too)"},
-		{".mcp.json", "intagent", "Claude Code MCP server"},
-	},
-	"codex": {
-		{".codex/hooks.json", codexCommand, "Codex hooks"},
-		{".codex/config.toml", "[mcp_servers.intagent]", "Codex MCP server"},
-	},
-	"cursor": {{".cursor/hooks.json", hookCommand, "Cursor hooks"}},
-	"gemini": {{".gemini/settings.json", geminiCommand, "Gemini CLI hooks"}},
 }
 
 // doctorCodexTrust checks the two trust gates without which Codex silently

@@ -586,6 +586,18 @@ func TestDoctorAndHelp(t *testing.T) {
 	if !strings.Contains(out, "knows you as alice") || !strings.Contains(out, "Claude Code hooks (Copilot CLI runs them too): .claude/settings.json") {
 		t.Fatalf("doctor after init:\n%s", out)
 	}
+	for _, want := range []string{"Cursor MCP server: .cursor/mcp.json", "Gemini CLI MCP server: .gemini/settings.json", "Claude Code MCP server: .mcp.json"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("doctor after init does not check %q:\n%s", want, out)
+		}
+	}
+	// An MCP server someone removed is missed by the agent, and by doctor.
+	cursorMCP, _ := os.ReadFile(filepath.Join(a, ".cursor/mcp.json"))
+	writeFile(t, filepath.Join(a, ".cursor/mcp.json"), `{"mcpServers":{"other":{"command":"intagent-not"}}}`)
+	if out, _, code := tm.as("alice", a, "", "doctor"); code != 1 || !strings.Contains(out, "Cursor MCP server: .cursor/mcp.json is not wired") {
+		t.Fatalf("doctor without Cursor's MCP server: %d\n%s", code, out)
+	}
+	writeFile(t, filepath.Join(a, ".cursor/mcp.json"), string(cursorMCP))
 	// Wiring from before the shell form breaks under Cursor; doctor says so.
 	writeFile(t, filepath.Join(a, ".claude/settings.json"), `{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"intagent","args":["hook","claude-code"]}]}]}}`)
 	if out, _, code := tm.as("alice", a, "", "doctor"); code != 1 || !strings.Contains(out, "settings.json is not wired for this version") {

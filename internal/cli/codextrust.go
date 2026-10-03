@@ -48,11 +48,15 @@ func codexTrustFor(ctx context.Context, wt *gitx.Worktree) (codexTrust, error) {
 	return ct, nil
 }
 
+// trustEntry is one setting Codex needs: key = value in a table, and what
+// it trusts, for the person reading init's report.
+type trustEntry struct{ table, key, value, what string }
+
 // wants lists each table, key and value Codex needs, with a name for notes.
-func (ct codexTrust) wants() ([][4]string, error) {
-	var out [][4]string
+func (ct codexTrust) wants() ([]trustEntry, error) {
+	var out []trustEntry
 	for _, r := range ct.roots {
-		out = append(out, [4]string{"[projects." + tomlString(r) + "]", "trust_level", tomlString("trusted"), "project " + r})
+		out = append(out, trustEntry{"[projects." + tomlString(r) + "]", "trust_level", tomlString("trusted"), "project " + r})
 	}
 	for _, hf := range ct.hooksFiles {
 		entries, err := codexTrustEntries(hf)
@@ -65,7 +69,7 @@ func (ct codexTrust) wants() ([][4]string, error) {
 		}
 		slices.Sort(keys)
 		for _, k := range keys {
-			out = append(out, [4]string{"[hooks.state." + tomlString(k) + "]", "trusted_hash", tomlString(entries[k]), "hook " + k})
+			out = append(out, trustEntry{"[hooks.state." + tomlString(k) + "]", "trusted_hash", tomlString(entries[k]), "hook " + k})
 		}
 	}
 	return out, nil
@@ -86,17 +90,17 @@ func (ct codexTrust) apply() ([]string, error) {
 	var notes []string
 	changed := false
 	for _, w := range wants {
-		prev, err := doc.set(w[0], w[1], w[2])
+		prev, err := doc.set(w.table, w.key, w.value)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", ct.config, err)
 		}
 		switch prev {
-		case w[2]:
-			notes = append(notes, "already trusted: "+w[3])
+		case w.value:
+			notes = append(notes, "already trusted: "+w.what)
 		case "":
-			notes, changed = append(notes, "trusted "+w[3]), true
+			notes, changed = append(notes, "trusted "+w.what), true
 		default:
-			notes, changed = append(notes, fmt.Sprintf("trusted %s (it had %s = %s)", w[3], w[1], prev)), true
+			notes, changed = append(notes, fmt.Sprintf("trusted %s (it had %s = %s)", w.what, w.key, prev)), true
 		}
 	}
 	if !changed {
@@ -121,10 +125,10 @@ func (ct codexTrust) problems() ([]string, error) {
 	var out []string
 	hooks, untrusted := 0, 0
 	for _, w := range wants {
-		trusted := doc.get(w[0], w[1]) == w[2]
-		if w[1] == "trust_level" {
+		trusted := doc.get(w.table, w.key) == w.value
+		if w.key == "trust_level" {
 			if !trusted {
-				out = append(out, w[3])
+				out = append(out, w.what)
 			}
 			continue
 		}

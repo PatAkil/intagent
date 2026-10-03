@@ -17,19 +17,6 @@ import (
 	"github.com/patakil/intagent/internal/gitx"
 )
 
-// agentNames lists the agents init wires, in order; Copilot CLI runs Claude
-// Code's hooks.
-var agentNames = []string{"claude-code", "codex", "cursor", "gemini"}
-
-// agentFiles are the JSON files init edits for each agent, relative to the
-// repository root; all are read before any is written.
-var agentFiles = map[string][]string{
-	"claude-code": {".claude/settings.json", ".mcp.json"},
-	"codex":       {".codex/hooks.json"},
-	"cursor":      {".cursor/hooks.json", ".cursor/mcp.json"},
-	"gemini":      {".gemini/settings.json"},
-}
-
 // parseAgents reads --agents: known names, each once, in a stable order.
 func parseAgents(list string) ([]string, error) {
 	want := map[string]bool{}
@@ -123,7 +110,7 @@ func (a *App) initRepo(ctx context.Context, args []string) error {
 		done = append(done, client.RepoFileName+" (server "+rc.URL+")")
 	}
 	for _, ag := range agents {
-		wrote, err := installAgent(root, ag)
+		wrote, err := wiringFor(ag).install(root)
 		if err != nil {
 			return err
 		}
@@ -131,7 +118,7 @@ func (a *App) initRepo(ctx context.Context, args []string) error {
 	}
 	repoChanged := len(done) > 0
 	for ag, p := range userFiles {
-		ok, err := installUser(ag, p)
+		ok, err := wiringFor(ag).installUser(p)
 		if err != nil {
 			return err
 		}
@@ -175,7 +162,7 @@ func (a *App) initRepo(ctx context.Context, args []string) error {
 	return nil
 }
 
-// userSettings names the user-level settings files --user installs hooks in.
+// userSettings names the user settings files --user wires, by agent.
 func userSettings(agents []string, user bool) (map[string]string, error) {
 	out := map[string]string{}
 	if !user {
@@ -185,11 +172,10 @@ func userSettings(agents []string, user bool) (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	if slices.Contains(agents, "claude-code") {
-		out["claude-code"] = filepath.Join(home, ".claude", "settings.json")
-	}
-	if slices.Contains(agents, "gemini") {
-		out["gemini"] = filepath.Join(home, ".gemini", "settings.json")
+	for _, ag := range agents {
+		if w := wiringFor(ag); w.userFile != "" {
+			out[ag] = filepath.Join(home, filepath.FromSlash(w.userFile))
+		}
 	}
 	return out, nil
 }
@@ -199,8 +185,8 @@ func userSettings(agents []string, user bool) (map[string]string, error) {
 func preflight(root string, agents []string, userFiles map[string]string) error {
 	var files []string
 	for _, ag := range agents {
-		for _, rel := range agentFiles[ag] {
-			files = append(files, filepath.Join(root, rel))
+		for _, rel := range wiringFor(ag).files {
+			files = append(files, filepath.Join(root, filepath.FromSlash(rel)))
 		}
 	}
 	for _, p := range userFiles {
@@ -213,53 +199,6 @@ func preflight(root string, agents []string, userFiles map[string]string) error 
 		}
 	}
 	return nil
-}
-
-// installAgent wires one agent into the repository and says what it wrote.
-func installAgent(root, agent string) ([]string, error) {
-	var done []string
-	note := func(rel, what string) { done = append(done, rel+" ("+what+")") }
-	switch agent {
-	case "claude-code":
-		if ok, err := installClaude(filepath.Join(root, ".claude", "settings.json")); err != nil {
-			return nil, err
-		} else if ok {
-			note(".claude/settings.json", "Claude Code hooks, also run by Cursor and Copilot CLI")
-		}
-		if ok, err := installMCPJSON(filepath.Join(root, ".mcp.json"), true); err != nil {
-			return nil, err
-		} else if ok {
-			note(".mcp.json", "intagent MCP server")
-		}
-	case "codex", "cursor":
-		install, what := installCodex, "Codex"
-		if agent == "cursor" {
-			install, what = installCursor, "Cursor"
-		}
-		wrote, err := install(root)
-		if err != nil {
-			return nil, err
-		}
-		for _, w := range wrote {
-			rel, _ := filepath.Rel(root, w)
-			note(rel, what)
-		}
-	case "gemini":
-		if ok, err := installGemini(root); err != nil {
-			return nil, err
-		} else if ok {
-			note(".gemini/settings.json", "Gemini CLI hooks and MCP server")
-		}
-	}
-	return done, nil
-}
-
-// installUser installs an agent's hooks in a user settings file.
-func installUser(agent, p string) (bool, error) {
-	if agent == "gemini" {
-		return installGeminiUser(p)
-	}
-	return installClaude(p)
 }
 
 func (a *App) initReport(root, url string, agents, done []string, repoChanged, codexUntrusted bool) {
@@ -284,11 +223,10 @@ func (a *App) initReport(root, url string, agents, done []string, repoChanged, c
 	if codexUntrusted {
 		fmt.Fprintln(a.Out, "\nCodex runs project hooks only for trusted projects and trusted hooks. Run 'intagent init --trust-codex' or approve them in Codex's /hooks screen.")
 	}
-	if slices.Contains(agents, "claude-code") {
-		fmt.Fprintln(a.Out, "\nClaude Code asks once per member to approve the project's MCP server; accept 'intagent' when it does.")
-	}
-	if slices.Contains(agents, "gemini") {
-		fmt.Fprintln(a.Out, "\nGemini CLI runs a project's hooks only in folders you trust; trust this one when Gemini asks.")
+	for _, ag := range agents {
+		if note := wiringFor(ag).note; note != "" {
+			fmt.Fprintln(a.Out, "\n"+note)
+		}
 	}
 }
 
