@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/patakil/intagent/internal/client"
+	"github.com/patakil/intagent/internal/fsutil"
 	"github.com/patakil/intagent/internal/gitx"
 )
 
@@ -116,7 +117,7 @@ func (a *App) initRepo(ctx context.Context, args []string) error {
 	var done []string
 	repoFile := filepath.Join(root, client.RepoFileName)
 	if old, err := os.ReadFile(repoFile); err != nil || !bytes.Equal(old, data) {
-		if err := os.WriteFile(repoFile, data, 0o644); err != nil {
+		if err := fsutil.WriteFile(repoFile, data, fsutil.ModeOr(repoFile, 0o644)); err != nil {
 			return err
 		}
 		done = append(done, client.RepoFileName+" (server "+rc.URL+")")

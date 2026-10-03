@@ -7,45 +7,9 @@ import (
 	"os"
 	"path/filepath"
 	"time"
-)
 
-// writeFileAtomic writes data to path so that a crash leaves either the old
-// file or the new one, never a torn mix.
-func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*.tmp")
-	if err != nil {
-		return err
-	}
-	tmp := f.Name()
-	defer func() { _ = os.Remove(tmp) }() // no-op after a successful rename
-	if err := f.Chmod(perm); err != nil {
-		_ = f.Close()
-		return err
-	}
-	if _, err := f.Write(data); err != nil {
-		_ = f.Close()
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		_ = f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		return err
-	}
-	if d, err := os.Open(dir); err == nil {
-		_ = d.Sync() // best effort: make the rename durable
-		_ = d.Close()
-	}
-	return nil
-}
+	"github.com/patakil/intagent/internal/fsutil"
+)
 
 func (s *Server) snapshotPath() string { return filepath.Join(s.dataDir, "board.json") }
 
@@ -77,7 +41,10 @@ func (s *Server) save() error {
 	if err != nil {
 		return err
 	}
-	if err := writeFileAtomic(s.snapshotPath(), data, 0o600); err != nil {
+	if err := os.MkdirAll(s.dataDir, 0o700); err != nil {
+		return err
+	}
+	if err := fsutil.WriteFile(s.snapshotPath(), data, 0o600); err != nil {
 		return err
 	}
 	s.saved = version

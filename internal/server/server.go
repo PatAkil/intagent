@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/patakil/intagent/internal/board"
+	"github.com/patakil/intagent/internal/fsutil"
 )
 
 // Version is the server's version, set by the CLI.
@@ -149,7 +150,7 @@ func loadUIKey(dir string) ([]byte, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
-	return key, os.WriteFile(p, key, 0o600)
+	return key, fsutil.WriteFile(p, key, 0o600)
 }
 
 func randomKey() ([]byte, error) {

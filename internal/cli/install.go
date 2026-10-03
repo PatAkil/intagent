@@ -12,6 +12,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/patakil/intagent/internal/fsutil"
 )
 
 // The wiring each agent gets. Matchers and timeouts follow what the agents
@@ -121,7 +123,7 @@ func writeJSONObject(path string, m map[string]any) error {
 	if err := enc.Encode(m); err != nil {
 		return err
 	}
-	return os.WriteFile(path, buf.Bytes(), 0o644)
+	return fsutil.WriteFile(path, buf.Bytes(), fsutil.ModeOr(path, 0o644))
 }
 
 func asMap(v any) map[string]any {

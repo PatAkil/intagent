@@ -563,6 +563,10 @@ func TestPublicBoardRejectsUnknownTokens(t *testing.T) {
 
 func TestTokenAddRunsDoNotLoseEachOther(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "team.json")
+	// A crashed run leaves its lock file; no process holds it any more.
+	if err := os.WriteFile(p+".lock", nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	var wg sync.WaitGroup
 	for i := 0; i < 8; i++ {
 		wg.Add(1)

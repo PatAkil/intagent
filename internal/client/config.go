@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/patakil/intagent/internal/fsutil"
 )
 
 // RepoFileName is the checked-in file that enrols a repository.
@@ -113,11 +115,7 @@ func SaveUserConfig(p string, uc UserConfig) error {
 	if err != nil {
 		return err
 	}
-	tmp := p + ".tmp"
-	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, p)
+	return fsutil.WriteFile(p, append(data, '\n'), 0o600)
 }
 
 // LoadRepoConfig reads .intagent.json from a worktree root.

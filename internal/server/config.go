@@ -9,11 +9,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
 
 	"github.com/patakil/intagent/internal/board"
+	"github.com/patakil/intagent/internal/fsutil"
 )
 
 // Member is a person who may connect agents, identified by a token hash.
@@ -139,7 +141,13 @@ func AddMember(path, name string, replace bool) (string, error) {
 	if !ValidMemberName(name) {
 		return "", fmt.Errorf("member %q: names are lower-case letters, digits, '.', '_' and '-'", name)
 	}
-	unlock, err := lockFile(path + ".lock")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return "", err
+	}
+	unlock, err := fsutil.Lock(path+".lock", lockWait)
+	if errors.Is(err, fsutil.ErrLocked) {
+		return "", fmt.Errorf("another 'intagent token' run is changing %s; try again when it ends", path)
+	}
 	if err != nil {
 		return "", err
 	}
@@ -175,35 +183,11 @@ func AddMember(path, name string, replace bool) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := writeFileAtomic(path, append(out, '\n'), 0o600); err != nil {
+	if err := fsutil.WriteFile(path, append(out, '\n'), 0o600); err != nil {
 		return "", err
 	}
 	return token, nil
 }
 
-// lockFile takes an exclusive lock by creating path, so that two 'token add'
-// runs cannot both rewrite the team file and lose one's change. A lock left
-// by a crashed run is taken over after lockStale.
-func lockFile(path string) (func(), error) {
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-		if err == nil {
-			_ = f.Close()
-			return func() { _ = os.Remove(path) }, nil
-		}
-		if !errors.Is(err, os.ErrExist) {
-			return nil, err
-		}
-		if fi, err := os.Stat(path); err == nil && time.Since(fi.ModTime()) > lockStale {
-			_ = os.Remove(path)
-			continue
-		}
-		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("%s is held by another 'intagent token' run; remove it if none is running", path)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-}
-
-const lockStale = 30 * time.Second
+// lockWait is how long token add waits for another run to finish.
+const lockWait = 10 * time.Second

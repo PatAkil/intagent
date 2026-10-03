@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/patakil/intagent/internal/fsutil"
 	"github.com/patakil/intagent/internal/gitx"
 )
 
@@ -100,18 +101,10 @@ func (ct codexTrust) apply() ([]string, error) {
 	if !changed {
 		return notes, nil
 	}
-	target := ct.config
-	if real, err := filepath.EvalSymlinks(target); err == nil {
-		target = real // a dotfiles link stays a link
-	}
-	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(ct.config), 0o700); err != nil {
 		return nil, err
 	}
-	tmp := target + ".intagent.tmp"
-	if err := os.WriteFile(tmp, []byte(doc.String()), perm); err != nil {
-		return nil, err
-	}
-	return notes, os.Rename(tmp, target)
+	return notes, fsutil.WriteFile(ct.config, []byte(doc.String()), perm)
 }
 
 // problems says what keeps Codex from running intagent's hooks, if anything.
