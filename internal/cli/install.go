@@ -308,7 +308,7 @@ func installCodex(root string) ([]string, error) {
 			block = strings.TrimPrefix(block, "\n")
 		}
 		// A repository file, meant to be committed and read by everyone's Codex.
-		f, err := os.OpenFile(cfgPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644) //nolint:gosec
+		f, err := os.OpenFile(cfgPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644) //nolint:gosec // a path inside the repository, made from its root
 		if err != nil {
 			return nil, err
 		}

@@ -14,10 +14,9 @@ import (
 	"github.com/patakil/intagent/internal/gitx"
 )
 
-// Codex runs a project's hooks only if the project is trusted and each hook's
-// hash is trusted, both in the user's ~/.codex/config.toml.
-
-// codexTrust names what Codex must trust for a worktree: the config file, the
+// codexTrust names what Codex must trust for a worktree, which runs a
+// project's hooks only if the project is trusted and each hook's hash is
+// trusted, both in the user's ~/.codex/config.toml: the config file, the
 // project roots (a linked worktree reads hooks from its main checkout too) and
 // the hooks files there.
 type codexTrust struct {

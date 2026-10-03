@@ -564,7 +564,7 @@ func writeBoardError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, board.ErrRateLimited):
 		writeError(w, http.StatusTooManyRequests, err.Error())
-	case errors.Is(err, board.ErrNoTarget), errors.Is(err, board.ErrNotFound):
+	case errors.Is(err, board.ErrNoTarget):
 		writeError(w, http.StatusNotFound, err.Error())
 	default:
 		writeError(w, http.StatusInternalServerError, "internal error")

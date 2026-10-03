@@ -5,13 +5,12 @@ package mcp
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"slices"
-	"sync"
 )
 
 // SupportedVersions lists the protocol versions this server speaks, newest first.
@@ -42,8 +41,7 @@ type Server struct {
 	Instructions string
 	Tools        []Tool
 
-	mu sync.Mutex
-	w  *bufio.Writer
+	w *bufio.Writer // requests are handled, and answered, one at a time
 }
 
 type request struct {
@@ -86,29 +84,16 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 			return err
 		}
 		line := sc.Bytes()
-		if len(trimSpace(line)) == 0 {
+		if len(bytes.TrimSpace(line)) == 0 {
 			continue
 		}
 		s.handle(ctx, line)
 	}
-	if err := sc.Err(); err != nil && !errors.Is(err, io.EOF) {
-		return err
-	}
-	return nil
-}
-
-func trimSpace(b []byte) []byte {
-	for len(b) > 0 && (b[0] == ' ' || b[0] == '\t' || b[0] == '\r') {
-		b = b[1:]
-	}
-	for len(b) > 0 && (b[len(b)-1] == ' ' || b[len(b)-1] == '\t' || b[len(b)-1] == '\r') {
-		b = b[:len(b)-1]
-	}
-	return b
+	return sc.Err() // nil at the end of the input
 }
 
 func (s *Server) handle(ctx context.Context, line []byte) {
-	if line = trimSpace(line); len(line) > 0 && line[0] == '[' && json.Valid(line) {
+	if line = bytes.TrimSpace(line); len(line) > 0 && line[0] == '[' && json.Valid(line) {
 		// MCP has no batches since 2025-06-18.
 		s.reply(json.RawMessage("null"), nil, &rpcError{Code: codeInvalidRequest, Message: "batches are not supported"})
 		return
@@ -207,8 +192,6 @@ func (s *Server) reply(id json.RawMessage, result any, rerr *rpcError) {
 	if err != nil {
 		b, _ = json.Marshal(response{JSONRPC: "2.0", ID: id, Error: &rpcError{Code: -32603, Message: fmt.Sprintf("encode: %v", err)}})
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	_, _ = s.w.Write(append(b, '\n'))
 	_ = s.w.Flush()
 }

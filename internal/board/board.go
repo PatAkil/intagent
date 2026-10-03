@@ -24,7 +24,6 @@ var (
 	ErrInvalid     = errors.New("invalid request")
 	ErrRateLimited = errors.New("too many notes; try again in a minute")
 	ErrNoTarget    = errors.New("nobody by that name, claim or path has work in this repository right now")
-	ErrNotFound    = errors.New("not found")
 )
 
 // Config holds the board's timings and policy. A zero or negative field, and
@@ -103,16 +102,16 @@ func (c Config) WithDefaults() Config {
 }
 
 const (
-	maxTaskLen    = 200
-	maxNoteLen    = 600
-	maxBranchLen  = 120
-	maxPaths      = 200
-	maxIntents    = 50
-	maxInbox      = 50
-	inboxTTL      = 24 * time.Hour
-	keepEndedFor  = time.Hour
-	noteWindow    = time.Minute
-	idAlphabetLen = 8
+	maxTaskLen   = 200
+	maxNoteLen   = 600
+	maxBranchLen = 120
+	maxPaths     = 200
+	maxIntents   = 50
+	maxInbox     = 50
+	inboxTTL     = 24 * time.Hour
+	keepEndedFor = time.Hour
+	noteWindow   = time.Minute
+	idLen        = 8 // characters of an ID after its prefix
 )
 
 // Board holds every claim and session the server knows about.
@@ -166,7 +165,7 @@ func randomID(prefix string) string {
 	if _, err := rand.Read(buf[:]); err != nil {
 		panic(err) // crypto/rand never fails on supported platforms
 	}
-	return prefix + strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(buf[:]))[:idAlphabetLen]
+	return prefix + strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(buf[:]))[:idLen]
 }
 
 // Config returns the board's configuration.
@@ -761,12 +760,10 @@ func (b *Board) claimsInRepo(repo string) []*claim {
 }
 
 // releaseIfDone removes a claim that has nothing left to tell anyone.
-func (b *Board) releaseIfDone(now time.Time, c *claim) bool {
-	if len(c.Intents) > 0 || len(c.Footprint) > 0 || b.liveClaims(now)[c.ID] {
-		return false
+func (b *Board) releaseIfDone(now time.Time, c *claim) {
+	if len(c.Intents) == 0 && len(c.Footprint) == 0 && !b.liveClaims(now)[c.ID] {
+		b.deleteClaim(now, c, ActivityClaimReleased)
 	}
-	b.deleteClaim(now, c, ActivityClaimReleased)
-	return true
 }
 
 func (b *Board) deleteClaim(now time.Time, c *claim, kind ActivityKind) {
