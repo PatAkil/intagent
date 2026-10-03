@@ -26,19 +26,19 @@ const (
 type Mode string
 
 const (
-	// Shared intents announce a plan; others are told but not stopped.
-	Shared Mode = "shared"
-	// Exclusive intents ask others to stay out while the claim is active.
-	Exclusive Mode = "exclusive"
+	// ModeShared intents announce a plan; others are told but not stopped.
+	ModeShared Mode = "shared"
+	// ModeExclusive intents ask others to stay out while the claim is active.
+	ModeExclusive Mode = "exclusive"
 )
 
 // ParseMode accepts "", "shared" and "exclusive".
 func ParseMode(s string) (Mode, error) {
 	switch Mode(s) {
-	case "", Shared:
-		return Shared, nil
-	case Exclusive:
-		return Exclusive, nil
+	case "", ModeShared:
+		return ModeShared, nil
+	case ModeExclusive:
+		return ModeExclusive, nil
 	}
 	return "", fmt.Errorf("unknown mode %q: want shared or exclusive", s)
 }
@@ -75,12 +75,12 @@ type Severity int
 const (
 	// SeverityNone means no other claim matters.
 	SeverityNone Severity = iota
-	// Nearby means another claim works in the same area.
-	Nearby
-	// Overlap means another claim changed this path or plans to.
-	Overlap
-	// Block means an active claim holds an exclusive intent on this path.
-	Block
+	// SeverityNearby means another claim works in the same area.
+	SeverityNearby
+	// SeverityOverlap means another claim changed this path or plans to.
+	SeverityOverlap
+	// SeverityBlock means an active claim holds an exclusive intent on this path.
+	SeverityBlock
 )
 
 var severityNames = [...]string{"none", "nearby", "overlap", "block"}
@@ -110,22 +110,22 @@ func (s *Severity) UnmarshalText(b []byte) error {
 type Action string
 
 const (
-	// Deny refuses the edit every time.
-	Deny Action = "deny"
-	// Ask hands the decision to the person running the agent.
-	Ask Action = "ask"
-	// Bump refuses the first attempt with an explanation and allows a retry.
-	Bump Action = "bump"
-	// Warn allows the edit and adds context once.
-	Warn Action = "warn"
-	// Off ignores the severity.
-	Off Action = "off"
+	// ActionDeny refuses the edit every time.
+	ActionDeny Action = "deny"
+	// ActionAsk hands the decision to the person running the agent.
+	ActionAsk Action = "ask"
+	// ActionBump refuses the first attempt with an explanation and allows a retry.
+	ActionBump Action = "bump"
+	// ActionWarn allows the edit and adds context once.
+	ActionWarn Action = "warn"
+	// ActionOff ignores the severity.
+	ActionOff Action = "off"
 )
 
 // ParseAction validates an action name.
 func ParseAction(s string) (Action, error) {
 	switch a := Action(s); a {
-	case Deny, Ask, Bump, Warn, Off:
+	case ActionDeny, ActionAsk, ActionBump, ActionWarn, ActionOff:
 		return a, nil
 	}
 	return "", fmt.Errorf("unknown action %q: want deny, ask, bump, warn or off", s)
@@ -140,18 +140,20 @@ type Policy struct {
 
 // DefaultPolicy refuses edits under another active exclusive intent, makes an
 // agent acknowledge an overlap before editing, and mentions nearby work.
-func DefaultPolicy() Policy { return Policy{Block: Deny, Overlap: Bump, Nearby: Warn} }
+func DefaultPolicy() Policy {
+	return Policy{Block: ActionDeny, Overlap: ActionBump, Nearby: ActionWarn}
+}
 
 func (p Policy) action(s Severity) Action {
 	switch s {
-	case Block:
+	case SeverityBlock:
 		return p.Block
-	case Overlap:
+	case SeverityOverlap:
 		return p.Overlap
-	case Nearby:
+	case SeverityNearby:
 		return p.Nearby
 	}
-	return Off
+	return ActionOff
 }
 
 // Decision is the answer to an agent about to write.
@@ -159,9 +161,9 @@ type Decision string
 
 // Decisions a hook can return.
 const (
-	Allow     Decision = "allow" // go ahead
-	DecideAsk Decision = "ask"   // let the person decide
-	Refuse    Decision = "deny"  // do not write; the reason says why
+	DecisionAllow  Decision = "allow" // go ahead
+	DecisionAsk    Decision = "ask"   // let the person decide
+	DecisionRefuse Decision = "deny"  // do not write; the reason says why
 )
 
 // Intent is a declared plan to change the paths a pattern covers.

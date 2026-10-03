@@ -797,7 +797,7 @@ func must[T any](v T, err error) T {
 // attempt is refused with the question, and the retry goes through.
 func TestAskThroughCodexLetsTheRetryThrough(t *testing.T) {
 	cfg := board.DefaultConfig()
-	cfg.Policy.Overlap = board.Ask
+	cfg.Policy.Overlap = board.ActionAsk
 	tm := newTeamWith(t, cfg, "alice", "bob")
 	a, b := tm.clone("alice"), tm.clone("bob")
 	tm.enrol(map[string]string{"alice": a, "bob": b})

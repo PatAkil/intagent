@@ -78,10 +78,10 @@ func (ac actor) prompt(b *board.Board, text string) {
 // refusal it leaves the file alone.
 func (ac actor) edit(b *board.Board, paths ...string) {
 	res := ac.hook(b, board.KindPreEdit, "Edit", paths...)
-	if res.Decision == board.Refuse && len(res.Conflicts) > 0 && res.Conflicts[0].Severity != board.Block {
+	if res.Decision == board.DecisionRefuse && len(res.Conflicts) > 0 && res.Conflicts[0].Severity != board.SeverityBlock {
 		res = ac.hook(b, board.KindPreEdit, "Edit", paths...)
 	}
-	if res.Decision == board.Allow {
+	if res.Decision == board.DecisionAllow {
 		ac.hook(b, board.KindPostEdit, "Edit", paths...)
 	}
 }
@@ -108,7 +108,7 @@ func simulate(ctx context.Context, b *board.Board, every time.Duration) {
 		func() { alice.prompt(b, "Move the retry policy into its own package") },
 		func() {
 			_, _ = b.Declare(time.Now(), board.DeclareRequest{Member: "alice", Where: where(alice), Summary: "Move the retry policy into its own package",
-				Patterns: []string{"services/payments/retry/**", "services/payments/client.go"}, Mode: board.Exclusive})
+				Patterns: []string{"services/payments/retry/**", "services/payments/client.go"}, Mode: board.ModeExclusive})
 		},
 		func() { alice.edit(b, "services/payments/retry/policy.go") },
 		func() { alice.edit(b, "services/payments/client.go") },
@@ -126,7 +126,7 @@ func simulate(ctx context.Context, b *board.Board, every time.Duration) {
 		func() { carol.edit(b, "libs/http/client.ts") },
 		func() { dana.hook(b, board.KindSessionStart, ""); dana.prompt(b, "Upgrade the shared HTTP client") },
 		func() {
-			_, _ = b.Declare(time.Now(), board.DeclareRequest{Member: "dana", Where: where(dana), Summary: "Upgrade the shared HTTP client", Patterns: []string{"libs/http/**"}, Mode: board.Shared})
+			_, _ = b.Declare(time.Now(), board.DeclareRequest{Member: "dana", Where: where(dana), Summary: "Upgrade the shared HTTP client", Patterns: []string{"libs/http/**"}, Mode: board.ModeShared})
 		},
 		func() { dana.edit(b, "libs/http/client.ts") },      // bumped: carol changed it
 		func() { alice.hook(b, board.KindToolEnd, "Bash") }, // alice reads bob's note

@@ -116,9 +116,9 @@ func (c ClaudeCode) Render(ev Event, res board.HookResult) Output {
 	switch ev.Name {
 	case "PreToolUse":
 		switch res.Decision {
-		case board.Refuse:
+		case board.DecisionRefuse:
 			return specific(hookSpecific{HookEventName: ev.Name, PermissionDecision: "deny", PermissionDecisionReason: res.Reason})
-		case board.DecideAsk:
+		case board.DecisionAsk:
 			return specific(hookSpecific{HookEventName: ev.Name, PermissionDecision: "ask", PermissionDecisionReason: res.Reason})
 		}
 		if res.Context != "" {
@@ -140,7 +140,7 @@ func renderCopilot(ev Event, res board.HookResult) Output {
 	if res.Context != "" {
 		top["additionalContext"] = res.Context
 	}
-	if ev.Name == "PreToolUse" && res.Decision != board.Allow {
+	if ev.Name == "PreToolUse" && res.Decision != board.DecisionAllow {
 		h.PermissionDecision, h.PermissionDecisionReason = string(res.Decision), res.Reason
 		top["permissionDecision"], top["permissionDecisionReason"] = string(res.Decision), res.Reason
 	}

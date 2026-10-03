@@ -112,9 +112,9 @@ func (a *App) declare(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	mode := board.Shared
+	mode := board.ModeShared
 	if *exclusive {
-		mode = board.Exclusive
+		mode = board.ModeExclusive
 	}
 	res, err := ws.client.Declare(ctx, board.DeclareRequest{Where: ws.where, Summary: *summary, Patterns: ws.patterns(dir, fs.Args()), Mode: mode})
 	if err != nil {

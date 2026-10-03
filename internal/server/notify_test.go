@@ -38,7 +38,7 @@ func TestWebhookSendsStallsAndRefusals(t *testing.T) {
 	ts.url = "http://" + ln.Addr().String()
 
 	ts.do(t, http.MethodPost, "/v1/hook", "alice", hookEv(board.KindPrompt, "alice", "a1"), nil)
-	ts.do(t, http.MethodPost, "/v1/intents", "alice", board.DeclareRequest{Where: where("alice"), Summary: "retry", Patterns: []string{"svc/**"}, Mode: board.Exclusive}, nil)
+	ts.do(t, http.MethodPost, "/v1/intents", "alice", board.DeclareRequest{Where: where("alice"), Summary: "retry", Patterns: []string{"svc/**"}, Mode: board.ModeExclusive}, nil)
 	ts.do(t, http.MethodPost, "/v1/hook", "bob", hookEv(board.KindPreEdit, "bob", "b1", "svc/x.go"), nil)
 
 	select {
@@ -68,10 +68,10 @@ func TestWebhookFilters(t *testing.T) {
 		want bool
 	}{
 		{board.Activity{Kind: "session.stalled"}, true},
-		{board.Activity{Kind: "conflict", Decision: board.Refuse}, true},
-		{board.Activity{Kind: "conflict", Decision: board.Allow}, false},
-		{board.Activity{Kind: "conflict", Decision: board.Allow, Severity: board.Block}, false}, // a reservation that only warns
-		{board.Activity{Kind: "conflict", Decision: board.Allow, Severity: board.Block, Breach: true}, true},
+		{board.Activity{Kind: "conflict", Decision: board.DecisionRefuse}, true},
+		{board.Activity{Kind: "conflict", Decision: board.DecisionAllow}, false},
+		{board.Activity{Kind: "conflict", Decision: board.DecisionAllow, Severity: board.SeverityBlock}, false}, // a reservation that only warns
+		{board.Activity{Kind: "conflict", Decision: board.DecisionAllow, Severity: board.SeverityBlock, Breach: true}, true},
 		{board.Activity{Kind: "file.changed"}, false},
 	} {
 		if n.wants(c.a) != c.want {
@@ -86,7 +86,7 @@ func TestWebhookFilters(t *testing.T) {
 
 // Slack reads <...> as mentions and links; member text must not become either.
 func TestWebhookEscapesSlackMarkup(t *testing.T) {
-	a := board.Activity{Kind: "conflict", Member: "bob", Agent: board.AgentCodex, Repo: "github.com/acme/mono", Decision: board.Refuse,
+	a := board.Activity{Kind: "conflict", Member: "bob", Agent: board.AgentCodex, Repo: "github.com/acme/mono", Decision: board.DecisionRefuse,
 		Text: `svc/a.go → alice (declared exclusive intent svc/**: "<!channel> & <https://evil.example|the runbook>")`}
 	got := slackText.Replace(describeActivity(a))
 	if strings.ContainsAny(got, "<>") || !strings.Contains(got, "&lt;!channel&gt; &amp; &lt;https://evil.example|the runbook&gt;") {

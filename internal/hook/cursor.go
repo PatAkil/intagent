@@ -117,11 +117,11 @@ func (Cursor) Render(ev Event, res board.HookResult) Output {
 	switch ev.Name {
 	case "preToolUse":
 		switch res.Decision {
-		case board.Refuse, board.DecideAsk:
+		case board.DecisionRefuse, board.DecisionAsk:
 			// Cursor ignores "ask" on preToolUse, so asking becomes a refusal that
 			// tells the agent to ask.
 			reason := res.Reason
-			if res.Decision == board.DecideAsk {
+			if res.Decision == board.DecisionAsk {
 				reason += askInstead
 			}
 			out["permission"] = "deny"

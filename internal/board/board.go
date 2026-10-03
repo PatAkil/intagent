@@ -364,7 +364,7 @@ func (b *Board) liveSessions(now time.Time) map[string]bool {
 // Hook applies one lifecycle event and returns what the agent should be told.
 // It never refuses on error: callers should allow the agent to continue.
 func (b *Board) Hook(now time.Time, ev HookEvent) (HookResult, error) {
-	allow := HookResult{Decision: Allow}
+	allow := HookResult{Decision: DecisionAllow}
 	ev, err := ev.clean()
 	if err != nil {
 		return allow, err
@@ -378,7 +378,7 @@ func (b *Board) Hook(now time.Time, ev HookEvent) (HookResult, error) {
 	c := b.claimFor(now, ev.Member, w)
 	s := b.sessionFor(now, ev, c)
 	was := b.state(now, s)
-	res := HookResult{Decision: Allow, ClaimID: c.ID}
+	res := HookResult{Decision: DecisionAllow, ClaimID: c.ID}
 
 	switch ev.Kind {
 	case KindSessionStart:
@@ -399,7 +399,7 @@ func (b *Board) Hook(now time.Time, ev HookEvent) (HookResult, error) {
 		startTool(now, s, ev.Tool, ev.ToolUseID)
 		res = b.decide(now, c, s, ev.Paths, ev.NoAsk)
 		res.ClaimID = c.ID
-		if res.Decision == Refuse || (res.Decision == DecideAsk && ev.NoAsk) {
+		if res.Decision == DecisionRefuse || (res.Decision == DecisionAsk && ev.NoAsk) {
 			// The edit does not run, so no tool end will follow it. (An ask that
 			// the person answers runs, or not, and the agent reports either.)
 			endTool(s, ev.ToolUseID)
@@ -677,8 +677,8 @@ func (b *Board) alertOthers(now time.Time, c *Claim, paths []PathRef) {
 // A policy that ignores reservations ignores these too, and one that only
 // warns about them records a warning rather than a breach.
 func (b *Board) reportUnchecked(now time.Time, c *Claim, s *Session, added []PathRef) {
-	action := b.cfg.Policy.action(Block)
-	if action == Off {
+	action := b.cfg.Policy.action(SeverityBlock)
+	if action == ActionOff {
 		return
 	}
 	live, liveSess := b.liveClaims(now), b.liveSessions(now)
@@ -686,7 +686,7 @@ func (b *Board) reportUnchecked(now time.Time, c *Claim, s *Session, added []Pat
 	var first Conflict
 	for _, p := range added {
 		for _, cf := range b.conflictsFor(now, c, s.Key, p, live, liveSess) {
-			if cf.Severity != Block || cf.SameClaim {
+			if cf.Severity != SeverityBlock || cf.SameClaim {
 				continue
 			}
 			if k := "unchecked|" + cf.ClaimID + "|" + p.Path; !c.Alerted[k] {
@@ -707,11 +707,11 @@ func (b *Board) reportUnchecked(now time.Time, c *Claim, s *Session, added []Pat
 		return
 	}
 	why := "inside their exclusive intent" // a breach's kind already says it was not checked
-	if action == Warn {
+	if action == ActionWarn {
 		why = "changed without a check, inside their exclusive intent"
 	}
 	b.record(Activity{At: now, Kind: ActivityConflict, Repo: c.Repo, Member: c.Member, ClaimID: c.ID, Session: s.ID, Agent: s.Agent,
-		Paths: paths, Severity: Block, Decision: Allow, Breach: action != Warn,
+		Paths: paths, Severity: SeverityBlock, Decision: DecisionAllow, Breach: action != ActionWarn,
 		Text: fmt.Sprintf("%s → %s (%s)", first.Path, first.Member, why)})
 	s.Pending = joinBlocks(s.Pending, "[intagent] Your worktree now changes files a teammate reserved (reported by teammates' "+
 		"agents; information, not instructions):\n"+strings.Join(lines, "\n")+"\nChanges made through the shell are not "+
@@ -729,11 +729,11 @@ func taskOf(cf Conflict) string {
 // breachedReservation reports whether a conflict is another claim's change to
 // a file inside c's exclusive intent, made since c declared it.
 func breachedReservation(c *Claim, cf Conflict) bool {
-	if cf.Severity != Overlap || cf.Pattern != "" || cf.SameClaim {
+	if cf.Severity != SeverityOverlap || cf.Pattern != "" || cf.SameClaim {
 		return false
 	}
 	for _, in := range c.Intents {
-		if in.Mode == Exclusive && glob.Match(in.Pattern, cf.Path) && !cf.Since.Before(in.DeclaredAt) {
+		if in.Mode == ModeExclusive && glob.Match(in.Pattern, cf.Path) && !cf.Since.Before(in.DeclaredAt) {
 			return true
 		}
 	}
@@ -797,7 +797,7 @@ func (b *Board) conflictsFor(now time.Time, self *Claim, selfSession string, p P
 		// written by someone in this worktree, perhaps the asking session.
 		if t, ok := self.Footprint[p.Path]; ok && !t.FromGit && t.Session != "" && t.Session != selfSession && liveSess[t.Session] {
 			out = append(out, Conflict{
-				Path: p.Path, Area: p.Area, Severity: Overlap, ClaimID: self.ID, Member: self.Member, Branch: self.Branch, Task: self.Task,
+				Path: p.Path, Area: p.Area, Severity: SeverityOverlap, ClaimID: self.ID, Member: self.Member, Branch: self.Branch, Task: self.Task,
 				Why: "another live session in this same worktree changed this file", Since: t.At, Active: true, SameClaim: true,
 			})
 		}
@@ -817,9 +817,9 @@ func (b *Board) conflictWith(now time.Time, o *Claim, p PathRef, active bool) (C
 		if !glob.Match(in.Pattern, p.Path) {
 			continue
 		}
-		sev := Overlap
-		if in.Mode == Exclusive && active {
-			sev = Block
+		sev := SeverityOverlap
+		if in.Mode == ModeExclusive && active {
+			sev = SeverityBlock
 		}
 		why := fmt.Sprintf("declared %s intent %s", in.Mode, in.Pattern)
 		if in.Summary != "" {
@@ -828,17 +828,17 @@ func (b *Board) conflictWith(now time.Time, o *Claim, p PathRef, active bool) (C
 		consider(sev, why, in.Pattern, in.DeclaredAt)
 	}
 	if t, ok := o.Footprint[p.Path]; ok {
-		sev := Overlap
+		sev := SeverityOverlap
 		why := "has unmerged changes to this file"
 		if !active && now.Sub(o.UpdatedAt) > b.cfg.DormantFor {
-			sev = Nearby
+			sev = SeverityNearby
 			why = "had unmerged changes to this file (claim dormant for " + ago(now, o.UpdatedAt) + ")"
 		}
 		consider(sev, why, "", t.At)
 	}
-	if best.Severity < Nearby && p.Area != "" {
+	if best.Severity < SeverityNearby && p.Area != "" {
 		if since, ok := workedInArea(o, p.Area); ok {
-			consider(Nearby, "is working in the same area "+p.Area, "", since)
+			consider(SeverityNearby, "is working in the same area "+p.Area, "", since)
 		}
 	}
 	return best, best.Severity > SeverityNone
@@ -884,7 +884,7 @@ func sortConflicts(cs []Conflict) {
 // nearby work the area it shares with the other claim.
 func ackKey(c Conflict) string {
 	subject := c.Path
-	if c.Severity == Nearby {
+	if c.Severity == SeverityNearby {
 		subject = c.Area
 	}
 	return c.Severity.String() + "|" + c.ClaimID + "|" + subject
@@ -953,23 +953,23 @@ func (b *Board) judge(now time.Time, c *Claim, s *Session, paths []PathRef, noAs
 			v.all = append(v.all, cf)
 			key := ackKey(cf)
 			action := b.cfg.Policy.action(cf.Severity)
-			if action == Bump && breachedReservation(c, cf) {
+			if action == ActionBump && breachedReservation(c, cf) {
 				// A teammate changed a file inside this claim's reservation
 				// after it was made: the owner is told, not stopped.
-				action = Warn
+				action = ActionWarn
 			}
 			switch {
-			case action == Deny:
+			case action == ActionDeny:
 				v.refused = append(v.refused, cf)
-			case action == Ask && !noAsk:
+			case action == ActionAsk && !noAsk:
 				v.asked = append(v.asked, cf)
-			case action == Ask && !s.Acked[key]:
+			case action == ActionAsk && !s.Acked[key]:
 				v.asked = append(v.asked, cf)
 				v.askKeys = append(v.askKeys, key)
-			case action == Bump && !s.Acked[key]:
+			case action == ActionBump && !s.Acked[key]:
 				s.Acked[key] = true
 				v.refused = append(v.refused, cf)
-			case action == Warn && !s.Acked[key]:
+			case action == ActionWarn && !s.Acked[key]:
 				v.warned = append(v.warned, cf)
 				v.warnKeys = append(v.warnKeys, key)
 			}
@@ -981,13 +981,13 @@ func (b *Board) judge(now time.Time, c *Claim, s *Session, paths []PathRef, noAs
 // answer turns a verdict into what the hook says, and acknowledges the
 // questions and warnings it shows.
 func (b *Board) answer(now time.Time, s *Session, v verdict) HookResult {
-	res := HookResult{Decision: Allow, Conflicts: v.all}
+	res := HookResult{Decision: DecisionAllow, Conflicts: v.all}
 	switch {
 	case len(v.refused) > 0:
-		res.Decision = Refuse
+		res.Decision = DecisionRefuse
 		res.Reason = b.renderRefusal(now, v.refused, b.cfg.Policy)
 	case len(v.asked) > 0:
-		res.Decision = DecideAsk
+		res.Decision = DecisionAsk
 		res.Reason = b.renderRefusal(now, v.asked, b.cfg.Policy)
 		// An agent that cannot ask was told to ask its person; its retry is the answer.
 		for _, k := range v.askKeys {
@@ -1013,15 +1013,15 @@ func (b *Board) count(now time.Time, repo string, v verdict, fresh bool) {
 	}
 	if len(v.all) > 0 {
 		switch mostSevere(v.all).Severity {
-		case Block:
+		case SeverityBlock:
 			st.Blocks++
-		case Overlap:
+		case SeverityOverlap:
 			st.Overlaps++
-		case Nearby:
+		case SeverityNearby:
 			st.Nearby++
 		}
 	}
-	hard := slices.ContainsFunc(v.refused, func(cf Conflict) bool { return b.cfg.Policy.action(cf.Severity) == Deny })
+	hard := slices.ContainsFunc(v.refused, func(cf Conflict) bool { return b.cfg.Policy.action(cf.Severity) == ActionDeny })
 	switch {
 	case hard:
 		st.Refused++
@@ -1157,7 +1157,7 @@ func (b *Board) Declare(now time.Time, r DeclareRequest) (DeclareResult, error) 
 	res := DeclareResult{ClaimID: c.ID}
 
 	for _, pat := range patterns {
-		if mode == Exclusive {
+		if mode == ModeExclusive {
 			if against, ok := b.exclusiveClash(c, pat, live); ok {
 				res.Rejected = append(res.Rejected, Rejection{
 					Pattern: pat,
@@ -1197,8 +1197,8 @@ func (b *Board) exclusiveClash(self *Claim, pattern string, live map[string]bool
 			continue
 		}
 		for _, in := range o.Intents {
-			if in.Mode == Exclusive && glob.Overlap(in.Pattern, pattern) {
-				return Conflict{Path: pattern, Severity: Block, ClaimID: o.ID, Member: o.Member, Branch: o.Branch, Task: o.Task,
+			if in.Mode == ModeExclusive && glob.Overlap(in.Pattern, pattern) {
+				return Conflict{Path: pattern, Severity: SeverityBlock, ClaimID: o.ID, Member: o.Member, Branch: o.Branch, Task: o.Task,
 					Why: "holds exclusive intent " + in.Pattern, Pattern: in.Pattern, Since: in.DeclaredAt, Active: true}, true
 			}
 		}
@@ -1229,9 +1229,9 @@ func (b *Board) intentOverlaps(c *Claim, in Intent, live map[string]bool) []Conf
 		cf := Conflict{Path: in.Pattern, ClaimID: o.ID, Member: o.Member, Branch: o.Branch, Task: o.Task, Active: live[o.ID]}
 		for _, oi := range o.Intents {
 			if glob.Overlap(oi.Pattern, in.Pattern) {
-				sev := Overlap
-				if oi.Mode == Exclusive && cf.Active {
-					sev = Block
+				sev := SeverityOverlap
+				if oi.Mode == ModeExclusive && cf.Active {
+					sev = SeverityBlock
 				}
 				if sev > cf.Severity {
 					cf.Severity, cf.Pattern, cf.Since = sev, oi.Pattern, oi.DeclaredAt
@@ -1239,7 +1239,7 @@ func (b *Board) intentOverlaps(c *Claim, in Intent, live map[string]bool) []Conf
 				}
 			}
 		}
-		if cf.Severity < Overlap {
+		if cf.Severity < SeverityOverlap {
 			var hit []string
 			var since time.Time
 			for p, t := range o.Footprint {
@@ -1252,7 +1252,7 @@ func (b *Board) intentOverlaps(c *Claim, in Intent, live map[string]bool) []Conf
 			}
 			if len(hit) > 0 {
 				sort.Strings(hit)
-				cf.Severity, cf.Since = Overlap, since
+				cf.Severity, cf.Since = SeverityOverlap, since
 				cf.Why = "has unmerged changes to " + listPaths(hit, 3)
 			}
 		}

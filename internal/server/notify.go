@@ -54,7 +54,7 @@ func (n *notifier) wants(a board.Activity) bool {
 	if a.Kind == board.ActivityConflict {
 		// Refusals and questions, and changes made inside a teammate's
 		// reservation without a check; never warnings.
-		return a.Decision == board.Refuse || a.Decision == board.DecideAsk || a.Breach
+		return a.Decision == board.DecisionRefuse || a.Decision == board.DecisionAsk || a.Breach
 	}
 	return true
 }
@@ -128,9 +128,9 @@ func describeActivity(a board.Activity) string {
 		switch {
 		case a.Breach:
 			verb = "changed a reserved file without a check"
-		case a.Decision == board.DecideAsk:
+		case a.Decision == board.DecisionAsk:
 			verb = "was asked to confirm an edit"
-		case a.Decision == board.Allow:
+		case a.Decision == board.DecisionAllow:
 			verb = "was warned before an edit"
 		}
 		return fmt.Sprintf("intagent: %s %s in %s: %s.", who, verb, a.Repo, a.Text)

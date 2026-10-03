@@ -73,11 +73,11 @@ func (Codex) Parse(stdin []byte) (Event, error) {
 func (Codex) Render(ev Event, res board.HookResult) Output {
 	switch ev.Name {
 	case "PreToolUse":
-		if res.Decision == board.Refuse || res.Decision == board.DecideAsk {
+		if res.Decision == board.DecisionRefuse || res.Decision == board.DecisionAsk {
 			// Codex cannot ask the user from PreToolUse; asking becomes a refusal
 			// that tells the agent to ask.
 			reason := res.Reason
-			if res.Decision == board.DecideAsk {
+			if res.Decision == board.DecisionAsk {
 				reason += askInstead
 			}
 			return specific(hookSpecific{HookEventName: ev.Name, PermissionDecision: "deny", PermissionDecisionReason: reason})

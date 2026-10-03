@@ -123,9 +123,9 @@ func (a *App) guard(ctx context.Context, args []string) error {
 	var blocked, overlap []board.Conflict
 	for _, c := range res.Conflicts {
 		switch {
-		case c.Severity == board.Block && !c.SameClaim:
+		case c.Severity == board.SeverityBlock && !c.SameClaim:
 			blocked = append(blocked, c)
-		case c.Severity == board.Overlap && !c.SameClaim:
+		case c.Severity == board.SeverityOverlap && !c.SameClaim:
 			overlap = append(overlap, c)
 		}
 	}

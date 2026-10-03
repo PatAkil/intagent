@@ -83,18 +83,18 @@ func decodeOut(t *testing.T, o Output) map[string]string {
 func TestClaudeCodeRender(t *testing.T) {
 	cc := ClaudeCode{}
 	pre := Event{Name: "PreToolUse"}
-	deny := decodeOut(t, cc.Render(pre, board.HookResult{Decision: board.Refuse, Reason: "held by alice"}))
+	deny := decodeOut(t, cc.Render(pre, board.HookResult{Decision: board.DecisionRefuse, Reason: "held by alice"}))
 	if deny["hookEventName"] != "PreToolUse" || deny["permissionDecision"] != "deny" || deny["permissionDecisionReason"] != "held by alice" {
 		t.Fatalf("deny = %v", deny)
 	}
-	if ask := decodeOut(t, cc.Render(pre, board.HookResult{Decision: board.DecideAsk, Reason: "r"})); ask["permissionDecision"] != "ask" {
+	if ask := decodeOut(t, cc.Render(pre, board.HookResult{Decision: board.DecisionAsk, Reason: "r"})); ask["permissionDecision"] != "ask" {
 		t.Fatalf("ask = %v", ask)
 	}
-	warn := decodeOut(t, cc.Render(pre, board.HookResult{Decision: board.Allow, Context: "heads-up"}))
+	warn := decodeOut(t, cc.Render(pre, board.HookResult{Decision: board.DecisionAllow, Context: "heads-up"}))
 	if warn["additionalContext"] != "heads-up" || warn["permissionDecision"] != "" {
 		t.Fatalf("warn = %v", warn)
 	}
-	if out := cc.Render(pre, board.HookResult{Decision: board.Allow}); len(out.Stdout) != 0 || out.Exit != 0 {
+	if out := cc.Render(pre, board.HookResult{Decision: board.DecisionAllow}); len(out.Stdout) != 0 || out.Exit != 0 {
 		t.Fatalf("plain allow printed %q", out.Stdout)
 	}
 	for _, name := range []string{"SessionStart", "UserPromptSubmit", "PostToolUse"} {
@@ -151,20 +151,20 @@ func TestCodexParseAndPatchPaths(t *testing.T) {
 func TestCodexRenderIsStrict(t *testing.T) {
 	cx := Codex{}
 	pre := Event{Name: "PreToolUse"}
-	deny := decodeOut(t, cx.Render(pre, board.HookResult{Decision: board.Refuse, Reason: "r"}))
+	deny := decodeOut(t, cx.Render(pre, board.HookResult{Decision: board.DecisionRefuse, Reason: "r"}))
 	if deny["permissionDecision"] != "deny" {
 		t.Fatalf("deny = %v", deny)
 	}
 	// Codex has no ask; it must become a deny that tells the agent to ask.
-	ask := decodeOut(t, cx.Render(pre, board.HookResult{Decision: board.DecideAsk, Reason: "r"}))
+	ask := decodeOut(t, cx.Render(pre, board.HookResult{Decision: board.DecisionAsk, Reason: "r"}))
 	if ask["permissionDecision"] != "deny" || !strings.Contains(ask["permissionDecisionReason"], "Ask your user") {
 		t.Fatalf("ask = %v", ask)
 	}
 	// An allow is never spelled out: Codex treats an explicit allow as invalid.
-	if out := cx.Render(pre, board.HookResult{Decision: board.Allow}); len(out.Stdout) != 0 {
+	if out := cx.Render(pre, board.HookResult{Decision: board.DecisionAllow}); len(out.Stdout) != 0 {
 		t.Fatalf("allow printed %q", out.Stdout)
 	}
-	ctx := decodeOut(t, cx.Render(pre, board.HookResult{Decision: board.Allow, Context: "c"}))
+	ctx := decodeOut(t, cx.Render(pre, board.HookResult{Decision: board.DecisionAllow, Context: "c"}))
 	if len(ctx) != 2 || ctx["additionalContext"] != "c" {
 		t.Fatalf("context = %v", ctx)
 	}
@@ -236,15 +236,15 @@ func TestCursorRender(t *testing.T) {
 		}
 		return m
 	}
-	m := render(pre, board.HookResult{Decision: board.Refuse, Reason: "alice's agent holds it", Context: "ctx"})
+	m := render(pre, board.HookResult{Decision: board.DecisionRefuse, Reason: "alice's agent holds it", Context: "ctx"})
 	if m["permission"] != "deny" || m["user_message"] != "alice's agent holds it" || m["agent_message"] != "alice's agent holds it" || m["additional_context"] != "ctx" {
 		t.Errorf("refuse = %v", m)
 	}
-	m = render(pre, board.HookResult{Decision: board.DecideAsk, Reason: "r"})
+	m = render(pre, board.HookResult{Decision: board.DecisionAsk, Reason: "r"})
 	if m["permission"] != "deny" || !strings.Contains(m["agent_message"].(string), "Ask your user") {
 		t.Errorf("ask = %v", m)
 	}
-	if m = render(pre, board.HookResult{Decision: board.Allow}); m["permission"] != "allow" || len(m) != 1 {
+	if m = render(pre, board.HookResult{Decision: board.DecisionAllow}); m["permission"] != "allow" || len(m) != 1 {
 		t.Errorf("allow = %v", m)
 	}
 	if m = render(Event{Name: "beforeSubmitPrompt"}, board.HookResult{Context: "c"}); m["continue"] != true || m["additional_context"] != "c" {
@@ -275,12 +275,12 @@ func TestCopilotUsesClaudeHooksWithItsOwnArguments(t *testing.T) {
 		Reason             string       `json:"permissionDecisionReason"`
 		H                  hookSpecific `json:"hookSpecificOutput"`
 	}
-	out := cp.Render(ev, board.HookResult{Decision: board.Refuse, Reason: "held"})
+	out := cp.Render(ev, board.HookResult{Decision: board.DecisionRefuse, Reason: "held"})
 	if err := json.Unmarshal(out.Stdout, &m); err != nil || m.PermissionDecision != "deny" || m.Reason != "held" ||
 		m.H.PermissionDecision != "deny" || m.H.HookEventName != "PreToolUse" || out.Exit != 0 {
 		t.Fatalf("deny = %q", out.Stdout)
 	}
-	if out := cp.Render(ev, board.HookResult{Decision: board.Allow}); len(out.Stdout) != 0 {
+	if out := cp.Render(ev, board.HookResult{Decision: board.DecisionAllow}); len(out.Stdout) != 0 {
 		t.Fatalf("silent allow printed %q", out.Stdout)
 	}
 	out = cp.Render(Event{Name: "SessionStart"}, board.HookResult{Context: "board"})
@@ -329,15 +329,15 @@ func TestGemini(t *testing.T) {
 
 	pre := Event{Name: "BeforeTool"}
 	var m map[string]string
-	out := gm.Render(pre, board.HookResult{Decision: board.Refuse, Reason: "held"})
+	out := gm.Render(pre, board.HookResult{Decision: board.DecisionRefuse, Reason: "held"})
 	if err := json.Unmarshal(out.Stdout, &m); err != nil || m["decision"] != "deny" || m["reason"] != "held" || len(m) != 2 {
 		t.Fatalf("refuse = %q", out.Stdout)
 	}
-	out = gm.Render(pre, board.HookResult{Decision: board.DecideAsk, Reason: "r"})
+	out = gm.Render(pre, board.HookResult{Decision: board.DecisionAsk, Reason: "r"})
 	if !strings.Contains(string(out.Stdout), `"decision":"deny"`) || !strings.Contains(string(out.Stdout), "Ask your user") {
 		t.Fatalf("ask = %q", out.Stdout)
 	}
-	if out := gm.Render(pre, board.HookResult{Decision: board.Allow, Context: "late"}); len(out.Stdout) != 0 {
+	if out := gm.Render(pre, board.HookResult{Decision: board.DecisionAllow, Context: "late"}); len(out.Stdout) != 0 {
 		t.Fatalf("allow printed %q", out.Stdout)
 	}
 	for _, name := range []string{"SessionStart", "BeforeAgent", "AfterTool"} {

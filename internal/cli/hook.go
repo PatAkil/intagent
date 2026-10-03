@@ -99,7 +99,7 @@ func (a *App) handleHook(ctx context.Context, ad hook.Adapter, ev hook.Event) (h
 		// A broken .intagent.json or a failing git: say so in the hook log, and
 		// under fail-closed refuse edits rather than pass them unchecked.
 		if ev.Kind == board.KindPreEdit && os.Getenv("INTAGENT_FAIL") == "closed" {
-			return ad.Render(ev, board.HookResult{Decision: board.Refuse, Reason: fmt.Sprintf("[intagent] intagent could not read "+
+			return ad.Render(ev, board.HookResult{Decision: board.DecisionRefuse, Reason: fmt.Sprintf("[intagent] intagent could not read "+
 				"this repository's setup (%v), and INTAGENT_FAIL=closed is set in your user's environment, so edits are refused "+
 				"until it is fixed. Tell your user.", err)}), err
 		}
@@ -140,7 +140,7 @@ func (a *App) handleHook(ctx context.Context, ad hook.Adapter, ev hook.Event) (h
 			"get a new token from whoever runs the server, then run: "+login), err
 	case err != nil:
 		if ws.settings.FailClosed && ev.Kind == board.KindPreEdit {
-			res = board.HookResult{Decision: board.Refuse, Reason: fmt.Sprintf("[intagent] The team's intagent server at %s did not "+
+			res = board.HookResult{Decision: board.DecisionRefuse, Reason: fmt.Sprintf("[intagent] The team's intagent server at %s did not "+
 				"answer, and INTAGENT_FAIL=closed is set in your user's environment, so edits are refused until it does. "+
 				"Tell your user. (%v)", ws.settings.URL, err)}
 			return ad.Render(ev, res), err
@@ -159,7 +159,7 @@ func offBoard(ad hook.Adapter, ev hook.Event, ws *workspace, why, fix string) ho
 		return ad.Render(ev, board.HookResult{Context: fmt.Sprintf("[intagent] This repository uses intagent, but %s, so "+
 			"teammates cannot see this session and you will not hear about their work. Tell your user to %s.", why, fix)})
 	case ev.Kind == board.KindPreEdit && ws.settings.FailClosed:
-		return ad.Render(ev, board.HookResult{Decision: board.Refuse, Reason: fmt.Sprintf("[intagent] %s, and "+
+		return ad.Render(ev, board.HookResult{Decision: board.DecisionRefuse, Reason: fmt.Sprintf("[intagent] %s, and "+
 			"INTAGENT_FAIL=closed is set in your user's environment, so edits are refused until this is fixed. "+
 			"Tell your user to %s.", capitalize(why), fix)})
 	}

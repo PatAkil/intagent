@@ -66,9 +66,9 @@ func (Gemini) Parse(stdin []byte) (Event, error) {
 func (Gemini) Render(ev Event, res board.HookResult) Output {
 	switch ev.Name {
 	case "BeforeTool":
-		if res.Decision == board.Refuse || res.Decision == board.DecideAsk {
+		if res.Decision == board.DecisionRefuse || res.Decision == board.DecisionAsk {
 			reason := res.Reason
-			if res.Decision == board.DecideAsk {
+			if res.Decision == board.DecisionAsk {
 				reason += askInstead
 			}
 			return jsonOut(map[string]string{"decision": "deny", "reason": reason})

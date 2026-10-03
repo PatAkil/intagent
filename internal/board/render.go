@@ -19,11 +19,11 @@ const (
 
 // actionWords say what a policy action does to a teammate's edit.
 var actionWords = map[Action]string{
-	Deny: "refused",
-	Ask:  "asked to check with their person first",
-	Bump: "refused once and allowed on retry",
-	Warn: "only warned",
-	Off:  "not stopped",
+	ActionDeny: "refused",
+	ActionAsk:  "asked to check with their person first",
+	ActionBump: "refused once and allowed on retry",
+	ActionWarn: "only warned",
+	ActionOff:  "not stopped",
 }
 
 func describeConflict(now time.Time, cf Conflict) string {
@@ -58,8 +58,8 @@ func conflictLine(now time.Time, cf Conflict) string {
 
 func (b *Board) renderRefusal(now time.Time, cs []Conflict, p Policy) string {
 	paths := map[string]bool{}
-	strongest := Off
-	rank := map[Action]int{Off: 0, Warn: 1, Bump: 2, Ask: 3, Deny: 4}
+	strongest := ActionOff
+	rank := map[Action]int{ActionOff: 0, ActionWarn: 1, ActionBump: 2, ActionAsk: 3, ActionDeny: 4}
 	var lines []string
 	for i, cf := range cs {
 		paths[cf.Path] = true
@@ -81,9 +81,9 @@ func (b *Board) renderRefusal(now time.Time, cs []Conflict, p Policy) string {
 	}
 	var guide string
 	switch strongest {
-	case Deny:
+	case ActionDeny:
 		guide = "It is reserved while their agent is active, so don't edit it now. Work on another part of the task, ask them with the intagent send_note tool, or tell your user so the two people can coordinate."
-	case Ask:
+	case ActionAsk:
 		guide = "Your user decides whether to go ahead."
 	default:
 		guide = "If your change is still needed, retry the same edit and intagent will let it through. Keep it compatible with theirs, and tell them with the intagent send_note tool."
@@ -244,7 +244,7 @@ func renderDeclare(now time.Time, res DeclareResult, p Policy) string {
 	if len(res.Accepted) > 0 {
 		lines = append(lines, fmt.Sprintf("Declared %s intent on %s. Teammates' agents will be told before they edit these paths.",
 			res.Accepted[0].Mode, listPaths(intentPatterns(res.Accepted), 6)))
-		if res.Accepted[0].Mode == Exclusive {
+		if res.Accepted[0].Mode == ModeExclusive {
 			// An exclusive intent blocks while its claim is live and counts as an
 			// overlap once it is not.
 			lines = append(lines, fmt.Sprintf("While an agent of yours is running in this worktree, teammates' agents are %s "+

@@ -250,18 +250,18 @@ func TestCollisionOverHTTP(t *testing.T) {
 	var res board.HookResult
 	ts.do(t, "POST", "/v1/hook", "alice", hookEv(board.KindPrompt, "alice", "a1"), &res)
 	var dec board.DeclareResult
-	code := ts.do(t, "POST", "/v1/intents", "alice", board.DeclareRequest{Where: where("alice"), Summary: "retry", Patterns: []string{"svc/pay/**"}, Mode: board.Exclusive}, &dec)
+	code := ts.do(t, "POST", "/v1/intents", "alice", board.DeclareRequest{Where: where("alice"), Summary: "retry", Patterns: []string{"svc/pay/**"}, Mode: board.ModeExclusive}, &dec)
 	if code != http.StatusOK || len(dec.Accepted) != 1 {
 		t.Fatalf("declare: %d %+v", code, dec)
 	}
 	ts.do(t, "POST", "/v1/hook", "bob", hookEv(board.KindPreEdit, "bob", "b1", "svc/pay/retry.go"), &res)
-	if res.Decision != board.Refuse || !strings.Contains(res.Reason, "alice") {
+	if res.Decision != board.DecisionRefuse || !strings.Contains(res.Reason, "alice") {
 		t.Fatalf("bob's edit: %+v", res)
 	}
 	// The member comes from the token: bob cannot pose as alice.
 	ev := hookEv(board.KindPreEdit, "alice", "a1", "svc/pay/retry.go")
 	ts.do(t, "POST", "/v1/hook", "bob", ev, &res)
-	if res.Decision != board.Refuse {
+	if res.Decision != board.DecisionRefuse {
 		t.Fatalf("bob posing as alice was allowed: %+v", res)
 	}
 
@@ -504,7 +504,7 @@ func TestConfigFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	bc := fc.BoardConfig()
-	if bc.StallAfter != 3*time.Minute || bc.Policy.Overlap != board.Warn || bc.Policy.Block != board.Deny || bc.NotesPerMinute != 5 {
+	if bc.StallAfter != 3*time.Minute || bc.Policy.Overlap != board.ActionWarn || bc.Policy.Block != board.ActionDeny || bc.NotesPerMinute != 5 {
 		t.Fatalf("BoardConfig = %+v", bc)
 	}
 	if _, err := New(Options{}); err == nil {
