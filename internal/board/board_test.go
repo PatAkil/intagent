@@ -898,6 +898,37 @@ func TestToolCallsArePairedByID(t *testing.T) {
 	}
 }
 
+// A shell command that changes a reserved file is not checked beforehand;
+// the agent that ran it hears so at once, the breach is recorded, and the
+// reservation's owner keeps working on her file.
+func TestUncheckedChangeInsideAReservation(t *testing.T) {
+	h := newHarness(t)
+	h.hook(KindPrompt, "alice", "a1")
+	h.declare("alice", Exclusive, "Retry rework", "svc/pay/**")
+	h.hook(KindPrompt, "bob", "b1")
+	res, err := h.b.Hook(h.now, HookEvent{Kind: KindToolEnd, Member: "bob", Agent: AgentCodex, SessionID: "b1", Where: whereOf("bob"),
+		Tool: "Bash", Footprint: &Footprint{Files: refs("svc/pay/retry.go")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustContain(t, res.Context, "Your worktree now changes files a teammate reserved", "svc/pay/retry.go, which alice's agent holds exclusively",
+		`"Retry rework"`, "tell your user")
+	if acts := h.activities("conflict"); len(acts) != 1 || acts[0].Severity != Block || acts[0].Decision != Allow || acts[0].Member != "bob" {
+		t.Fatalf("activities = %+v", acts)
+	}
+	// Told once: the next scan with the same file says nothing more.
+	res, _ = h.b.Hook(h.now, HookEvent{Kind: KindToolEnd, Member: "bob", Agent: AgentCodex, SessionID: "b1", Where: whereOf("bob"),
+		Tool: "Bash", Footprint: &Footprint{Files: refs("svc/pay/retry.go")}})
+	if strings.Contains(res.Context, "reserved") {
+		t.Fatalf("told twice: %q", res.Context)
+	}
+	// Alice, inside her own reservation, hears about bob's change but is not stopped.
+	res = h.hook(KindPreEdit, "alice", "a1", "svc/pay/retry.go")
+	if res.Decision != Allow || !strings.Contains(res.Context, "bob") {
+		t.Fatalf("alice editing her reserved file: %s %q", res.Decision, res.Context)
+	}
+}
+
 func TestClean(t *testing.T) {
 	for in, want := range map[string]string{
 		"  a\n\tb  ":         "a b",

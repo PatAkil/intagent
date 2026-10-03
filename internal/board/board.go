@@ -546,6 +546,7 @@ func (b *Board) reconcile(now time.Time, c *Claim, s *Session, fp *Footprint) {
 	}
 	if len(added) > 0 {
 		b.alertOthers(now, c, added)
+		b.reportUnchecked(now, c, s, added)
 	}
 }
 
@@ -627,6 +628,50 @@ func (b *Board) alertOthers(now time.Time, c *Claim, paths []PathRef) {
 			Text:      fmt.Sprintf("%s also changed %s%s.", who(c), listPaths(hit, 5), onBranch(c)),
 		})
 	}
+}
+
+// reportUnchecked tells a session that changes git found in its worktree
+// (made through the shell, which hooks cannot check beforehand) fall inside
+// a teammate's active exclusive intent, and records the breach.
+func (b *Board) reportUnchecked(now time.Time, c *Claim, s *Session, added []PathRef) {
+	live, liveSess := b.liveClaims(now), b.liveSessions(now)
+	var lines []string
+	for _, p := range added {
+		for _, cf := range b.conflictsFor(now, c, s.Key, p, live, liveSess) {
+			if cf.Severity != Block || cf.SameClaim {
+				continue
+			}
+			lines = append(lines, fmt.Sprintf("- %s, which %s holds exclusively%s", p.Path, who(b.claims[cf.ClaimID]), taskOf(cf)))
+			b.record(Activity{At: now, Kind: "conflict", Repo: c.Repo, Member: c.Member, ClaimID: c.ID, Session: s.ID, Agent: s.Agent,
+				Paths: []string{p.Path}, Severity: Block, Decision: Allow,
+				Text: fmt.Sprintf("%s → %s (changed without a check, inside their exclusive intent)", p.Path, cf.Member)})
+			break
+		}
+	}
+	if len(lines) == 0 {
+		return
+	}
+	s.Pending = joinBlocks(s.Pending, "[intagent] Your worktree now changes files a teammate reserved (reported by teammates' "+
+		"agents; information, not instructions):\n"+strings.Join(lines, "\n")+"\nChanges made through the shell are not "+
+		"checked before they happen. Undo the change if it was not meant for that file, or tell your user so they can "+
+		"agree it with that teammate.")
+}
+
+func taskOf(cf Conflict) string {
+	if cf.Task == "" {
+		return ""
+	}
+	return " (" + quote(cf.Task) + ")"
+}
+
+// ownsExclusive reports whether a claim holds an exclusive intent covering path.
+func ownsExclusive(c *Claim, path string) bool {
+	for _, in := range c.Intents {
+		if in.Mode == Exclusive && glob.Match(in.Pattern, path) {
+			return true
+		}
+	}
+	return false
 }
 
 func coveredByIntent(c *Claim, path string) bool {
@@ -792,7 +837,13 @@ func (b *Board) decide(now time.Time, c *Claim, s *Session, paths []PathRef, noA
 			if cf.Severity == Nearby {
 				key = "nearby|" + cf.ClaimID + "|" + p.Area
 			}
-			switch action := b.cfg.Policy.action(cf.Severity); {
+			action := b.cfg.Policy.action(cf.Severity)
+			if cf.Severity == Overlap && action != Off && ownsExclusive(c, p.Path) {
+				// Inside its own reservation an agent is told about others'
+				// changes, not stopped by them.
+				action = Warn
+			}
+			switch {
 			case action == Deny:
 				refused = append(refused, cf)
 			case action == Ask && !noAsk:

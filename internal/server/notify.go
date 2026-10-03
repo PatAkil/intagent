@@ -52,7 +52,9 @@ func (n *notifier) wants(a board.Activity) bool {
 		return false
 	}
 	if a.Kind == "conflict" {
-		return a.Decision == board.Refuse || a.Decision == board.DecideAsk
+		// Refusals and questions, and changes made inside a teammate's
+		// reservation without a check.
+		return a.Decision == board.Refuse || a.Decision == board.DecideAsk || a.Severity == board.Block
 	}
 	return true
 }
@@ -123,8 +125,11 @@ func describeActivity(a board.Activity) string {
 		return fmt.Sprintf("intagent: %s in %s stopped reporting (%s) without ending its session.", who, a.Repo, a.Text)
 	case "conflict":
 		verb := "was refused an edit"
-		if a.Decision == board.DecideAsk {
+		switch a.Decision {
+		case board.DecideAsk:
 			verb = "was asked to confirm an edit"
+		case board.Allow:
+			verb = "changed a reserved file without a check"
 		}
 		return fmt.Sprintf("intagent: %s %s in %s: %s.", who, verb, a.Repo, a.Text)
 	}
