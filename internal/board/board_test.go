@@ -1177,3 +1177,26 @@ func TestViewBoundsFilesPerClaim(t *testing.T) {
 		t.Fatalf("files %d, count %d, truncated %v", len(cv.Files), cv.FileCount, cv.Truncated)
 	}
 }
+
+func TestZeroConfigTakesDefaults(t *testing.T) {
+	if got, want := (Config{}).WithDefaults(), DefaultConfig(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("Config{}.WithDefaults() = %+v, want %+v", got, want)
+	}
+	custom := Config{StallAfter: time.Minute, Policy: Policy{Nearby: Off}, KeepActivities: 3}.WithDefaults()
+	if custom.StallAfter != time.Minute || custom.Policy.Nearby != Off || custom.KeepActivities != 3 ||
+		custom.Policy.Block != Deny || custom.IdleAfter != DefaultConfig().IdleAfter {
+		t.Fatalf("set fields were not kept, or unset ones not filled: %+v", custom)
+	}
+
+	// A board built from a zero Config records files, delivers notes and keeps activities.
+	h := newHarness(t, func(c *Config) { *c = Config{} })
+	h.hook(KindPrompt, "alice", "a1")
+	h.edit("alice", "a1", "api/user.go")
+	if _, err := h.b.Note(h.now, NoteRequest{Member: "bob", Where: whereOf("bob"), To: "alice", Text: "hi"}); err != nil {
+		t.Fatalf("a note at the default rate: %v", err)
+	}
+	v := h.b.View(h.now, repo)
+	if len(v.Claims) != 1 || len(v.Claims[0].Files) != 1 || len(v.Recent) == 0 || v.Policy != DefaultPolicy() {
+		t.Fatalf("view of a zero-config board = %+v", v)
+	}
+}

@@ -27,7 +27,8 @@ var (
 	ErrNotFound    = errors.New("not found")
 )
 
-// Config holds the board's timings and policy.
+// Config holds the board's timings and policy. A zero or negative field, and
+// an empty policy action, takes its value from DefaultConfig.
 type Config struct {
 	// StallAfter is how long a working session may be silent before it counts as stalled.
 	StallAfter time.Duration `json:"stall_after"`
@@ -66,6 +67,39 @@ func DefaultConfig() Config {
 		InboxPerHook:   5,
 		KeepActivities: 300,
 	}
+}
+
+// WithDefaults returns c with the fields left unset taken from DefaultConfig.
+func (c Config) WithDefaults() Config {
+	d := DefaultConfig()
+	orDuration := func(v *time.Duration, def time.Duration) {
+		if *v <= 0 {
+			*v = def
+		}
+	}
+	orInt := func(v *int, def int) {
+		if *v <= 0 {
+			*v = def
+		}
+	}
+	orAction := func(v *Action, def Action) {
+		if *v == "" {
+			*v = def
+		}
+	}
+	orDuration(&c.StallAfter, d.StallAfter)
+	orDuration(&c.ToolStallAfter, d.ToolStallAfter)
+	orDuration(&c.IdleAfter, d.IdleAfter)
+	orDuration(&c.DormantFor, d.DormantFor)
+	orDuration(&c.ForgetAfter, d.ForgetAfter)
+	orAction(&c.Policy.Block, d.Policy.Block)
+	orAction(&c.Policy.Overlap, d.Policy.Overlap)
+	orAction(&c.Policy.Nearby, d.Policy.Nearby)
+	orInt(&c.NotesPerMinute, d.NotesPerMinute)
+	orInt(&c.MaxFootprint, d.MaxFootprint)
+	orInt(&c.InboxPerHook, d.InboxPerHook)
+	orInt(&c.KeepActivities, d.KeepActivities)
+	return c
 }
 
 const (
@@ -110,10 +144,10 @@ func WithNotify(fn func([]Activity)) Option { return func(b *Board) { b.notify =
 // WithIDs replaces the random ID generator, for tests.
 func WithIDs(fn func(prefix string) string) Option { return func(b *Board) { b.newID = fn } }
 
-// New returns an empty board.
+// New returns an empty board. Fields of cfg left unset take their defaults.
 func New(cfg Config, opts ...Option) *Board {
 	b := &Board{
-		cfg:      cfg,
+		cfg:      cfg.WithDefaults(),
 		claims:   map[string]*Claim{},
 		byKey:    map[string]string{},
 		sessions: map[string]*Session{},

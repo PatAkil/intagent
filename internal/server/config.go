@@ -102,30 +102,15 @@ func (fc FileConfig) validate() error {
 
 // BoardConfig merges the file's settings over the defaults.
 func (fc FileConfig) BoardConfig() board.Config {
-	c := board.DefaultConfig()
-	set := func(dst *time.Duration, d Duration) {
-		if d > 0 {
-			*dst = time.Duration(d)
-		}
-	}
-	set(&c.StallAfter, fc.StallAfter)
-	set(&c.ToolStallAfter, fc.ToolStallAfter)
-	set(&c.IdleAfter, fc.IdleAfter)
-	set(&c.DormantFor, fc.DormantFor)
-	set(&c.ForgetAfter, fc.ForgetAfter)
-	if fc.Policy.Block != "" {
-		c.Policy.Block = fc.Policy.Block
-	}
-	if fc.Policy.Overlap != "" {
-		c.Policy.Overlap = fc.Policy.Overlap
-	}
-	if fc.Policy.Nearby != "" {
-		c.Policy.Nearby = fc.Policy.Nearby
-	}
-	if fc.NotesPerMinute > 0 {
-		c.NotesPerMinute = fc.NotesPerMinute
-	}
-	return c
+	return board.Config{
+		StallAfter:     time.Duration(fc.StallAfter),
+		ToolStallAfter: time.Duration(fc.ToolStallAfter),
+		IdleAfter:      time.Duration(fc.IdleAfter),
+		DormantFor:     time.Duration(fc.DormantFor),
+		ForgetAfter:    time.Duration(fc.ForgetAfter),
+		Policy:         fc.Policy,
+		NotesPerMinute: fc.NotesPerMinute,
+	}.WithDefaults()
 }
 
 // NewToken returns a random token and its hash.
