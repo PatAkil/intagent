@@ -31,11 +31,18 @@ type Worktree struct {
 	Remote string
 }
 
+// defaultTimeout bounds a git command when the caller set no deadline.
+const defaultTimeout = 10 * time.Second
+
 // run executes git in dir and returns its stdout.
 func run(ctx context.Context, dir string, args ...string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, defaultTimeout)
+		defer cancel()
+	}
 	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.WaitDelay = time.Second // a helper git started may hold the output open after git is killed
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0", "LC_ALL=C")
 	var stderr bytes.Buffer

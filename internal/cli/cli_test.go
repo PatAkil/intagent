@@ -1099,3 +1099,29 @@ func TestBrokenRepoFileIsReported(t *testing.T) {
 		t.Fatalf("fail closed: %q", out)
 	}
 }
+
+func TestHookKeepsToItsBudget(t *testing.T) {
+	tm := newTeam(t, "alice")
+	a := tm.clone("alice")
+	tm.enrol(map[string]string{"alice": a})
+	old := hookBudget
+	hookBudget = 300 * time.Millisecond
+	t.Cleanup(func() { hookBudget = old })
+	// A git that hangs, as one can on a network file system or behind a stuck lock.
+	slow := t.TempDir()
+	writeFile(t, filepath.Join(slow, "git"), "#!/bin/sh\nexec sleep 30\n")
+	if err := os.Chmod(filepath.Join(slow, "git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", slow+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("INTAGENT_FAIL", "closed")
+	edit := claudeEvent("a1", a, "PreToolUse", map[string]any{"tool_name": "Edit", "tool_input": map[string]any{"file_path": filepath.Join(a, "README.md")}})
+	start := time.Now()
+	out, _, _ := tm.as("alice", a, edit, "hook")
+	if took := time.Since(start); took > 3*time.Second {
+		t.Fatalf("the hook took %s with a budget of %s", took, hookBudget)
+	}
+	if dec, reason, _ := decision(t, out); dec != "deny" || !strings.Contains(reason, "could not read this repository's setup") {
+		t.Fatalf("a hook out of time under fail-closed: %q", out)
+	}
+}
