@@ -1242,3 +1242,61 @@ func TestHookBudgetFitsEveryWiredTimeout(t *testing.T) {
 		}
 	}
 }
+
+// Under fail-closed, an edit named through a symbolic link to the team's
+// repository (macOS's /var and /private/var, a ~/work link) is still inside it.
+func TestWithinFollowsLinks(t *testing.T) {
+	dir := t.TempDir()
+	root := filepath.Join(dir, "repo")
+	link := filepath.Join(dir, "work")
+	if err := os.MkdirAll(filepath.Join(root, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(root, ".intagent.json"), "{}")
+	if err := os.Symlink(root, link); err != nil {
+		t.Skip(err)
+	}
+	for _, c := range []struct{ cwd, path string }{
+		{root, filepath.Join(link, "README.md")},
+		{link, filepath.Join(root, "new", "file.go")},
+		{link, "README.md"},
+	} {
+		if !within(enrolledRoot(c.cwd), c.cwd, []string{c.path}) {
+			t.Errorf("in %s, %s was not inside the repository", c.cwd, c.path)
+		}
+	}
+	if within(enrolledRoot(link), link, []string{filepath.Join(dir, "elsewhere.md")}) {
+		t.Error("a file beside the repository counted as inside it")
+	}
+}
+
+// In a large repository git may take seconds to list the changes: it gets
+// what the server request leaves of the hook's time, not half the request's.
+func TestSlowGitStillReportsTheFootprint(t *testing.T) {
+	tm := newTeam(t, "alice")
+	a := tm.clone("alice")
+	tm.enrol(map[string]string{"alice": a})
+	writeFile(t, filepath.Join(a, "svc/pay/new.go"), "package pay\n")
+	real, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	slow := t.TempDir()
+	writeFile(t, filepath.Join(slow, "git"), "#!/bin/sh\ncase \" $* \" in *\" diff \"*|*\" ls-files \"*) sleep 1.3;; esac\nexec "+real+" \"$@\"\n")
+	if err := os.Chmod(filepath.Join(slow, "git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", slow+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if _, errOut, code := tm.as("alice", a, claudeEvent("a1", a, "SessionStart", map[string]any{"source": "startup"}), "hook"); code != 0 {
+		t.Fatalf("hook: %d %s", code, errOut)
+	}
+	for _, r := range tm.srv.Board().Repos(time.Now()) {
+		for _, c := range tm.srv.Board().View(time.Now(), r.Repo).Claims {
+			if c.FileCount > 0 {
+				return
+			}
+		}
+	}
+	logged, _ := os.ReadFile(filepath.Join(os.Getenv("XDG_CACHE_HOME"), "intagent", "hook.log"))
+	t.Fatalf("no footprint reached the board; hook log:\n%s", logged)
+}

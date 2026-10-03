@@ -136,3 +136,37 @@ func TestSplitKey(t *testing.T) {
 		}
 	}
 }
+
+// What it cannot read with confidence it does not edit: a multi-line string
+// inside an array or inline table, or a key it would set that already holds
+// a table. A string holding an escaped """ ends at its real end.
+func TestTOMLDocEditsOnlyWhatItReads(t *testing.T) {
+	q := `"""`
+	for name, text := range map[string]string{
+		"string in an array":        "notes = [ " + q + "\n[projects.\"/repo\"]\ntrust_level = \"untrusted\"\n" + q + " ]",
+		"string in an inline table": "k = { a = '''\n[projects.\"/repo\"]\n''' }",
+		"dotted key under the key":  "[projects.\"/repo\"]\ntrust_level.x = 1",
+		"table under the key":       "[projects.\"/repo\".trust_level]\nx = 1",
+	} {
+		doc := &tomlDoc{lines: strings.Split(text, "\n")}
+		if _, err := doc.set(`[projects."/repo"]`, "trust_level", `"trusted"`); err == nil {
+			t.Errorf("%s: set wrote\n%s", name, doc.String())
+		}
+		if got := doc.get(`[projects."/repo"]`, "trust_level"); got != "" && name != "dotted key under the key" && name != "table under the key" {
+			t.Errorf("%s: read %q out of a value", name, got)
+		}
+	}
+	doc := &tomlDoc{lines: strings.Split("k = "+q+"\na \\"+q+" b\n[projects.\"/repo\"]\ntrust_level = \"untrusted\"\n"+q, "\n")}
+	if _, err := doc.set(`[projects."/repo"]`, "trust_level", `"trusted"`); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(doc.String(), q+"\n\n[projects.\"/repo\"]\ntrust_level = \"trusted\"\n") {
+		t.Fatalf("an escaped quote ended the string early:\n%s", doc.String())
+	}
+}
+
+func TestTOMLStringEscapesControlCharacters(t *testing.T) {
+	if got := tomlString("/work/a\tb\x1b\"c\\"); got != `"/work/a\u0009b\u001B\"c\\"` {
+		t.Fatalf("tomlString = %s", got)
+	}
+}

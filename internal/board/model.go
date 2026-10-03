@@ -397,4 +397,7 @@ type Activity struct {
 	// Breach marks a change made without a check (through the shell) inside a
 	// teammate's reservation, which the policy would have stopped.
 	Breach bool `json:"breach,omitempty"`
+	// Also names the other teammates a collision newly ran into, besides the
+	// one Text names: "carol on c/y.go: has unmerged changes to this file".
+	Also []string `json:"also,omitempty"`
 }

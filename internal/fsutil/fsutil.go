@@ -21,10 +21,16 @@ import (
 // perm, and keeps its owner where the process may give it back. The
 // directory must exist.
 func WriteFile(path string, data []byte, perm fs.FileMode) error {
-	path, err := linkTarget(path)
+	target, err := linkTarget(path)
 	if err != nil {
 		return err
 	}
+	if target != path {
+		if _, err := os.Stat(filepath.Dir(target)); err != nil {
+			return fmt.Errorf("%s links to %s, in a directory that cannot be written: %w", path, target, err)
+		}
+	}
+	path = target
 	old, statErr := os.Stat(path)
 	f, err := createTemp(filepath.Dir(path), filepath.Base(path), perm)
 	if err != nil {
@@ -70,7 +76,13 @@ func linkTarget(path string) (string, error) {
 			return "", err
 		}
 		if !filepath.IsAbs(dest) {
-			dest = filepath.Join(filepath.Dir(path), dest)
+			// Relative to the directory that holds the link, which may itself
+			// be reached through a link.
+			dir := filepath.Dir(path)
+			if real, err := filepath.EvalSymlinks(dir); err == nil {
+				dir = real
+			}
+			dest = filepath.Join(dir, dest)
 		}
 		path = dest
 	}

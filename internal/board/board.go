@@ -957,16 +957,17 @@ func (b *Board) announce(now time.Time, c *claim, s *session, paths []PathRef, d
 	if f := mostSevere(fresh); f.Severity == top.Severity {
 		top = f
 	}
-	why := top.Why
+	var also []string
 	named := map[string]bool{top.ClaimID: true}
 	for _, cf := range fresh {
 		if !named[cf.ClaimID] {
 			named[cf.ClaimID] = true
-			why += fmt.Sprintf("; also %s on %s: %s", cf.Member, cf.Path, cf.Why)
+			also = append(also, fmt.Sprintf("%s on %s: %s", cf.Member, cf.Path, cf.Why))
 		}
 	}
 	b.record(Activity{At: now, Kind: ActivityConflict, Repo: c.Repo, Member: c.Member, ClaimID: c.ID, Session: s.ID, Agent: s.Agent,
-		Paths: pathsOf(paths), Severity: top.Severity, Decision: d, Text: fmt.Sprintf("%s → %s (%s)", top.Path, top.Member, why)})
+		Paths: pathsOf(paths), Severity: top.Severity, Decision: d, Also: also,
+		Text: fmt.Sprintf("%s → %s (%s)", top.Path, top.Member, top.Why)})
 }
 
 // judge applies the policy to the conflicts on every path being written. A

@@ -1045,8 +1045,8 @@
       }, icon('chevron', open ? 'flip' : ''), open ? 'Show fewer' : 'Show all ' + rows.length + ' files'));
     }
     if (c.fileCount > c.files.length) {
-      box.appendChild(el('p', { class: 'none' }, 'Listing the ' + c.files.length + ' most recent of ' + c.fileCount +
-        ' files, with any a teammate also changed.'));
+      box.appendChild(el('p', { class: 'none' }, 'Listing ' + c.files.length + ' of ' + c.fileCount +
+        ' files: the most recent, and any a teammate also changed.'));
     }
     if (c.truncated) {
       box.appendChild(el('p', { class: 'none' }, 'Git reported more changed files than intagent keeps per claim.'));
@@ -1347,6 +1347,7 @@
     if (paths.length > 1) out.push(' and ' + (paths.length - 1) + ' more');
     if (parsed) out.push(' (', reasonNodes(parsed.member, parsed.why, parsed.path), ')');
     else if (a.text) out.push(': ' + String(a.text));
+    for (const x of arr(a.also)) out.push('; also ', String(x));
     if (o.key === 'bumped') out.push('. A retry goes through.');
     return out;
   }

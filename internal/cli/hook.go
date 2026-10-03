@@ -132,12 +132,10 @@ func (a *App) handleHook(ctx context.Context, ad hook.Adapter, ev hook.Event) (h
 	if ws.settings.SharePrompts {
 		hev.Prompt = ev.Prompt
 	}
-	ctx, cancel := context.WithTimeout(ctx, ws.settings.Timeout+2*time.Second)
-	defer cancel()
 	if ev.Footprint && (ev.Kind != board.KindToolEnd || footprintDue(ws.wt.Root, ev.SessionID)) {
-		// Git gets half the time left, so a slow one cannot keep the event
-		// itself from reaching the server.
-		fctx, fcancel := context.WithTimeout(ctx, halfLeft(ctx))
+		// Git gets what the server request leaves of the hook's time, and at
+		// least half of it, so a slow git cannot keep the event from the server.
+		fctx, fcancel := context.WithTimeout(ctx, gitTime(ctx, ws.settings.Timeout))
 		fp, err := ws.footprint(fctx)
 		fcancel()
 		if err != nil {
@@ -146,6 +144,8 @@ func (a *App) handleHook(ctx context.Context, ad hook.Adapter, ev hook.Event) (h
 			hev.Footprint = fp
 		}
 	}
+	ctx, cancel := context.WithTimeout(ctx, ws.settings.Timeout+2*time.Second)
+	defer cancel()
 	res, err := ws.client.Hook(ctx, hev)
 	switch {
 	case client.IsUnauthorized(err):
@@ -163,12 +163,16 @@ func (a *App) handleHook(ctx context.Context, ad hook.Adapter, ev hook.Event) (h
 	return ad.Render(ev, res), nil
 }
 
-// halfLeft is half the time until ctx's deadline.
-func halfLeft(ctx context.Context) time.Duration {
-	if d, ok := ctx.Deadline(); ok {
-		return time.Until(d) / 2
+// gitTime is how long git may take before a server request of up to
+// request: the time left before ctx's deadline less the request, and at
+// least half the time left.
+func gitTime(ctx context.Context, request time.Duration) time.Duration {
+	d, ok := ctx.Deadline()
+	if !ok {
+		return time.Hour
 	}
-	return time.Hour
+	left := time.Until(d)
+	return max(left-request-500*time.Millisecond, left/2)
 }
 
 // offBoard answers when the repository is a team's but this member cannot

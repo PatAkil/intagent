@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -168,5 +169,46 @@ func TestWriteFileStopsAtLinkLoops(t *testing.T) {
 	}
 	if err := WriteFile(a, nil, 0o600); err == nil {
 		t.Fatal("wrote through a loop of links")
+	}
+}
+
+// A relative link inside a linked directory names a file relative to where
+// the link really is: ~/.codex -> /opt/shared/codex, whose config.toml links
+// to ../dotfiles/config.toml, means /opt/shared/dotfiles/config.toml.
+func TestWriteFileResolvesRelativeLinksWhereTheyAre(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symbolic links need privileges on Windows")
+	}
+	dir := t.TempDir()
+	shared := filepath.Join(dir, "opt", "shared")
+	for _, d := range []string{filepath.Join(shared, "codex"), filepath.Join(shared, "dotfiles"), filepath.Join(dir, "home")} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	real := filepath.Join(shared, "dotfiles", "config.toml")
+	if err := os.WriteFile(real, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join("..", "dotfiles", "config.toml"), filepath.Join(shared, "codex", "config.toml")); err != nil {
+		t.Fatal(err)
+	}
+	home := filepath.Join(dir, "home", ".codex")
+	if err := os.Symlink(filepath.Join(shared, "codex"), home); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteFile(filepath.Join(home, "config.toml"), []byte("new"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(real); string(got) != "new" {
+		t.Fatalf("the real config = %q", got)
+	}
+	// A link into a directory that does not exist says so.
+	dangling := filepath.Join(dir, "home", "settings.json")
+	if err := os.Symlink(filepath.Join(dir, "missing", "settings.json"), dangling); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteFile(dangling, nil, 0o600); err == nil || !strings.Contains(err.Error(), "links to") {
+		t.Fatalf("a link into a missing directory: %v", err)
 	}
 }

@@ -1463,7 +1463,7 @@ func TestDeniedRetryIsAnnouncedUnderTheReservation(t *testing.T) {
 	}
 	last := mine[len(mine)-1]
 	if len(mine) != 2 || last.Severity != SeverityBlock || !strings.HasPrefix(last.Text, "a/x.go → alice (") ||
-		!strings.Contains(last.Text, "; also carol on a/x.go: ") {
+		len(last.Also) != 1 || !strings.HasPrefix(last.Also[0], "carol on a/x.go: ") {
 		t.Fatalf("bob's collisions: %+v", mine)
 	}
 }

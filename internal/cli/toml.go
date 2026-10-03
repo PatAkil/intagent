@@ -61,8 +61,9 @@ type tomlLine struct {
 	value string
 }
 
-// scan classifies the lines. The second result is false when the file ends
-// inside a multi-line value.
+// scan classifies the lines. The second result is false when a line is one it
+// cannot read, or the file ends inside a multi-line value: intagent then edits
+// nothing, since it cannot tell where it would be writing.
 func (d *tomlDoc) scan() ([]tomlLine, bool) {
 	out := make([]tomlLine, len(d.lines))
 	open, depth := "", 0 // a multi-line string's delimiter, or an open value's bracket depth
@@ -70,7 +71,7 @@ func (d *tomlDoc) scan() ([]tomlLine, bool) {
 		l := strings.TrimSpace(strings.TrimSuffix(raw, "\r"))
 		switch {
 		case open != "":
-			if strings.Contains(l, open) {
+			if closes(l, open) {
 				open = ""
 			}
 		case depth > 0:
@@ -87,7 +88,7 @@ func (d *tomlDoc) scan() ([]tomlLine, bool) {
 			switch {
 			case out[i].kind != lineKey:
 			case strings.HasPrefix(v, `"""`) || strings.HasPrefix(v, "'''"):
-				if !strings.Contains(v[3:], v[:3]) {
+				if !closes(v[3:], v[:3]) {
 					open = v[:3]
 				}
 			case strings.HasPrefix(v, "[") || strings.HasPrefix(v, "{"):
@@ -99,7 +100,26 @@ func (d *tomlDoc) scan() ([]tomlLine, bool) {
 			out[i].value = oneLineValue(v)
 		}
 	}
-	return out, open == "" && depth == 0
+	readable := open == "" && depth == 0
+	for _, l := range out {
+		readable = readable && l.kind != lineUnknown
+	}
+	return out, readable
+}
+
+// closes reports whether s ends a multi-line string opened with delim: a
+// literal string at its next ”', a basic one at a """ no backslash escapes.
+func closes(s, delim string) bool {
+	for i := 0; i+len(delim) <= len(s); i++ {
+		if delim == `"""` && s[i] == '\\' {
+			i++
+			continue
+		}
+		if s[i:i+len(delim)] == delim {
+			return true
+		}
+	}
+	return false
 }
 
 // header reads a [table] or [[array of tables]] line.
@@ -197,9 +217,13 @@ func headerPath(h string) []string {
 	return path
 }
 
-// get returns a key's value in a table, or "".
+// get returns a key's value in a table, or "" if it is not there or the file
+// cannot be read with confidence.
 func (d *tomlDoc) get(header, key string) string {
-	lines, _ := d.scan()
+	lines, readable := d.scan()
+	if !readable {
+		return ""
+	}
 	i, end := table(lines, headerPath(header))
 	for j := i + 1; i >= 0 && j < end; j++ {
 		if lines[j].kind == lineKey && slices.Equal(lines[j].path, []string{key}) {
@@ -210,17 +234,18 @@ func (d *tomlDoc) get(header, key string) string {
 }
 
 // set sets a key in a table, adding the table or the key if needed, and
-// returns the value it had. It refuses rather than add a table the file may
-// already define another way.
+// returns the value it had. It refuses rather than edit a file it cannot read
+// with confidence, add a table the file may already define another way, or
+// set a key the file holds a table under.
 func (d *tomlDoc) set(header, key, value string) (string, error) {
-	lines, complete := d.scan()
+	lines, readable := d.scan()
 	path := headerPath(header)
 	i, end := table(lines, path)
+	if !readable || (i < 0 && defines(lines, path)) || nests(lines, append(slices.Clone(path), key)) {
+		return "", fmt.Errorf("it holds %s in a form intagent cannot edit safely; set %s = %s in it yourself",
+			header, key, value)
+	}
 	if i < 0 {
-		if !complete || defines(lines, path) {
-			return "", fmt.Errorf("it already has a table like %s that intagent cannot edit safely; "+
-				"set %s = %s in it yourself", header, key, value)
-		}
 		d.lines = append(d.lines, "", header, key+" = "+value)
 		return "", nil
 	}
@@ -259,6 +284,28 @@ func defines(lines []tomlLine, path []string) bool {
 			current = []string{"\x00"} // an element of an array: matches nothing
 		case lineKey:
 			if related(append(slices.Clone(current), l.path...)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// nests reports whether a header or key defines the key at path as a table,
+// or something inside it (trust_level.x = 1, [projects."/repo".trust_level]):
+// a value set at path would then define it twice.
+func nests(lines []tomlLine, path []string) bool {
+	under := func(p []string) bool { return len(p) >= len(path) && slices.Equal(p[:len(path)], path) }
+	var current []string
+	for _, l := range lines {
+		switch l.kind {
+		case lineTable, lineArrayTable:
+			if under(l.path) {
+				return true
+			}
+			current = l.path
+		case lineKey:
+			if full := append(slices.Clone(current), l.path...); len(full) > len(path) && under(full) {
 				return true
 			}
 		}

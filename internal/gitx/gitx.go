@@ -129,7 +129,7 @@ func (w *Worktree) Rel(abs string) (string, bool) {
 	}
 	root := w.Root
 	if r, err := filepath.EvalSymlinks(root); err == nil {
-		root, abs = r, evalExisting(abs)
+		root, abs = r, ResolveExisting(abs)
 	}
 	rel, err := filepath.Rel(root, filepath.Clean(abs))
 	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
@@ -142,9 +142,9 @@ func (w *Worktree) Rel(abs string) (string, bool) {
 	return rel, true
 }
 
-// evalExisting resolves symlinks in the longest existing prefix of p, so a
+// ResolveExisting resolves symlinks in the longest existing prefix of p, so a
 // file that does not exist yet still resolves through a symlinked directory.
-func evalExisting(p string) string {
+func ResolveExisting(p string) string {
 	rest := ""
 	for cur := p; ; {
 		if r, err := filepath.EvalSymlinks(cur); err == nil {

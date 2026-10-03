@@ -133,7 +133,11 @@ func describeActivity(a board.Activity) string {
 		case a.Decision == board.DecisionAllow:
 			verb = "was warned before an edit"
 		}
-		return fmt.Sprintf("intagent: %s %s in %s: %s.", who, verb, a.Repo, a.Text)
+		text := a.Text
+		if len(a.Also) > 0 {
+			text += "; also " + strings.Join(a.Also, "; ")
+		}
+		return fmt.Sprintf("intagent: %s %s in %s: %s.", who, verb, a.Repo, text)
 	}
 	return fmt.Sprintf("intagent: %s in %s: %s %s", who, a.Repo, a.Kind, a.Text)
 }

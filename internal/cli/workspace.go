@@ -81,15 +81,19 @@ func enrolledRoot(dir string) string {
 }
 
 // within reports whether any of paths, relative to base unless absolute, is
-// inside root.
+// inside root, following symbolic links as the worktree's own check does.
 func within(root, base string, paths []string) bool {
 	if root == "" {
 		return false
+	}
+	if r, err := filepath.EvalSymlinks(root); err == nil {
+		root = r
 	}
 	for _, p := range paths {
 		if !filepath.IsAbs(p) {
 			p = filepath.Join(base, p)
 		}
+		p = gitx.ResolveExisting(filepath.Clean(p))
 		if rel, err := filepath.Rel(root, p); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 			return true
 		}
