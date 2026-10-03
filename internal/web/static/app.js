@@ -707,12 +707,16 @@
     // Files where an agent was refused or asked are contested too, though
     // only one claim changed them.
     const byId = new Map(claims.map((c) => [c.id, c]));
-    const refusedAt = new Map();
+    // path -> claim -> what stopped it there, the most serious kept.
+    const stoppedAt = new Map();
+    const rank = { bumped: 1, asked: 2, refused: 3 };
     for (const a of S.feed.values()) {
       if (!a || a.kind !== 'conflict' || (a.decision !== 'deny' && a.decision !== 'ask') || !byId.has(a.claim_id)) continue;
+      const how = conflictOutcome(a).key;
       for (const p of arr(a.paths)) {
-        if (!refusedAt.has(p)) refusedAt.set(p, new Set());
-        refusedAt.get(p).add(a.claim_id);
+        if (!stoppedAt.has(p)) stoppedAt.set(p, new Map());
+        const m = stoppedAt.get(p);
+        if ((rank[how] || 0) > (rank[m.get(a.claim_id)] || 0)) m.set(a.claim_id, how);
         if (!byPath.has(p)) byPath.set(p, []);
       }
     }
@@ -720,11 +724,11 @@
     for (const [path, touchers] of byPath) {
       const involved = new Map();
       const role = (c) => {
-        if (!involved.has(c.id)) involved.set(c.id, { claim: c, changed: false, refused: false, intents: [] });
+        if (!involved.has(c.id)) involved.set(c.id, { claim: c, changed: false, stopped: '', intents: [] });
         return involved.get(c.id);
       };
       for (const c of touchers) role(c).changed = true;
-      for (const id of refusedAt.get(path) || []) role(byId.get(id)).refused = true;
+      for (const [id, how] of stoppedAt.get(path) || []) role(byId.get(id)).stopped = how;
       for (const c of claims) {
         for (const it of c.intents) if (globMatch(it.pattern, path)) role(c).intents.push(it);
       }
@@ -739,11 +743,14 @@
 
   const reserves = (r) => r.claim.active && r.intents.some((i) => i.mode === 'exclusive');
 
+  // How an agent was stopped at a file, as the hot spots and files say it.
+  const STOPPED = { refused: 'was refused', bumped: 'was bumped', asked: 'had to ask' };
+
   // block: one claim reserves the file while another changed it.
   function spotSeverity(involved) {
     for (const r of involved.values()) {
       if (!reserves(r)) continue;
-      for (const o of involved.values()) if (o !== r && (o.changed || o.refused)) return 'block';
+      for (const o of involved.values()) if (o !== r && (o.changed || o.stopped)) return 'block';
     }
     return 'overlap';
   }
@@ -751,7 +758,7 @@
   function roleText(r) {
     const out = [];
     if (r.changed) out.push('changed');
-    if (r.refused) out.push('was refused');
+    if (r.stopped) out.push(STOPPED[r.stopped]);
     const intents = r.intents || [];
     if (intents.some((i) => i.mode === 'exclusive')) out.push(r.claim.active ? 'reserves' : 'reserved (not running)');
     else if (intents.length) out.push('plans');
@@ -970,7 +977,7 @@
     const holder = (/→ (\S+) \(/.exec(String(last.text || '')) || [])[1] || '';
     const path = arr(last.paths)[0] || '';
     const what = refused.length
-      ? (last.decision === 'ask' ? 'asked' : 'refused') + (refused.length > 1 ? ' ' + refused.length + '×' : '')
+      ? conflictOutcome(last).key + (refused.length > 1 ? ' ' + refused.length + '×' : '')
       : 'changed a reserved file';
     return el('span', { class: 'sess-stops' + (refused.length ? '' : ' unchecked'), title: String(last.text || '') },
       icon(refused.length ? 'deny' : 'warn'), what, path ? [' · ', pathNode(path)] : '',
@@ -1067,7 +1074,7 @@
   function alsoNodes(o, path) {
     const parts = [];
     if (o.changed) parts.push('changed it');
-    if (o.refused) parts.push('was refused at it');
+    if (o.stopped) parts.push(STOPPED[o.stopped] + (o.stopped === 'asked' ? ' about it' : ' at it'));
     for (const i of o.intents) {
       const verb = i.mode === 'exclusive' ? (o.claim.active ? 'reserves ' : 'reserved, not running, ') : 'plans ';
       parts.push(i.pattern === path ? verb + 'it' : [verb, code(i.pattern, 'path')]);
