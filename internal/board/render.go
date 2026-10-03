@@ -125,9 +125,9 @@ func (b *Board) renderInbox(now time.Time, fresh, earlier []InboxItem) string {
 }
 
 // renderStart greets a session with the state of the board.
-func (b *Board) renderStart(now time.Time, c *Claim) string {
+func (b *Board) renderStart(now time.Time, c *claim) string {
 	live := b.liveClaims(now)
-	var others []*Claim
+	var others []*claim
 	for _, o := range b.claimsInRepo(c.Repo) {
 		if o.ID != c.ID {
 			others = append(others, o)
@@ -160,7 +160,7 @@ func (b *Board) renderStart(now time.Time, c *Claim) string {
 	return strings.Join(lines, "\n")
 }
 
-func (b *Board) summarizeClaim(now time.Time, o *Claim, active bool) string {
+func (b *Board) summarizeClaim(now time.Time, o *claim, active bool) string {
 	var sb strings.Builder
 	sb.WriteString("- " + o.Member)
 	if agents := b.agentsOf(now, o); agents != "" {
@@ -185,7 +185,7 @@ func (b *Board) summarizeClaim(now time.Time, o *Claim, active bool) string {
 }
 
 // agentsOf describes the live sessions on a claim, e.g. "claude-code working".
-func (b *Board) agentsOf(now time.Time, c *Claim) string {
+func (b *Board) agentsOf(now time.Time, c *claim) string {
 	var parts []string
 	for _, s := range b.sessions {
 		if s.ClaimID != c.ID {
@@ -199,7 +199,7 @@ func (b *Board) agentsOf(now time.Time, c *Claim) string {
 	return strings.Join(parts, ", ")
 }
 
-func sortedFiles(c *Claim) []string {
+func sortedFiles(c *claim) []string {
 	files := make([]string, 0, len(c.Footprint))
 	for p := range c.Footprint {
 		files = append(files, p)
@@ -214,7 +214,7 @@ func sortedFiles(c *Claim) []string {
 	return files
 }
 
-func areasOf(c *Claim) map[string]bool {
+func areasOf(c *claim) map[string]bool {
 	out := map[string]bool{}
 	for _, t := range c.Footprint {
 		if t.Area != "" {
@@ -225,7 +225,7 @@ func areasOf(c *Claim) map[string]bool {
 }
 
 // relevance orders other claims for a session's greeting: shared areas first, then active ones.
-func relevance(o *Claim, mine map[string]bool, live map[string]bool) int {
+func relevance(o *claim, mine map[string]bool, live map[string]bool) int {
 	r := 0
 	for a := range areasOf(o) {
 		if mine[a] {

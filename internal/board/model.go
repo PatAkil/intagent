@@ -43,14 +43,14 @@ func ParseMode(s string) (Mode, error) {
 	return "", fmt.Errorf("unknown mode %q: want shared or exclusive", s)
 }
 
-// Phase is the last lifecycle position a session reported.
-type Phase string
+// phase is the last lifecycle position a session reported.
+type phase string
 
 // Phases a session reports through its hooks.
 const (
-	PhaseWorking Phase = "working" // a turn is in progress
-	PhaseWaiting Phase = "waiting" // the turn ended; the agent waits for its person
-	PhaseEnded   Phase = "ended"   // the session ended cleanly
+	phaseWorking phase = "working" // a turn is in progress
+	phaseWaiting phase = "waiting" // the turn ended; the agent waits for its person
+	phaseEnded   phase = "ended"   // the session ended cleanly
 )
 
 // State is a session's liveness: its phase, adjusted for how long it has been silent.
@@ -174,8 +174,8 @@ type Intent struct {
 	DeclaredAt time.Time `json:"declared_at"`
 }
 
-// Touch records that a claim changed a file.
-type Touch struct {
+// touch records that a claim changed a file.
+type touch struct {
 	Area    string    `json:"area,omitempty"`
 	At      time.Time `json:"at"`
 	Session string    `json:"session,omitempty"`
@@ -197,8 +197,8 @@ type InboxItem struct {
 	DeliveredTo map[string]bool `json:"delivered_to,omitempty"`
 }
 
-// Claim is the unit of ownership: one member's work in one worktree.
-type Claim struct {
+// claim is the unit of ownership: one member's work in one worktree.
+type claim struct {
 	ID        string            `json:"id"`
 	Repo      string            `json:"repo"`
 	Member    string            `json:"member"`
@@ -207,7 +207,7 @@ type Claim struct {
 	Branch    string            `json:"branch,omitempty"`
 	Task      string            `json:"task,omitempty"`
 	Intents   []Intent          `json:"intents,omitempty"`
-	Footprint map[string]*Touch `json:"footprint,omitempty"`
+	Footprint map[string]*touch `json:"footprint,omitempty"`
 	// FootprintTruncated is set when git reported more files than intagent keeps.
 	FootprintTruncated bool        `json:"footprint_truncated,omitempty"`
 	Inbox              []InboxItem `json:"inbox,omitempty"`
@@ -222,10 +222,10 @@ func claimKey(repo, member, host, worktree string) string {
 	return string(b)
 }
 
-func (c *Claim) key() string { return claimKey(c.Repo, c.Member, c.Host, c.Worktree) }
+func (c *claim) key() string { return claimKey(c.Repo, c.Member, c.Host, c.Worktree) }
 
-// Session is one agent run attached to a claim.
-type Session struct {
+// session is one agent run attached to a claim.
+type session struct {
 	Key       string    `json:"key"`
 	ID        string    `json:"id"`
 	Member    string    `json:"member"`
@@ -233,7 +233,7 @@ type Session struct {
 	ClaimID   string    `json:"claim_id"`
 	StartedAt time.Time `json:"started_at"`
 	LastSeen  time.Time `json:"last_seen"`
-	Phase     Phase     `json:"phase"`
+	Phase     phase     `json:"phase"`
 	// Tool is the latest tool call in progress, if any; ToolSince is when the
 	// session went into tools. Calls holds the running calls an agent gave
 	// ids for, and InFlight counts those it gave none for.

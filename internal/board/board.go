@@ -120,9 +120,9 @@ type Board struct {
 	mu       sync.Mutex
 	notifyMu sync.Mutex // orders notifications; taken before mu is released
 	cfg      Config
-	claims   map[string]*Claim
+	claims   map[string]*claim
 	byKey    map[string]string
-	sessions map[string]*Session
+	sessions map[string]*session
 	recent   []Activity
 	seq      uint64
 	version  uint64
@@ -141,16 +141,16 @@ type Option func(*Board)
 // must not block or call back into the board.
 func WithNotify(fn func([]Activity)) Option { return func(b *Board) { b.notify = fn } }
 
-// WithIDs replaces the random ID generator, for tests.
-func WithIDs(fn func(prefix string) string) Option { return func(b *Board) { b.newID = fn } }
+// withIDs replaces the random ID generator, for tests.
+func withIDs(fn func(prefix string) string) Option { return func(b *Board) { b.newID = fn } }
 
 // New returns an empty board. Fields of cfg left unset take their defaults.
 func New(cfg Config, opts ...Option) *Board {
 	b := &Board{
 		cfg:      cfg.WithDefaults(),
-		claims:   map[string]*Claim{},
+		claims:   map[string]*claim{},
 		byKey:    map[string]string{},
-		sessions: map[string]*Session{},
+		sessions: map[string]*session{},
 		notes:    map[string][]time.Time{},
 		stats:    map[string]*Stats{},
 		newID:    randomID,
@@ -264,28 +264,28 @@ func cleanPaths(in []PathRef) ([]PathRef, error) {
 
 // --- lookups --------------------------------------------------------------
 
-func (b *Board) findClaim(member string, w Where) *Claim {
+func (b *Board) findClaim(member string, w Where) *claim {
 	if id, ok := b.byKey[claimKey(w.Repo, member, w.Host, w.Worktree)]; ok {
 		return b.claims[id]
 	}
 	return nil
 }
 
-func (b *Board) claimFor(now time.Time, member string, w Where) *Claim {
+func (b *Board) claimFor(now time.Time, member string, w Where) *claim {
 	if c := b.findClaim(member, w); c != nil {
 		if w.Branch != "" {
 			c.Branch = w.Branch
 		}
 		return c
 	}
-	c := &Claim{
+	c := &claim{
 		ID:        b.newID("c_"),
 		Repo:      w.Repo,
 		Member:    member,
 		Host:      w.Host,
 		Worktree:  w.Worktree,
 		Branch:    w.Branch,
-		Footprint: map[string]*Touch{},
+		Footprint: map[string]*touch{},
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
@@ -295,11 +295,11 @@ func (b *Board) claimFor(now time.Time, member string, w Where) *Claim {
 	return c
 }
 
-func (b *Board) sessionFor(now time.Time, ev HookEvent, c *Claim) *Session {
+func (b *Board) sessionFor(now time.Time, ev HookEvent, c *claim) *session {
 	key := sessionKey(ev.Member, ev.Agent, ev.SessionID)
 	s, ok := b.sessions[key]
 	if !ok {
-		s = &Session{
+		s = &session{
 			Key:       key,
 			ID:        ev.SessionID,
 			Member:    ev.Member,
@@ -307,7 +307,7 @@ func (b *Board) sessionFor(now time.Time, ev HookEvent, c *Claim) *Session {
 			ClaimID:   c.ID,
 			StartedAt: now,
 			LastSeen:  now,
-			Phase:     PhaseWaiting,
+			Phase:     phaseWaiting,
 		}
 		b.sessions[key] = s
 		b.record(Activity{At: now, Kind: ActivitySessionStarted, Repo: c.Repo, Member: ev.Member, ClaimID: c.ID, Session: ev.SessionID, Agent: ev.Agent})
@@ -317,15 +317,15 @@ func (b *Board) sessionFor(now time.Time, ev HookEvent, c *Claim) *Session {
 }
 
 // state derives a session's liveness.
-func (b *Board) state(now time.Time, s *Session) State {
-	if s.Phase == PhaseEnded {
+func (b *Board) state(now time.Time, s *session) State {
+	if s.Phase == phaseEnded {
 		return StateEnded
 	}
 	silent := now.Sub(s.LastSeen)
 	if silent > b.cfg.IdleAfter {
 		return StateGone
 	}
-	if s.Phase == PhaseWorking {
+	if s.Phase == phaseWorking {
 		limit := b.cfg.StallAfter
 		if s.Tool != "" {
 			limit = b.cfg.ToolStallAfter
@@ -382,14 +382,14 @@ func (b *Board) Hook(now time.Time, ev HookEvent) (HookResult, error) {
 
 	switch ev.Kind {
 	case KindSessionStart:
-		if s.Phase == PhaseEnded {
-			s.Phase = PhaseWaiting
+		if s.Phase == phaseEnded {
+			s.Phase = phaseWaiting
 		}
 		clearTools(s)
 		b.reconcile(now, c, s, ev.Footprint)
 		res.Context = joinBlocks(b.renderStart(now, c), b.deliver(now, c, s))
 	case KindPrompt:
-		s.Phase = PhaseWorking
+		s.Phase = phaseWorking
 		clearTools(s)
 		b.taskFromPrompt(c, s, ev.Prompt)
 		res.Context = b.deliver(now, c, s)
@@ -416,17 +416,17 @@ func (b *Board) Hook(now time.Time, ev HookEvent) (HookResult, error) {
 		b.reconcile(now, c, s, ev.Footprint)
 		res.Context = b.deliver(now, c, s)
 	case KindStop:
-		s.Phase = PhaseWaiting
+		s.Phase = phaseWaiting
 		clearTools(s)
 		b.reconcile(now, c, s, ev.Footprint)
 	case KindSessionEnd:
-		s.Phase = PhaseEnded
+		s.Phase = phaseEnded
 		clearTools(s)
 		b.reconcile(now, c, s, ev.Footprint)
 		b.record(Activity{At: now, Kind: ActivitySessionEnded, Repo: c.Repo, Member: c.Member, ClaimID: c.ID, Session: s.ID, Agent: s.Agent})
 	case KindHeartbeat:
-		if s.Phase == PhaseEnded {
-			s.Phase = PhaseWaiting
+		if s.Phase == phaseEnded {
+			s.Phase = phaseWaiting
 		}
 		b.reconcile(now, c, s, ev.Footprint)
 		res.Context = b.deliver(now, c, s)
@@ -482,8 +482,8 @@ var knownKinds = map[Kind]bool{
 // Calls are tracked by the id the agent gives them, so an end reported twice
 // (a refused call that the agent also reports as failed) or never cannot
 // shift the count; calls without an id are counted.
-func startTool(now time.Time, s *Session, tool, id string) {
-	s.Phase = PhaseWorking
+func startTool(now time.Time, s *session, tool, id string) {
+	s.Phase = phaseWorking
 	if !inTool(s) {
 		s.ToolSince = now
 	}
@@ -499,8 +499,8 @@ func startTool(now time.Time, s *Session, tool, id string) {
 }
 
 // endTool records a tool call ending.
-func endTool(s *Session, id string) {
-	s.Phase = PhaseWorking
+func endTool(s *session, id string) {
+	s.Phase = phaseWorking
 	switch {
 	case id != "":
 		delete(s.Calls, id)
@@ -512,16 +512,16 @@ func endTool(s *Session, id string) {
 	}
 }
 
-func inTool(s *Session) bool { return s.InFlight > 0 || len(s.Calls) > 0 }
+func inTool(s *session) bool { return s.InFlight > 0 || len(s.Calls) > 0 }
 
 // clearTools forgets the tools in flight, at the boundaries where none can be:
 // a prompt, a stop, the session's start and end. An end event that never came
 // cannot keep a session inside a tool past them.
-func clearTools(s *Session) {
+func clearTools(s *session) {
 	s.InFlight, s.Calls, s.Tool, s.ToolSince = 0, nil, "", time.Time{}
 }
 
-func (b *Board) taskFromPrompt(c *Claim, s *Session, prompt string) {
+func (b *Board) taskFromPrompt(c *claim, s *session, prompt string) {
 	prompt = Clean(firstLine(prompt), maxTaskLen)
 	if prompt == "" || s.Acked[ackPrompted] {
 		return
@@ -537,7 +537,7 @@ func (b *Board) taskFromPrompt(c *Claim, s *Session, prompt string) {
 
 // taskFromIntent reports whether the task came from a declared intent, which
 // a prompt must not overwrite.
-func (c *Claim) taskFromIntent() bool {
+func (c *claim) taskFromIntent() bool {
 	for _, in := range c.Intents {
 		if in.Summary != "" && in.Summary == c.Task {
 			return true
@@ -555,12 +555,12 @@ func firstLine(s string) string {
 }
 
 // reconcile replaces a claim's footprint with what git reports.
-func (b *Board) reconcile(now time.Time, c *Claim, s *Session, fp *Footprint) {
+func (b *Board) reconcile(now time.Time, c *claim, s *session, fp *Footprint) {
 	if fp == nil {
 		return
 	}
 	files := cleanFootprint(fp.Files, b.cfg.MaxFootprint)
-	next := make(map[string]*Touch, len(files))
+	next := make(map[string]*touch, len(files))
 	var added []PathRef
 	for _, f := range files {
 		if t, ok := c.Footprint[f.Path]; ok {
@@ -570,7 +570,7 @@ func (b *Board) reconcile(now time.Time, c *Claim, s *Session, fp *Footprint) {
 			next[f.Path] = t
 			continue
 		}
-		next[f.Path] = &Touch{Area: f.Area, At: now, Session: s.Key, FromGit: true}
+		next[f.Path] = &touch{Area: f.Area, At: now, Session: s.Key, FromGit: true}
 		added = append(added, f)
 	}
 	removed := 0
@@ -610,7 +610,7 @@ func cleanFootprint(in []PathRef, limit int) []PathRef {
 }
 
 // touch records files a hook saw being written.
-func (b *Board) touch(now time.Time, c *Claim, s *Session, paths []PathRef) {
+func (b *Board) touch(now time.Time, c *claim, s *session, paths []PathRef) {
 	if len(paths) == 0 {
 		return
 	}
@@ -627,7 +627,7 @@ func (b *Board) touch(now time.Time, c *Claim, s *Session, paths []PathRef) {
 			c.FootprintTruncated = true
 			continue
 		}
-		c.Footprint[p.Path] = &Touch{Area: p.Area, At: now, Session: s.Key}
+		c.Footprint[p.Path] = &touch{Area: p.Area, At: now, Session: s.Key}
 		fresh = append(fresh, p)
 	}
 	b.record(Activity{At: now, Kind: ActivityFileChanged, Repo: c.Repo, Member: c.Member, ClaimID: c.ID, Session: s.ID, Agent: s.Agent, Paths: pathsOf(paths)})
@@ -637,7 +637,7 @@ func (b *Board) touch(now time.Time, c *Claim, s *Session, paths []PathRef) {
 }
 
 // alertOthers tells every other claim that changed or claimed the same files.
-func (b *Board) alertOthers(now time.Time, c *Claim, paths []PathRef) {
+func (b *Board) alertOthers(now time.Time, c *claim, paths []PathRef) {
 	for _, o := range b.claimsInRepo(c.Repo) {
 		if o.ID == c.ID {
 			continue
@@ -676,7 +676,7 @@ func (b *Board) alertOthers(now time.Time, c *Claim, paths []PathRef) {
 // a teammate's active exclusive intent, and records the breach, once per file.
 // A policy that ignores reservations ignores these too, and one that only
 // warns about them records a warning rather than a breach.
-func (b *Board) reportUnchecked(now time.Time, c *Claim, s *Session, added []PathRef) {
+func (b *Board) reportUnchecked(now time.Time, c *claim, s *session, added []PathRef) {
 	action := b.cfg.Policy.action(SeverityBlock)
 	if action == ActionOff {
 		return
@@ -728,7 +728,7 @@ func taskOf(cf Conflict) string {
 
 // breachedReservation reports whether a conflict is another claim's change to
 // a file inside c's exclusive intent, made since c declared it.
-func breachedReservation(c *Claim, cf Conflict) bool {
+func breachedReservation(c *claim, cf Conflict) bool {
 	if cf.Severity != SeverityOverlap || cf.Pattern != "" || cf.SameClaim {
 		return false
 	}
@@ -740,7 +740,7 @@ func breachedReservation(c *Claim, cf Conflict) bool {
 	return false
 }
 
-func coveredByIntent(c *Claim, path string) bool {
+func coveredByIntent(c *claim, path string) bool {
 	for _, in := range c.Intents {
 		if glob.Match(in.Pattern, path) {
 			return true
@@ -749,8 +749,8 @@ func coveredByIntent(c *Claim, path string) bool {
 	return false
 }
 
-func (b *Board) claimsInRepo(repo string) []*Claim {
-	var out []*Claim
+func (b *Board) claimsInRepo(repo string) []*claim {
+	var out []*claim
 	for _, c := range b.claims {
 		if c.Repo == repo {
 			out = append(out, c)
@@ -761,7 +761,7 @@ func (b *Board) claimsInRepo(repo string) []*Claim {
 }
 
 // releaseIfDone removes a claim that has nothing left to tell anyone.
-func (b *Board) releaseIfDone(now time.Time, c *Claim) bool {
+func (b *Board) releaseIfDone(now time.Time, c *claim) bool {
 	if len(c.Intents) > 0 || len(c.Footprint) > 0 || b.liveClaims(now)[c.ID] {
 		return false
 	}
@@ -769,7 +769,7 @@ func (b *Board) releaseIfDone(now time.Time, c *Claim) bool {
 	return true
 }
 
-func (b *Board) deleteClaim(now time.Time, c *Claim, kind ActivityKind) {
+func (b *Board) deleteClaim(now time.Time, c *claim, kind ActivityKind) {
 	delete(b.claims, c.ID)
 	delete(b.byKey, c.key())
 	b.record(Activity{At: now, Kind: kind, Repo: c.Repo, Member: c.Member, ClaimID: c.ID, Text: c.Branch})
@@ -778,7 +778,7 @@ func (b *Board) deleteClaim(now time.Time, c *Claim, kind ActivityKind) {
 // --- conflicts and decisions ---------------------------------------------
 
 // conflictsFor lists the claims that matter to one path, most severe first.
-func (b *Board) conflictsFor(now time.Time, self *Claim, selfSession string, p PathRef, live map[string]bool, liveSess map[string]bool) []Conflict {
+func (b *Board) conflictsFor(now time.Time, self *claim, selfSession string, p PathRef, live map[string]bool, liveSess map[string]bool) []Conflict {
 	repo := ""
 	if self != nil {
 		repo = self.Repo
@@ -806,7 +806,7 @@ func (b *Board) conflictsFor(now time.Time, self *Claim, selfSession string, p P
 	return out
 }
 
-func (b *Board) conflictWith(now time.Time, o *Claim, p PathRef, active bool) (Conflict, bool) {
+func (b *Board) conflictWith(now time.Time, o *claim, p PathRef, active bool) (Conflict, bool) {
 	best := Conflict{Path: p.Path, Area: p.Area, ClaimID: o.ID, Member: o.Member, Branch: o.Branch, Task: o.Task, Active: active}
 	consider := func(sev Severity, why, pattern string, since time.Time) {
 		if sev > best.Severity {
@@ -845,7 +845,7 @@ func (b *Board) conflictWith(now time.Time, o *Claim, p PathRef, active bool) (C
 }
 
 // workedInArea reports whether a claim changed or declared anything in area.
-func workedInArea(c *Claim, area string) (time.Time, bool) {
+func workedInArea(c *claim, area string) (time.Time, bool) {
 	var latest time.Time
 	found := false
 	for _, t := range c.Footprint {
@@ -918,7 +918,7 @@ func (v verdict) acted() []Conflict {
 
 // decide answers an agent about to write, and counts and announces the edit
 // if it runs into a collision this session has not been told about.
-func (b *Board) decide(now time.Time, c *Claim, s *Session, paths []PathRef, noAsk bool) HookResult {
+func (b *Board) decide(now time.Time, c *claim, s *session, paths []PathRef, noAsk bool) HookResult {
 	if s.Acked == nil {
 		s.Acked = map[string]bool{}
 	}
@@ -945,7 +945,7 @@ func (b *Board) decide(now time.Time, c *Claim, s *Session, paths []PathRef, noA
 
 // judge applies the policy to the conflicts on every path being written. A
 // bump counts as acknowledged as soon as it is met: its retry goes through.
-func (b *Board) judge(now time.Time, c *Claim, s *Session, paths []PathRef, noAsk bool) verdict {
+func (b *Board) judge(now time.Time, c *claim, s *session, paths []PathRef, noAsk bool) verdict {
 	live, liveSess := b.liveClaims(now), b.liveSessions(now)
 	var v verdict
 	for _, p := range paths {
@@ -980,7 +980,7 @@ func (b *Board) judge(now time.Time, c *Claim, s *Session, paths []PathRef, noAs
 
 // answer turns a verdict into what the hook says, and acknowledges the
 // questions and warnings it shows.
-func (b *Board) answer(now time.Time, s *Session, v verdict) HookResult {
+func (b *Board) answer(now time.Time, s *session, v verdict) HookResult {
 	res := HookResult{Decision: DecisionAllow, Conflicts: v.all}
 	switch {
 	case len(v.refused) > 0:
@@ -1047,7 +1047,7 @@ func mostSevere(list []Conflict) Conflict {
 
 // --- inbox ---------------------------------------------------------------
 
-func (b *Board) enqueue(now time.Time, c *Claim, it InboxItem) {
+func (b *Board) enqueue(now time.Time, c *claim, it InboxItem) {
 	it.ID = b.newID("i_")
 	it.At = now
 	it.Text = Clean(it.Text, maxNoteLen)
@@ -1066,7 +1066,7 @@ func (b *Board) enqueue(now time.Time, c *Claim, it InboxItem) {
 
 // deliver renders what this session has not been told yet: context held back
 // from before an edit, then the inbox items it has not seen.
-func (b *Board) deliver(now time.Time, c *Claim, s *Session) string {
+func (b *Board) deliver(now time.Time, c *claim, s *session) string {
 	pending := s.Pending
 	s.Pending = ""
 	return joinBlocks(pending, b.deliverInbox(now, c, s))
@@ -1075,7 +1075,7 @@ func (b *Board) deliver(now time.Time, c *Claim, s *Session) string {
 // Each session hears an item once. One that another session of this claim
 // already showed its agent is still told (that session may have stopped
 // without acting on it), but as earlier news, not new.
-func (b *Board) deliverInbox(now time.Time, c *Claim, s *Session) string {
+func (b *Board) deliverInbox(now time.Time, c *claim, s *session) string {
 	var fresh, earlier []InboxItem
 	for i := range c.Inbox {
 		it := &c.Inbox[i]
@@ -1191,7 +1191,7 @@ func (b *Board) Declare(now time.Time, r DeclareRequest) (DeclareResult, error) 
 	return res, nil
 }
 
-func (b *Board) exclusiveClash(self *Claim, pattern string, live map[string]bool) (Conflict, bool) {
+func (b *Board) exclusiveClash(self *claim, pattern string, live map[string]bool) (Conflict, bool) {
 	for _, o := range b.claimsInRepo(self.Repo) {
 		if o.ID == self.ID || !live[o.ID] {
 			continue
@@ -1220,7 +1220,7 @@ func upsertIntent(list []Intent, in Intent) []Intent {
 }
 
 // intentOverlaps lists other claims whose intents or changed files meet a new intent.
-func (b *Board) intentOverlaps(c *Claim, in Intent, live map[string]bool) []Conflict {
+func (b *Board) intentOverlaps(c *claim, in Intent, live map[string]bool) []Conflict {
 	var out []Conflict
 	for _, o := range b.claimsInRepo(c.Repo) {
 		if o.ID == c.ID {
@@ -1263,7 +1263,7 @@ func (b *Board) intentOverlaps(c *Claim, in Intent, live map[string]bool) []Conf
 	return out
 }
 
-func (b *Board) tellIntent(now time.Time, c *Claim, accepted []Intent, overlaps []Conflict) {
+func (b *Board) tellIntent(now time.Time, c *claim, accepted []Intent, overlaps []Conflict) {
 	notified := map[string]bool{}
 	for _, cf := range overlaps {
 		if notified[cf.ClaimID] {
@@ -1372,7 +1372,7 @@ func (b *Board) Check(now time.Time, r CheckRequest) ([]Conflict, error) {
 	defer b.unlock()
 	self := b.findClaim(r.Member, w)
 	if self == nil {
-		self = &Claim{Repo: w.Repo, Member: r.Member}
+		self = &claim{Repo: w.Repo, Member: r.Member}
 	}
 	live, liveSess := b.liveClaims(now), b.liveSessions(now)
 	var out []Conflict
@@ -1428,7 +1428,7 @@ func (b *Board) Note(now time.Time, r NoteRequest) (NoteResult, error) {
 	}
 	b.changed()
 	b.notes[r.Member] = append(recent, now)
-	from := &Claim{Member: r.Member}
+	from := &claim{Member: r.Member}
 	if self != nil {
 		from = self
 	}
@@ -1454,11 +1454,11 @@ func (b *Board) Note(now time.Time, r NoteRequest) (NoteResult, error) {
 
 // resolve finds a note's recipients: a claim by ID, a member's claims, or the
 // claims that changed or reserved a path, which it also returns.
-func (b *Board) resolve(repo, to string, self *Claim) ([]*Claim, string) {
+func (b *Board) resolve(repo, to string, self *claim) ([]*claim, string) {
 	if c, ok := b.claims[to]; ok && c.Repo == repo {
-		return []*Claim{c}, ""
+		return []*claim{c}, ""
 	}
-	var out []*Claim
+	var out []*claim
 	for _, c := range b.claimsInRepo(repo) {
 		if self != nil && c.ID == self.ID {
 			continue

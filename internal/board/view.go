@@ -194,7 +194,7 @@ func (v View) Text() string { return renderView(v) }
 
 // capFiles keeps a claim's newest files and, past the cap, the ones another
 // claim also changed or reserved.
-func capFiles(c *Claim, files []string, claims []*Claim, changedBy map[string]int) []string {
+func capFiles(c *claim, files []string, claims []*claim, changedBy map[string]int) []string {
 	out := files[:maxViewFiles:maxViewFiles]
 	for _, p := range files[maxViewFiles:] {
 		contested := changedBy[p] > 1

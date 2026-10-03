@@ -101,14 +101,14 @@ func plural(n int, noun string) string {
 	return fmt.Sprintf("%d %ss", n, noun)
 }
 
-func who(c *Claim) string {
+func who(c *claim) string {
 	if c.Member == "" {
 		return "a teammate"
 	}
 	return c.Member + "'s agent"
 }
 
-func onBranch(c *Claim) string {
+func onBranch(c *claim) string {
 	if c.Branch == "" {
 		return ""
 	}

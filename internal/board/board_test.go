@@ -32,7 +32,7 @@ func newHarness(t *testing.T, mutate ...func(*Config)) *harness {
 	h := &harness{t: t, now: t0}
 	n := 0
 	h.b = New(cfg,
-		WithIDs(func(prefix string) string { n++; return fmt.Sprintf("%s%d", prefix, n) }),
+		withIDs(func(prefix string) string { n++; return fmt.Sprintf("%s%d", prefix, n) }),
 		WithNotify(func(a []Activity) { h.mu.Lock(); h.acts = append(h.acts, a...); h.mu.Unlock() }),
 	)
 	return h
@@ -401,21 +401,21 @@ func TestEndedSessionWithWorkLeavesDormantClaim(t *testing.T) {
 
 func TestLiveness(t *testing.T) {
 	h := newHarness(t)
-	s := &Session{Phase: PhaseWorking, LastSeen: t0}
+	s := &session{Phase: phaseWorking, LastSeen: t0}
 	cases := []struct {
 		after time.Duration
 		tool  string
-		phase Phase
+		phase phase
 		want  State
 	}{
-		{5 * time.Minute, "", PhaseWorking, StateWorking},
-		{11 * time.Minute, "", PhaseWorking, StateStalled},
-		{30 * time.Minute, "Bash", PhaseWorking, StateWorking},
-		{46 * time.Minute, "Bash", PhaseWorking, StateStalled},
-		{90 * time.Minute, "", PhaseWaiting, StateWaiting},
-		{3 * time.Hour, "", PhaseWaiting, StateGone},
-		{3 * time.Hour, "", PhaseWorking, StateGone},
-		{time.Minute, "", PhaseEnded, StateEnded},
+		{5 * time.Minute, "", phaseWorking, StateWorking},
+		{11 * time.Minute, "", phaseWorking, StateStalled},
+		{30 * time.Minute, "Bash", phaseWorking, StateWorking},
+		{46 * time.Minute, "Bash", phaseWorking, StateStalled},
+		{90 * time.Minute, "", phaseWaiting, StateWaiting},
+		{3 * time.Hour, "", phaseWaiting, StateGone},
+		{3 * time.Hour, "", phaseWorking, StateGone},
+		{time.Minute, "", phaseEnded, StateEnded},
 	}
 	for _, c := range cases {
 		s.Tool, s.Phase = c.tool, c.phase
@@ -1124,9 +1124,9 @@ func TestParseHelpers(t *testing.T) {
 // Snapshot copies claims and sessions to encode them outside the lock; a
 // field added later without a deep copy would be read while hooks write it.
 func TestClonesShareNothingMutable(t *testing.T) {
-	c := &Claim{Intents: []Intent{{Pattern: "a/**"}}, Footprint: map[string]*Touch{"a.go": {}},
+	c := &claim{Intents: []Intent{{Pattern: "a/**"}}, Footprint: map[string]*touch{"a.go": {}},
 		Inbox: []InboxItem{{Paths: []string{"a"}, DeliveredTo: map[string]bool{"s": true}}}, Alerted: map[string]bool{"k": true}}
-	s := &Session{Acked: map[string]bool{"k": true}, Calls: map[string]bool{"t": true}}
+	s := &session{Acked: map[string]bool{"k": true}, Calls: map[string]bool{"t": true}}
 	for _, pair := range [][2]any{{c, c.clone()}, {s, s.clone()}} {
 		a, b := reflect.ValueOf(pair[0]).Elem(), reflect.ValueOf(pair[1]).Elem()
 		for i := 0; i < a.NumField(); i++ {

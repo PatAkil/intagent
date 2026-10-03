@@ -14,8 +14,8 @@ type snapshot struct {
 	Format   int               `json:"format"`
 	Saved    time.Time         `json:"saved"`
 	Seq      uint64            `json:"seq"`
-	Claims   []*Claim          `json:"claims"`
-	Sessions []*Session        `json:"sessions"`
+	Claims   []*claim          `json:"claims"`
+	Sessions []*session        `json:"sessions"`
 	Recent   []Activity        `json:"recent"`
 	Stats    map[string]*Stats `json:"stats,omitempty"`
 }
@@ -43,10 +43,10 @@ func (b *Board) Snapshot(now time.Time) ([]byte, uint64, error) {
 }
 
 // clone copies a claim deeply enough to be read while the original changes.
-func (c *Claim) clone() *Claim {
+func (c *claim) clone() *claim {
 	d := *c
 	d.Intents = slices.Clone(c.Intents)
-	d.Footprint = make(map[string]*Touch, len(c.Footprint))
+	d.Footprint = make(map[string]*touch, len(c.Footprint))
 	for k, t := range c.Footprint {
 		tt := *t
 		d.Footprint[k] = &tt
@@ -62,7 +62,7 @@ func (c *Claim) clone() *Claim {
 }
 
 // clone copies a session deeply enough to be read while the original changes.
-func (s *Session) clone() *Session {
+func (s *session) clone() *session {
 	d := *s
 	d.Acked = maps.Clone(s.Acked)
 	d.Calls = maps.Clone(s.Calls)
@@ -80,15 +80,15 @@ func (b *Board) Restore(data []byte) error {
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.claims = map[string]*Claim{}
+	b.claims = map[string]*claim{}
 	b.byKey = map[string]string{}
-	b.sessions = map[string]*Session{}
+	b.sessions = map[string]*session{}
 	for _, c := range s.Claims {
 		if c == nil || c.ID == "" {
 			continue
 		}
 		if c.Footprint == nil {
-			c.Footprint = map[string]*Touch{}
+			c.Footprint = map[string]*touch{}
 		}
 		b.claims[c.ID] = c
 		b.byKey[c.key()] = c.ID
