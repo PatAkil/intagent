@@ -35,6 +35,7 @@ type ClaimView struct {
 	Active    bool          `json:"active"`
 	Intents   []Intent      `json:"intents"`
 	Files     []FileView    `json:"files"`
+	FileCount int           `json:"file_count"`
 	Truncated bool          `json:"truncated,omitempty"`
 	Sessions  []SessionView `json:"sessions"`
 	Pending   int           `json:"pending_inbox"`
@@ -95,7 +96,14 @@ func (b *Board) View(now time.Time, repo string) View {
 				v.Sessions++
 			}
 		}
-		for _, p := range sortedFiles(c) {
+		files := sortedFiles(c)
+		cv.FileCount = len(files)
+		if len(files) > maxViewFiles {
+			// A view goes to every dashboard on every refresh; the newest files
+			// are the ones anyone acts on.
+			files, cv.Truncated = files[:maxViewFiles], true
+		}
+		for _, p := range files {
 			t := c.Footprint[p]
 			cv.Files = append(cv.Files, FileView{Path: p, Area: t.Area, At: t.At, FromGit: t.FromGit})
 		}
@@ -176,3 +184,6 @@ func (b *Board) Since(repo string, seq uint64) []Activity {
 
 // Text renders a view for a person or an agent reading a terminal.
 func (v View) Text() string { return renderView(v) }
+
+// maxViewFiles bounds the files a view lists per claim; FileCount has them all.
+const maxViewFiles = 500

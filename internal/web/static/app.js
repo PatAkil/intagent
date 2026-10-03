@@ -604,6 +604,7 @@
       active: !!c.active,
       intents: arr(c.intents).filter((i) => i && typeof i.pattern === 'string'),
       files: arr(c.files).filter((f) => f && typeof f.path === 'string'),
+      fileCount: Number(c.file_count) || arr(c.files).length,
       truncated: !!c.truncated,
       sessions: arr(c.sessions).filter((s) => s && typeof s === 'object'),
       pending: Number(c.pending_inbox) || 0,
@@ -948,7 +949,7 @@
   }
 
   function filesBlock(c, ax) {
-    const box = el('div', { class: 'block' }, blockHead('Changed files', c.files.length + (c.truncated ? '+' : '')));
+    const box = el('div', { class: 'block' }, blockHead('Changed files', c.fileCount + (c.truncated && c.fileCount <= c.files.length ? '+' : '')));
     if (!c.files.length) {
       box.appendChild(el('p', { class: 'none' }, 'No changed files yet'));
       return box;

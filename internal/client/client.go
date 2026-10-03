@@ -65,9 +65,12 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 		return err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResponse+1))
 	if err != nil {
 		return err
+	}
+	if len(data) > maxResponse {
+		return fmt.Errorf("%s %s: the server's answer is larger than %d MB", method, path, maxResponse>>20)
 	}
 	if resp.StatusCode >= 300 {
 		var e struct {
@@ -166,3 +169,6 @@ func (c *Client) Whoami(ctx context.Context) (Whoami, error) {
 	err := c.do(ctx, http.MethodGet, "/v1/whoami", nil, &w)
 	return w, err
 }
+
+// maxResponse bounds what the client reads from the server.
+const maxResponse = 32 << 20

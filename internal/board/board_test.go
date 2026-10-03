@@ -3,6 +3,7 @@ package board
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -1109,5 +1110,70 @@ func TestParseHelpers(t *testing.T) {
 	}
 	if Severity(9).String() != "severity(9)" {
 		t.Error("String of out-of-range severity")
+	}
+}
+
+// Snapshot copies claims and sessions to encode them outside the lock; a
+// field added later without a deep copy would be read while hooks write it.
+func TestClonesShareNothingMutable(t *testing.T) {
+	c := &Claim{Intents: []Intent{{Pattern: "a/**"}}, Footprint: map[string]*Touch{"a.go": {}},
+		Inbox: []InboxItem{{Paths: []string{"a"}, DeliveredTo: map[string]bool{"s": true}}}, Alerted: map[string]bool{"k": true}}
+	s := &Session{Acked: map[string]bool{"k": true}, Calls: map[string]bool{"t": true}}
+	for _, pair := range [][2]any{{c, c.clone()}, {s, s.clone()}} {
+		a, b := reflect.ValueOf(pair[0]).Elem(), reflect.ValueOf(pair[1]).Elem()
+		for i := 0; i < a.NumField(); i++ {
+			fa, fb := a.Field(i), b.Field(i)
+			switch fa.Kind() {
+			case reflect.Map, reflect.Slice, reflect.Pointer:
+				if fa.IsNil() {
+					t.Errorf("%s.%s is nil in the fixture: give it a value so the test covers it", a.Type().Name(), a.Type().Field(i).Name)
+				} else if fa.Pointer() == fb.Pointer() {
+					t.Errorf("%s.%s is shared by the clone", a.Type().Name(), a.Type().Field(i).Name)
+				}
+			}
+		}
+	}
+	if c.clone().Footprint["a.go"] == c.Footprint["a.go"] {
+		t.Error("touches are shared")
+	}
+}
+
+func TestSnapshotWhileHooksRun(t *testing.T) {
+	h := newHarness(t)
+	var wg sync.WaitGroup
+	for g := 0; g < 4; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			m := fmt.Sprintf("m%d", g)
+			for i := 0; i < 50; i++ {
+				_, _ = h.b.Hook(t0, HookEvent{Kind: KindPostEdit, Member: m, Agent: AgentCodex, SessionID: "s", Where: whereOf(m),
+					ToolUseID: fmt.Sprint(i), Paths: refs(fmt.Sprintf("p/%d.go", i))})
+			}
+		}(g)
+	}
+	for i := 0; i < 20; i++ {
+		if _, _, err := h.b.Snapshot(t0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	wg.Wait()
+}
+
+// A view lists a claim's newest files, up to a bound, and counts them all.
+func TestViewBoundsFilesPerClaim(t *testing.T) {
+	h := newHarness(t)
+	h.hook(KindPrompt, "alice", "a1")
+	var files []PathRef
+	for i := 0; i < maxViewFiles+20; i++ {
+		files = append(files, PathRef{Path: fmt.Sprintf("gen/f%04d.go", i)})
+	}
+	if _, err := h.b.Hook(h.now, HookEvent{Kind: KindHeartbeat, Member: "alice", Agent: AgentWatch, SessionID: "w",
+		Where: whereOf("alice"), Footprint: &Footprint{Files: files}}); err != nil {
+		t.Fatal(err)
+	}
+	cv := h.b.View(h.now, repo).Claims[0]
+	if len(cv.Files) != maxViewFiles || cv.FileCount != maxViewFiles+20 || !cv.Truncated {
+		t.Fatalf("files %d, count %d, truncated %v", len(cv.Files), cv.FileCount, cv.Truncated)
 	}
 }
