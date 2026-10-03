@@ -155,8 +155,13 @@ func TestExclusiveIntentRefusesOtherAgentsEveryTime(t *testing.T) {
 	if tool := h.toolOf("bob"); tool != "Edit" {
 		t.Fatalf("during an allowed edit bob's agent is in %q", tool)
 	}
-	if got := h.activities("conflict"); len(got) != 2 || got[0].Severity != Block || got[0].Decision != Refuse {
+	// The retry is refused again but is not a new collision: one activity
+	// (and one webhook), one refusal counted, every check counted.
+	if got := h.activities("conflict"); len(got) != 1 || got[0].Severity != Block || got[0].Decision != Refuse {
 		t.Fatalf("conflict activities = %+v", got)
+	}
+	if st := h.b.View(h.now, repo).Stats; st.Checks != 3 || st.Refused != 1 || st.Blocks != 1 {
+		t.Fatalf("stats = %+v", st)
 	}
 }
 

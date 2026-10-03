@@ -881,7 +881,6 @@ func (b *Board) decide(now time.Time, c *Claim, s *Session, paths []PathRef, noA
 			s.Acked[k] = true
 		}
 	}
-	b.count(now, c.Repo, all, refused, asked, warned)
 	acted := refused
 	if len(acted) == 0 {
 		acted = asked
@@ -889,7 +888,17 @@ func (b *Board) decide(now time.Time, c *Claim, s *Session, paths []PathRef, noA
 	if len(acted) == 0 {
 		acted = warned
 	}
-	if len(acted) > 0 {
+	// A retry that meets the same conflicts again is checked, but it is not
+	// a new collision: counting it, or announcing it, would inflate both.
+	fresh := false
+	for _, cf := range acted {
+		if k := "told|" + ackKey(cf); !s.Acked[k] {
+			s.Acked[k] = true
+			fresh = true
+		}
+	}
+	b.count(now, c.Repo, all, refused, asked, warned, fresh)
+	if fresh {
 		top := mostSevere(acted)
 		b.record(Activity{At: now, Kind: "conflict", Repo: c.Repo, Member: c.Member, ClaimID: c.ID, Session: s.ID, Agent: s.Agent,
 			Paths: pathsOf(paths), Severity: top.Severity, Decision: res.Decision,
@@ -900,9 +909,12 @@ func (b *Board) decide(now time.Time, c *Claim, s *Session, paths []PathRef, noA
 
 // count adds one checked edit to the repository's stats, under its most
 // severe conflict and what was done about it.
-func (b *Board) count(now time.Time, repo string, all, refused, asked, warned []Conflict) {
+func (b *Board) count(now time.Time, repo string, all, refused, asked, warned []Conflict, fresh bool) {
 	st := b.statsOf(repo, now)
 	st.Checks++
+	if !fresh && len(refused)+len(asked)+len(warned) > 0 {
+		return
+	}
 	if len(all) > 0 {
 		switch mostSevere(all).Severity {
 		case Block:

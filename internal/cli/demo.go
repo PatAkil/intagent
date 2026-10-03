@@ -139,7 +139,7 @@ func simulate(ctx context.Context, b *board.Board, every time.Duration) {
 		func() { carol.edit(b, "apps/web/src/checkout/Summary.tsx") },
 		func() { alice.edit(b, "services/payments/retry/backoff.go") },
 		func() { bob.prompt(b, "Also cover the refund path"); bob.edit(b, "services/billing/refunds.go") },
-		func() { bob.edit(b, "services/payments/client.go") },
+		func() { bob.edit(b, "services/billing/tax.go") },
 		func() { alice.hook(b, board.KindToolEnd, "Bash"); alice.hook(b, board.KindToolStart, "Bash") },
 		func() { carol.hook(b, board.KindStop, "") },
 	}
