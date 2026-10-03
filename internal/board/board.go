@@ -10,6 +10,7 @@ import (
 	"encoding/base32"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -1263,7 +1264,19 @@ func (b *Board) Sweep(now time.Time) {
 	b.lock()
 	defer b.unlock()
 	changed := false
-	for k, s := range b.sessions {
+	// In the order they went quiet, so announcements read in time order.
+	keys := make([]string, 0, len(b.sessions))
+	for k := range b.sessions {
+		keys = append(keys, k)
+	}
+	slices.SortFunc(keys, func(x, y string) int {
+		if c := b.sessions[x].LastSeen.Compare(b.sessions[y].LastSeen); c != 0 {
+			return c
+		}
+		return strings.Compare(x, y)
+	})
+	for _, k := range keys {
+		s := b.sessions[k]
 		st := b.state(now, s)
 		if st != s.Reported {
 			if st == StateStalled || st == StateGone {
@@ -1287,7 +1300,13 @@ func (b *Board) Sweep(now time.Time) {
 		}
 	}
 	live := b.liveClaims(now)
-	for _, c := range b.claims {
+	ids := make([]string, 0, len(b.claims))
+	for id := range b.claims {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	for _, id := range ids {
+		c := b.claims[id]
 		if live[c.ID] {
 			continue
 		}

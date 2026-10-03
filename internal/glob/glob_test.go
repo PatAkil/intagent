@@ -36,7 +36,9 @@ func TestCleanPath(t *testing.T) {
 func TestCleanPattern(t *testing.T) {
 	t.Parallel()
 	for in, want := range map[string]string{
-		"services/payments/": "services/payments",
+		"services/payments/": "services/payments/**",
+		"conf.d/":            "conf.d/**",
+		"logs/**/":           "logs/**",
 		"**/*.go":            "**/*.go",
 		"a/[bc]/*.ts":        "a/[bc]/*.ts",
 	} {
@@ -107,6 +109,15 @@ func TestOverlap(t *testing.T) {
 		{"a/*/c", "a/b/d", false},
 		{"a/*/c", "a/b/c/d", true},
 		{"src/[ab]/x.go", "src/a/x.go", true},
+		// A file covers nothing below it; anything else might be a directory.
+		{"**/*.proto", "docs/readme.md", false},
+		{"**/*_test.go", "services/payments/retry.go", false},
+		{"**/*.proto", "docs", true},
+		{"**/*.proto", "build/Makefile", true},
+		{"**/*.proto", "pkg/v1.2", true},
+		{"**/*.proto", "conf.d/**", true},
+		{"docs/readme.md", "docs/readme.md", true},
+		{"**/readme.md", "docs/readme.md", true},
 	}
 	for _, tt := range tests {
 		if got := Overlap(tt.a, tt.b); got != tt.want {
@@ -146,4 +157,22 @@ func FuzzMatchDoesNotPanic(f *testing.F) {
 		_ = Match(pattern, name)
 		_ = Overlap(pattern, name)
 	})
+}
+
+// Overlap never misses a path that Match puts under both patterns.
+func TestOverlapAgreesWithMatch(t *testing.T) {
+	t.Parallel()
+	patterns := []string{"**", "**/*.proto", "**/*.go", "docs", "docs/**", "docs/readme.md", "docs/*.md", "pkg/v1.2",
+		"pkg/**/x.go", "build/Makefile", "a/*/c", "conf.d/**", "*.md", "src/[ab]/x.go", "**/readme.md"}
+	paths := []string{"docs/readme.md", "docs/a.proto", "docs/readme.md/x.proto", "pkg/v1.2/x.go", "pkg/x.go",
+		"build/Makefile/a.proto", "a/b/c", "a/b/c/d.go", "conf.d/x.proto", "README.md", "src/a/x.go", "x.proto"}
+	for _, a := range patterns {
+		for _, b := range patterns {
+			for _, p := range paths {
+				if Match(a, p) && Match(b, p) && !Overlap(a, b) {
+					t.Errorf("Overlap(%q, %q) = false, but both match %q", a, b, p)
+				}
+			}
+		}
+	}
 }
