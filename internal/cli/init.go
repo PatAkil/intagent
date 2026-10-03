@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -111,10 +112,15 @@ func (a *App) initRepo(ctx context.Context, args []string) error {
 	}
 
 	data, _ := json.MarshalIndent(rc, "", "  ")
-	if err := os.WriteFile(filepath.Join(root, client.RepoFileName), append(data, '\n'), 0o644); err != nil {
-		return err
+	data = append(data, '\n')
+	var done []string
+	repoFile := filepath.Join(root, client.RepoFileName)
+	if old, err := os.ReadFile(repoFile); err != nil || !bytes.Equal(old, data) {
+		if err := os.WriteFile(repoFile, data, 0o644); err != nil {
+			return err
+		}
+		done = append(done, client.RepoFileName+" (server "+rc.URL+")")
 	}
-	done := []string{client.RepoFileName + " (server " + rc.URL + ")"}
 	for _, ag := range agents {
 		wrote, err := installAgent(root, ag)
 		if err != nil {
@@ -122,6 +128,7 @@ func (a *App) initRepo(ctx context.Context, args []string) error {
 		}
 		done = append(done, wrote...)
 	}
+	repoChanged := len(done) > 0
 	for ag, p := range userFiles {
 		ok, err := installUser(ag, p)
 		if err != nil {
@@ -156,7 +163,14 @@ func (a *App) initRepo(ctx context.Context, args []string) error {
 			done = append(done, p+" (pre-commit guard)")
 		}
 	}
-	a.initReport(root, rc.URL, agents, done, *trust)
+	codexUntrusted := false
+	if slices.Contains(agents, "codex") && !*trust {
+		if ct, err := codexTrustFor(ctx, wt); err == nil {
+			missing, err := ct.problems()
+			codexUntrusted = err != nil || len(missing) > 0
+		}
+	}
+	a.initReport(root, rc.URL, agents, done, repoChanged, codexUntrusted)
 	return nil
 }
 
@@ -247,16 +261,26 @@ func installUser(agent, p string) (bool, error) {
 	return installClaude(p)
 }
 
-func (a *App) initReport(root, url string, agents, done []string, trusted bool) {
-	fmt.Fprintf(a.Out, "Enrolled %s in intagent.\n\nWrote:\n", root)
-	for _, d := range done {
-		fmt.Fprintf(a.Out, "  %s\n", d)
+func (a *App) initReport(root, url string, agents, done []string, repoChanged, codexUntrusted bool) {
+	if repoChanged {
+		fmt.Fprintf(a.Out, "Enrolled %s in intagent.\n", root)
+	} else {
+		fmt.Fprintf(a.Out, "%s is already enrolled; nothing in the repository changed.\n", root)
 	}
-	fmt.Fprintf(a.Out, "\nNext:\n  1. Commit these files so every member's agents connect.\n  2. Each member runs: intagent login --url %s\n  3. Check the setup with: intagent doctor\n", url)
+	if len(done) > 0 {
+		fmt.Fprintln(a.Out, "\nWrote:")
+		for _, d := range done {
+			fmt.Fprintf(a.Out, "  %s\n", d)
+		}
+	}
+	if repoChanged {
+		fmt.Fprintf(a.Out, "\nNext:\n  1. Commit these files so every member's agents connect.\n  2. Each member runs, in their clone: "+
+			"intagent login --url %s, then intagent doctor\n", url)
+	}
 	if _, err := exec.LookPath("intagent"); err != nil {
 		fmt.Fprintln(a.Out, "\nNote: 'intagent' is not on your PATH. Agents run it by name, so install it there (go install github.com/patakil/intagent/cmd/intagent@latest).")
 	}
-	if slices.Contains(agents, "codex") && !trusted {
+	if codexUntrusted {
 		fmt.Fprintln(a.Out, "\nCodex runs project hooks only for trusted projects and trusted hooks. Run 'intagent init --trust-codex' or approve them in Codex's /hooks screen.")
 	}
 	if slices.Contains(agents, "claude-code") {

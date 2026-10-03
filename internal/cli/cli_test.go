@@ -578,7 +578,11 @@ func TestDoctorAndHelp(t *testing.T) {
 		t.Fatalf("doctor before init: %d\n%s", code, out)
 	}
 	tm.enrol(map[string]string{"alice": a})
-	out, _, _ = tm.as("alice", a, "", "doctor")
+	out, _, code = tm.as("alice", a, "", "doctor")
+	// No Codex on this machine: an aside, not something to fix.
+	if code != 0 || !strings.Contains(out, "Codex: if you use it here") {
+		t.Fatalf("doctor without Codex: %d\n%s", code, out)
+	}
 	if !strings.Contains(out, "knows you as alice") || !strings.Contains(out, "Claude Code hooks (Copilot CLI runs them too): .claude/settings.json") {
 		t.Fatalf("doctor after init:\n%s", out)
 	}
@@ -866,7 +870,7 @@ func TestTrustCodexCorrectsEntriesAndDoctorChecksThem(t *testing.T) {
 	key := filepath.Join(a, ".codex/hooks.json") + ":stop:0:0"
 	writeFile(t, cfg, "model = \"gpt-6\"  # mine\n\n[projects.\""+a+"\"]\ntrust_level = \"untrusted\"\n\n[hooks.state.\""+key+"\"]\ntrusted_hash = \"sha256:old\"\n")
 	out, _, code := tm.as("alice", a, "", "doctor")
-	if code != 1 || !strings.Contains(out, "Codex will not run intagent's hooks") || !strings.Contains(out, "of intagent's 6 hooks") {
+	if code != 1 || !strings.Contains(out, "Codex ignores intagent's hooks here until you run 'intagent init --trust-codex'") || !strings.Contains(out, "of intagent's 6 hooks") {
 		t.Fatalf("doctor before trusting: %d\n%s", code, out)
 	}
 	out, errOut, code := tm.as("alice", a, "", "init", "--trust-codex")
@@ -932,7 +936,8 @@ func TestInitRerunKeepsTheTeamsAgents(t *testing.T) {
 		t.Fatalf("init: %s %s", out, errOut)
 	}
 	writeFile(t, filepath.Join(a, ".gemini/settings.json"), "{ // the team's own, with comments\n}\n")
-	if out, errOut, code := tm.as("alice", a, "", "init", "--trust-codex"); code != 0 {
+	if out, errOut, code := tm.as("alice", a, "", "init", "--trust-codex"); code != 0 || !strings.Contains(out, "already enrolled; nothing in the repository changed") ||
+		strings.Contains(out, "Commit these files") {
 		t.Fatalf("re-run: %s %s", out, errOut)
 	}
 	var rc struct{ Agents []string }

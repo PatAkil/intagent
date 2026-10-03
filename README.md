@@ -93,27 +93,31 @@ Open `http://<server>:7400/` for the live dashboard and sign in with any member'
 network, serve HTTPS: `--tls-cert cert.pem --tls-key key.pem`, or a reverse proxy that terminates TLS and sets
 `X-Forwarded-Proto: https`.
 
-**Each member, once:**
-
-```sh
-intagent login --url https://intagent.example.com   # paste your token
-```
-
-**Each repository, once** (then commit the files it writes):
+**Each repository, once** (one person; then commit the files it writes):
 
 ```sh
 intagent init --url https://intagent.example.com
-intagent doctor
 ```
 
-`init` writes `.intagent.json` (the server for this repository) and wires up every supported agent: Claude Code
-(`.claude/settings.json` hooks, `.mcp.json`), Codex (`.codex/hooks.json`, `.codex/config.toml`), Cursor
-(`.cursor/hooks.json`, `.cursor/mcp.json`) and Gemini CLI (`.gemini/settings.json`); GitHub Copilot CLI runs Claude
-Code's. It merges into existing files,
-keeps everyone else's hooks, and replaces only its own, so running it again after an upgrade migrates the wiring. It
-reads every file first: one it cannot edit (JSON with comments, say) stops it before anything is written.
-The hooks do nothing for a teammate who has not installed intagent. Add `--git-hook` for a pre-commit guard and
-`--areas 'services/*,libs/*'` to define your monorepo's areas.
+`init` writes `.intagent.json` (the server for this repository and the agents it wires) and wires up every supported
+agent: Claude Code (`.claude/settings.json` hooks, `.mcp.json`), Codex (`.codex/hooks.json`, `.codex/config.toml`),
+Cursor (`.cursor/hooks.json`, `.cursor/mcp.json`) and Gemini CLI (`.gemini/settings.json`); GitHub Copilot CLI runs
+Claude Code's. Leave agents out with `--agents claude-code,codex`. It merges into existing files, keeps everyone
+else's hooks, and replaces only its own, so running it again after an upgrade migrates the wiring. It reads every
+file first: one it cannot edit (JSON with comments, say) stops it before anything is written. The hooks do nothing
+for a teammate who has not installed intagent. `--areas 'services/*,libs/*'` defines your monorepo's areas.
+
+**Each member, in each clone:**
+
+```sh
+intagent login --url https://intagent.example.com   # once per machine; paste your token
+intagent init --git-hook                            # optional: a pre-commit guard (git does not share hooks)
+intagent init --trust-codex                         # Codex users: Codex runs only hooks it trusts
+intagent doctor                                     # checks every link, and says what to fix
+```
+
+`init` in a clone that is already enrolled keeps the team's choices and only adds what you asked for. Re-run
+`--trust-codex` after upgrading intagent: Codex stops trusting a hook whose command changes.
 
 ## Supported agents
 

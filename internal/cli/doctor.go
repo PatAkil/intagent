@@ -86,7 +86,7 @@ func (a *App) doctor(ctx context.Context, args []string) error {
 		}
 	}
 	if slices.Contains(wired, "codex") {
-		a.doctorCodexTrust(ctx, ws, ok, bad)
+		a.doctorCodexTrust(ctx, ws, ok, bad, info)
 	}
 	if dir != root {
 		info("you are in a subdirectory: Claude Code and Gemini CLI read project hooks only from the directory they start in, " +
@@ -120,10 +120,15 @@ var agentChecks = map[string][]wiringCheck{
 
 // doctorCodexTrust checks the two trust gates without which Codex silently
 // runs none of the project's hooks.
-func (a *App) doctorCodexTrust(ctx context.Context, ws *workspace, ok, bad func(string, ...any)) {
+func (a *App) doctorCodexTrust(ctx context.Context, ws *workspace, ok, bad, info func(string, ...any)) {
 	ct, err := codexTrustFor(ctx, ws.wt)
 	if err != nil {
 		bad("Codex trust: %v", err)
+		return
+	}
+	if _, err := os.Stat(ct.config); err != nil {
+		// No Codex on this machine, as far as can be told: nothing to fix.
+		info("Codex: if you use it here, run 'intagent init --trust-codex' once; Codex ignores hooks it has not trusted")
 		return
 	}
 	missing, err := ct.problems()
@@ -131,7 +136,7 @@ func (a *App) doctorCodexTrust(ctx context.Context, ws *workspace, ok, bad func(
 	case err != nil:
 		bad("Codex trust: %v", err)
 	case len(missing) > 0:
-		bad("Codex will not run intagent's hooks: %s does not trust %s; run 'intagent init --trust-codex'",
+		bad("Codex ignores intagent's hooks here until you run 'intagent init --trust-codex' (%s does not trust %s)",
 			ct.config, strings.Join(missing, ", "))
 	default:
 		ok("Codex trusts this project and intagent's hooks (%s)", ct.config)
