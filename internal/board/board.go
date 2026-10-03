@@ -688,7 +688,9 @@ func (b *Board) reportUnchecked(now time.Time, c *claim, s *session, added []Pat
 			if cf.Severity != SeverityBlock || cf.SameClaim {
 				continue
 			}
-			if k := "unchecked|" + cf.ClaimID + "|" + p.Path; !c.Alerted[k] {
+			// Once per file, reservation and policy: a new reservation, or a
+			// policy that now refuses what it only warned about, is news.
+			if k := fmt.Sprintf("unchecked|%s|%s|%s|%d|%s", action, cf.ClaimID, cf.Pattern, cf.Since.UnixNano(), p.Path); !c.Alerted[k] {
 				if c.Alerted == nil {
 					c.Alerted = map[string]bool{}
 				}
@@ -705,9 +707,9 @@ func (b *Board) reportUnchecked(now time.Time, c *claim, s *session, added []Pat
 	if len(paths) == 0 {
 		return
 	}
-	why := "inside their exclusive intent" // a breach's kind already says it was not checked
+	why := "holds it exclusively" // a breach's kind already says it was not checked
 	if action == ActionWarn {
-		why = "changed without a check, inside their exclusive intent"
+		why = "holds it exclusively; the change was not checked"
 	}
 	b.record(Activity{At: now, Kind: ActivityConflict, Repo: c.Repo, Member: c.Member, ClaimID: c.ID, Session: s.ID, Agent: s.Agent,
 		Paths: paths, Severity: SeverityBlock, Decision: DecisionAllow, Breach: action != ActionWarn,
@@ -725,14 +727,25 @@ func taskOf(cf Conflict) string {
 	return " (" + quote(cf.Task) + ")"
 }
 
-// breachedReservation reports whether a conflict is another claim's change to
-// a file inside c's exclusive intent, made since c declared it.
-func breachedReservation(c *claim, cf Conflict) bool {
-	if cf.Severity != SeverityOverlap || cf.Pattern != "" || cf.SameClaim {
+// breachedReservation reports whether a conflict is a teammate's change to a
+// file inside c's exclusive intent that the board learned of after c declared
+// it: a hook reports a change as it is made, git when it first sees it. A
+// change the board knew of then was among the overlaps the declaration
+// reported, and still counts in full.
+func (b *Board) breachedReservation(c *claim, cf Conflict) bool {
+	if cf.Severity != SeverityOverlap || cf.SameClaim {
 		return false
 	}
+	o := b.claims[cf.ClaimID]
+	if o == nil {
+		return false
+	}
+	t, ok := o.Footprint[cf.Path]
+	if !ok {
+		return false // a plan, not a change
+	}
 	for _, in := range c.Intents {
-		if in.Mode == ModeExclusive && glob.Match(in.Pattern, cf.Path) && !cf.Since.Before(in.DeclaredAt) {
+		if in.Mode == ModeExclusive && glob.Match(in.Pattern, cf.Path) && !t.At.Before(in.DeclaredAt) {
 			return true
 		}
 	}
@@ -932,12 +945,28 @@ func (b *Board) decide(now time.Time, c *claim, s *session, paths []PathRef, noA
 	}
 	b.count(now, c.Repo, v, len(fresh) > 0)
 	if len(fresh) > 0 {
-		top := mostSevere(fresh)
-		b.record(Activity{At: now, Kind: ActivityConflict, Repo: c.Repo, Member: c.Member, ClaimID: c.ID, Session: s.ID, Agent: s.Agent,
-			Paths: pathsOf(paths), Severity: top.Severity, Decision: res.Decision,
-			Text: fmt.Sprintf("%s → %s (%s)", top.Path, top.Member, top.Why)})
+		b.announce(now, c, s, paths, res.Decision, v.acted(), fresh)
 	}
 	return res
+}
+
+// announce records a collision under the conflict that decided the answer,
+// a new one when one of those decided it, and names the other new ones.
+func (b *Board) announce(now time.Time, c *claim, s *session, paths []PathRef, d Decision, acted, fresh []Conflict) {
+	top := mostSevere(acted)
+	if f := mostSevere(fresh); f.Severity == top.Severity {
+		top = f
+	}
+	why := top.Why
+	named := map[string]bool{top.ClaimID: true}
+	for _, cf := range fresh {
+		if !named[cf.ClaimID] {
+			named[cf.ClaimID] = true
+			why += fmt.Sprintf("; also %s on %s: %s", cf.Member, cf.Path, cf.Why)
+		}
+	}
+	b.record(Activity{At: now, Kind: ActivityConflict, Repo: c.Repo, Member: c.Member, ClaimID: c.ID, Session: s.ID, Agent: s.Agent,
+		Paths: pathsOf(paths), Severity: top.Severity, Decision: d, Text: fmt.Sprintf("%s → %s (%s)", top.Path, top.Member, why)})
 }
 
 // judge applies the policy to the conflicts on every path being written. A
@@ -950,7 +979,7 @@ func (b *Board) judge(now time.Time, c *claim, s *session, paths []PathRef, noAs
 			v.all = append(v.all, cf)
 			key := ackKey(cf)
 			action := b.cfg.Policy.action(cf.Severity)
-			if action == ActionBump && breachedReservation(c, cf) {
+			if action == ActionBump && b.breachedReservation(c, cf) {
 				// A teammate changed a file inside this claim's reservation
 				// after it was made: the owner is told, not stopped.
 				action = ActionWarn

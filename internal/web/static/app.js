@@ -1007,7 +1007,7 @@
   }
 
   function filesBlock(c, ax) {
-    const box = el('div', { class: 'block' }, blockHead('Changed files', c.fileCount + (c.truncated && c.fileCount <= c.files.length ? '+' : '')));
+    const box = el('div', { class: 'block' }, blockHead('Changed files', c.fileCount + (c.truncated ? '+' : '')));
     if (!c.files.length) {
       box.appendChild(el('p', { class: 'none' }, 'No changed files yet'));
       return box;
@@ -1036,6 +1036,10 @@
         data: { focus: 'files:' + c.id },
         on: { click: () => { if (S.expanded.has(c.id)) S.expanded.delete(c.id); else S.expanded.add(c.id); renderBoard(); } },
       }, icon('chevron', open ? 'flip' : ''), open ? 'Show fewer' : 'Show all ' + rows.length + ' files'));
+    }
+    if (c.fileCount > c.files.length) {
+      box.appendChild(el('p', { class: 'none' }, 'Listing the ' + c.files.length + ' most recent of ' + c.fileCount +
+        ' files, with any a teammate also changed.'));
     }
     if (c.truncated) {
       box.appendChild(el('p', { class: 'none' }, 'Git reported more changed files than intagent keeps per claim.'));
@@ -1258,14 +1262,18 @@
       }
       case 'intent.released': return [m, ' released ', pathList(a.paths, 3)];
       case 'note.sent': {
+        // The server names the path a note went to; activities saved before
+        // it did are told apart by a slash.
+        const path = arr(a.paths)[0];
+        const prefix = path ? 'to whoever works on ' + path + ': ' : '';
+        if (path && text.startsWith(prefix)) {
+          return [m, ' sent a note to whoever works on ', pathNode(String(path)), ': ', el('q', null, text.slice(prefix.length))];
+        }
         const mm = /^to ([^:]+): ([\s\S]*)$/.exec(text);
         if (!mm) return [m, ' sent a note: ', el('q', null, text)];
-        const path = arr(a.paths)[0];
-        if (path) {
-          const body = text.slice(text.indexOf(': ', ('to whoever works on ' + path).length) + 2);
-          return [m, ' sent a note to whoever works on ', pathNode(String(path)), ': ', el('q', null, body)];
-        }
-        return [m, ' sent ', strong(mm[1]), ' a note: ', el('q', null, mm[2])];
+        return mm[1].includes('/')
+          ? [m, ' sent a note to whoever works on ', pathNode(mm[1]), ': ', el('q', null, mm[2])]
+          : [m, ' sent ', strong(mm[1]), ' a note: ', el('q', null, mm[2])];
       }
       case 'conflict': return conflictSentence(a);
       default: return [m, ' ', code(String(a.kind || 'event')), text ? ': ' + text : ''];

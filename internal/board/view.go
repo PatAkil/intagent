@@ -26,16 +26,19 @@ type FileView struct {
 
 // ClaimView is a claim as the dashboard and CLI show it.
 type ClaimView struct {
-	ID        string        `json:"id"`
-	Member    string        `json:"member"`
-	Host      string        `json:"host"`
-	Worktree  string        `json:"worktree"`
-	Branch    string        `json:"branch,omitempty"`
-	Task      string        `json:"task,omitempty"`
-	Active    bool          `json:"active"`
-	Intents   []Intent      `json:"intents"`
-	Files     []FileView    `json:"files"`
-	FileCount int           `json:"file_count"`
+	ID       string     `json:"id"`
+	Member   string     `json:"member"`
+	Host     string     `json:"host"`
+	Worktree string     `json:"worktree"`
+	Branch   string     `json:"branch,omitempty"`
+	Task     string     `json:"task,omitempty"`
+	Active   bool       `json:"active"`
+	Intents  []Intent   `json:"intents"`
+	Files    []FileView `json:"files"`
+	// FileCount counts the claim's changed files; Files lists at most
+	// maxViewFiles of them, the newest, and the contested ones besides.
+	FileCount int `json:"file_count"`
+	// Truncated says git reported more changed files than the board keeps.
 	Truncated bool          `json:"truncated,omitempty"`
 	Sessions  []SessionView `json:"sessions"`
 	Pending   int           `json:"pending_inbox"`
@@ -108,7 +111,7 @@ func (b *Board) View(now time.Time, repo string) View {
 		if len(files) > maxViewFiles {
 			// A view goes to every dashboard on every refresh; the newest files
 			// are the ones anyone acts on, and contested ones are hot spots.
-			files, cv.Truncated = capFiles(c, files, claims, changedBy), true
+			files = capFiles(files, changedBy)
 		}
 		for _, p := range files {
 			t := c.Footprint[p]
@@ -192,19 +195,17 @@ func (b *Board) Since(repo string, seq uint64) []Activity {
 // Text renders a view for a person or an agent reading a terminal.
 func (v View) Text() string { return renderView(v) }
 
-// capFiles keeps a claim's newest files and, past the cap, the ones another
-// claim also changed or reserved.
-func capFiles(c *claim, files []string, claims []*claim, changedBy map[string]int) []string {
+// capFiles keeps a claim's newest files and, past the cap, up to as many
+// again that another claim also changed: the dashboard finds hot spots in the
+// files a view lists. Every claim's files are capped while the board is
+// locked, so this does no more than a map lookup per file.
+func capFiles(files []string, changedBy map[string]int) []string {
 	out := files[:maxViewFiles:maxViewFiles]
 	for _, p := range files[maxViewFiles:] {
-		contested := changedBy[p] > 1
-		for _, o := range claims {
-			if contested {
-				break
-			}
-			contested = o.ID != c.ID && coveredByIntent(o, p)
+		if len(out) == 2*maxViewFiles {
+			break
 		}
-		if contested {
+		if changedBy[p] > 1 {
 			out = append(out, p)
 		}
 	}
@@ -212,5 +213,5 @@ func capFiles(c *claim, files []string, claims []*claim, changedBy map[string]in
 }
 
 // maxViewFiles bounds the files a view lists per claim, contested files
-// aside; FileCount has them all.
+// aside; FileCount counts them all.
 const maxViewFiles = 500

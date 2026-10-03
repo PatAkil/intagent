@@ -1181,17 +1181,18 @@ func TestViewBoundsFilesPerClaim(t *testing.T) {
 		t.Fatal(err)
 	}
 	cv := h.b.View(h.now, repo).Claims[0]
-	if len(cv.Files) != maxViewFiles || cv.FileCount != maxViewFiles+20 || !cv.Truncated {
-		t.Fatalf("files %d, count %d, truncated %v", len(cv.Files), cv.FileCount, cv.Truncated)
+	if len(cv.Files) != maxViewFiles || cv.FileCount != maxViewFiles+20 || cv.Truncated {
+		t.Fatalf("files %d, count %d, git truncated %v", len(cv.Files), cv.FileCount, cv.Truncated)
 	}
 	mustContain(t, renderView(h.b.View(h.now, repo)), fmt.Sprintf("changed %d files", maxViewFiles+20),
 		fmt.Sprintf("and %d more", maxViewFiles+20-6))
 
-	// Past the cap, a file a teammate also changed, or reserved, is still listed:
-	// the dashboard finds hot spots in the files a view lists.
+	// Past the cap, a file a teammate also changed is still listed: the
+	// dashboard finds hot spots in the files a view lists. One a teammate only
+	// reserved is not, or a broad reservation would lift the cap.
 	h.hook(KindPrompt, "bob", "b1")
 	h.hook(KindPostEdit, "bob", "b1", "gen/f0510.go")
-	h.declare("bob", ModeShared, "regenerate", "gen/f0515.go")
+	h.declare("bob", ModeShared, "regenerate", "gen/**")
 	listed := map[string]bool{}
 	for _, c := range h.b.View(h.now, repo).Claims {
 		if c.Member == "alice" {
@@ -1200,8 +1201,36 @@ func TestViewBoundsFilesPerClaim(t *testing.T) {
 			}
 		}
 	}
-	if len(listed) != maxViewFiles+2 || !listed["gen/f0510.go"] || !listed["gen/f0515.go"] {
-		t.Fatalf("alice's listed files: %d, contested ones listed: %v %v", len(listed), listed["gen/f0510.go"], listed["gen/f0515.go"])
+	if len(listed) != maxViewFiles+1 || !listed["gen/f0510.go"] {
+		t.Fatalf("alice's listed files: %d, the contested one listed: %v", len(listed), listed["gen/f0510.go"])
+	}
+}
+
+// Capping every claim's files happens while the board is locked, on every
+// dashboard refresh: it must stay cheap with many large claims.
+func TestViewOfManyLargeClaimsIsCheap(t *testing.T) {
+	h := newHarness(t)
+	for m := range 20 {
+		member := fmt.Sprintf("m%02d", m)
+		var files []PathRef
+		for i := range 1500 {
+			files = append(files, PathRef{Path: fmt.Sprintf("svc/%s/f%04d.go", member, i), Area: "svc/" + member})
+		}
+		if _, err := h.b.Hook(h.now, HookEvent{Kind: KindHeartbeat, Member: member, Agent: AgentWatch, SessionID: "w",
+			Where: whereOf(member), Footprint: &Footprint{Files: files}}); err != nil {
+			t.Fatal(err)
+		}
+		h.declare(member, ModeShared, "everything", "**")
+	}
+	start := time.Now()
+	v := h.b.View(h.now, repo)
+	if took := time.Since(start); took > 500*time.Millisecond {
+		t.Fatalf("a view of 20 claims of 1500 files took %s", took)
+	}
+	for _, c := range v.Claims {
+		if len(c.Files) != maxViewFiles {
+			t.Fatalf("%s lists %d files", c.Member, len(c.Files))
+		}
 	}
 }
 
@@ -1345,5 +1374,96 @@ func TestNoteActivityNamesItsRecipient(t *testing.T) {
 	if len(acts) != 3 || acts[0].Text != "to jane.doe: rebase please" || acts[1].Text != "to jane.doe: rebase please" ||
 		acts[2].Text != "to whoever works on README.md: rebase please" || len(acts[2].Paths) != 1 || len(acts[0].Paths) != 0 {
 		t.Fatalf("note activities = %+v", acts)
+	}
+}
+
+func scan(t *testing.T, h *harness, member, session string, files ...string) HookResult {
+	t.Helper()
+	res, err := h.b.Hook(h.now, HookEvent{Kind: KindToolEnd, Member: member, Agent: AgentCodex, SessionID: session, Where: whereOf(member),
+		Tool: "Bash", Footprint: &Footprint{Files: refs(files...)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return res
+}
+
+func breaches(h *harness) []Activity {
+	var out []Activity
+	for _, a := range h.activities(ActivityConflict) {
+		if a.Breach {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// A breach is remembered per reservation: a teammate's change inside the
+// next reservation of the same files is reported again.
+func TestBreachOfALaterReservationIsReported(t *testing.T) {
+	h := newHarness(t)
+	h.hook(KindPrompt, "alice", "a1")
+	h.declare("alice", ModeExclusive, "first task", "svc/pay/**")
+	h.hook(KindPrompt, "bob", "b1")
+	scan(t, h, "bob", "b1", "svc/pay/retry.go")
+	scan(t, h, "bob", "b1") // bob undoes it
+	if _, err := h.b.Release(h.now, ReleaseRequest{Member: "alice", Where: whereOf("alice")}); err != nil {
+		t.Fatal(err)
+	}
+	h.advance(time.Hour)
+	h.hook(KindPrompt, "alice", "a1")
+	h.hook(KindPrompt, "bob", "b1")
+	h.declare("alice", ModeExclusive, "second task", "svc/pay/**")
+	res := scan(t, h, "bob", "b1", "svc/pay/retry.go")
+	if got := breaches(h); len(got) != 2 || !strings.Contains(res.Context, "reserved") {
+		t.Fatalf("breaches = %d, bob's agent told %q", len(got), res.Context)
+	}
+}
+
+// The owner is told, not stopped, about a teammate's change the board learned
+// of after the reservation, whatever else that teammate declared.
+func TestOwnerIsNotBumpedWhenTheBreacherAlsoDeclaredShared(t *testing.T) {
+	h := newHarness(t)
+	h.hook(KindPrompt, "alice", "a1")
+	h.declare("alice", ModeExclusive, "mine", "svc/pay/**")
+	h.hook(KindPrompt, "bob", "b1")
+	h.declare("bob", ModeShared, "touch every service", "svc/**")
+	h.advance(time.Minute)
+	scan(t, h, "bob", "b1", "svc/pay/retry.go")
+	if len(breaches(h)) != 1 {
+		t.Fatal("no breach recorded")
+	}
+	if res := h.hook(KindPreEdit, "alice", "a1", "svc/pay/retry.go"); res.Decision != DecisionAllow {
+		t.Fatalf("alice in her own reservation: %s\n%s", res.Decision, res.Reason)
+	}
+	// Bob's plan alone, without a change to the file, still bumps her.
+	if res := h.hook(KindPreEdit, "alice", "a1", "svc/pay/other.go"); res.Decision != DecisionRefuse {
+		t.Fatalf("alice on a file bob only plans to change: %s", res.Decision)
+	}
+}
+
+// A retry still refused by a reservation is announced as that refusal, and a
+// teammate newly in the way is named besides; it is not shown as a bump that
+// a retry would get past.
+func TestDeniedRetryIsAnnouncedUnderTheReservation(t *testing.T) {
+	h := newHarness(t)
+	h.hook(KindPrompt, "alice", "a1")
+	h.declare("alice", ModeExclusive, "A", "a/**")
+	h.hook(KindPrompt, "bob", "b1")
+	h.hook(KindPreEdit, "bob", "b1", "a/x.go")
+	h.hook(KindPrompt, "carol", "c1")
+	scan(t, h, "carol", "c1", "a/x.go")
+	if res := h.hook(KindPreEdit, "bob", "b1", "a/x.go"); res.Decision != DecisionRefuse {
+		t.Fatalf("bob's retry: %s", res.Decision)
+	}
+	var mine []Activity
+	for _, a := range h.activities(ActivityConflict) {
+		if a.Member == "bob" {
+			mine = append(mine, a)
+		}
+	}
+	last := mine[len(mine)-1]
+	if len(mine) != 2 || last.Severity != SeverityBlock || !strings.HasPrefix(last.Text, "a/x.go → alice (") ||
+		!strings.Contains(last.Text, "; also carol on a/x.go: ") {
+		t.Fatalf("bob's collisions: %+v", mine)
 	}
 }
