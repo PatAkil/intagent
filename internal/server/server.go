@@ -196,7 +196,11 @@ func (s *Server) SetMembers(ms []Member) error {
 	if len(list) == 0 {
 		return errors.New("no members configured: add one with 'intagent token add <name>'")
 	}
-	s.members.Store(&list)
+	if s.members.Swap(&list) != nil {
+		// Streams were authorised against the old list: a revoked token must
+		// not keep one open.
+		s.hub.closeAll()
+	}
 	return nil
 }
 
@@ -307,11 +311,14 @@ func (s *Server) write(h http.HandlerFunc) http.Handler {
 // read admits a bearer token or the dashboard cookie, or anyone with PublicRead.
 func (s *Server) read(h http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		name, ok := s.authenticate(bearer(r))
-		if c, err := r.Cookie(cookieName); !ok && err == nil {
+		token := bearer(r)
+		name, ok := s.authenticate(token)
+		if c, err := r.Cookie(cookieName); !ok && token == "" && err == nil {
 			name, ok = s.sessionMember(c.Value)
 		}
-		if !ok && !s.publicRead {
+		// A board open to all still rejects a token it does not know: its
+		// owner must find out, not be treated as anonymous.
+		if !ok && (!s.publicRead || token != "") {
 			writeError(w, http.StatusUnauthorized, "missing or unknown token")
 			return
 		}

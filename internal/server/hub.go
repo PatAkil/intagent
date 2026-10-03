@@ -30,6 +30,16 @@ func (h *hub) subscribe(repo string) *subscriber {
 	return s
 }
 
+// closeAll ends every stream; their clients reconnect and authenticate again.
+func (h *hub) closeAll() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for s := range h.subs {
+		s.once.Do(func() { close(s.dropped) })
+		delete(h.subs, s)
+	}
+}
+
 func (h *hub) unsubscribe(s *subscriber) {
 	h.mu.Lock()
 	delete(h.subs, s)

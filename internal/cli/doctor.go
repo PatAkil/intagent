@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"github.com/patakil/intagent/internal/client"
 )
 
 // doctor checks every link between this worktree, its agents and the server.
@@ -39,7 +41,10 @@ func (a *App) doctor(ctx context.Context, args []string) error {
 	ok("worktree %s on branch %s", root, ws.wt.Branch)
 	ok("repository id %s", ws.where.Repo)
 	if ws.settings.Enrolled {
-		ok("enrolled: %s points at %s", ".intagent.json", ws.settings.URL)
+		ok("enrolled: %s points at %s", ".intagent.json", ws.settings.Repo.URL)
+		if v := os.Getenv("INTAGENT_URL"); v != "" {
+			info("INTAGENT_URL overrides it: using %s", ws.settings.URL)
+		}
 	} else {
 		bad("not enrolled: run 'intagent init --url <server>' here")
 	}
@@ -52,9 +57,12 @@ func (a *App) doctor(ctx context.Context, args []string) error {
 		bad("no token for %s: run 'intagent login --url %s'", ws.settings.URL, ws.settings.URL)
 	default:
 		who, err := ws.client.Whoami(ctx)
-		if err != nil {
+		switch {
+		case client.IsUnauthorized(err) || (err == nil && who.Member == ""):
+			bad("%s rejected your token (rotated?): get a new one and run 'intagent login --url %s'", ws.settings.URL, ws.settings.URL)
+		case err != nil:
 			bad("cannot reach %s: %v", ws.settings.URL, err)
-		} else {
+		default:
 			ok("server %s knows you as %s (server %s)", ws.settings.URL, who.Member, who.Version)
 			ok("policy: block=%s overlap=%s nearby=%s", who.Policy.Block, who.Policy.Overlap, who.Policy.Nearby)
 		}

@@ -154,6 +154,11 @@ func AddMember(path, name string, replace bool) (string, error) {
 	if !ValidMemberName(name) {
 		return "", fmt.Errorf("member %q: names are lower-case letters, digits, '.', '_' and '-'", name)
 	}
+	unlock, err := lockFile(path + ".lock")
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
 	var fc FileConfig
 	data, err := os.ReadFile(path)
 	switch {
@@ -190,3 +195,30 @@ func AddMember(path, name string, replace bool) (string, error) {
 	}
 	return token, nil
 }
+
+// lockFile takes an exclusive lock by creating path, so that two 'token add'
+// runs cannot both rewrite the team file and lose one's change. A lock left
+// by a crashed run is taken over after lockStale.
+func lockFile(path string) (func(), error) {
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if err == nil {
+			_ = f.Close()
+			return func() { _ = os.Remove(path) }, nil
+		}
+		if !errors.Is(err, os.ErrExist) {
+			return nil, err
+		}
+		if fi, err := os.Stat(path); err == nil && time.Since(fi.ModTime()) > lockStale {
+			_ = os.Remove(path)
+			continue
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("%s is held by another 'intagent token' run; remove it if none is running", path)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+const lockStale = 30 * time.Second

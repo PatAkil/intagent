@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -517,5 +518,64 @@ func TestTeamFileRejectsUnknownSettings(t *testing.T) {
 	}
 	if _, err := LoadFileConfig(p); err == nil || !strings.Contains(err.Error(), "stall-after") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// Rotating a token ends the streams opened with it; their clients must
+// authenticate again.
+func TestMemberChangesEndOpenStreams(t *testing.T) {
+	ts := newTestServer(t)
+	req, _ := http.NewRequest(http.MethodGet, ts.url+"/v1/stream", nil)
+	req.Header.Set("Authorization", "Bearer "+ts.tokens["bob"])
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("stream: %v %v", resp, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, rotated, _ := NewToken()
+	if err := ts.SetMembers([]Member{{Name: "alice", TokenSHA256: HashToken(ts.tokens["alice"])}, {Name: "bob", TokenSHA256: rotated}}); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { _, err := io.Copy(io.Discard, resp.Body); done <- err }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stream opened with the rotated-out token stayed open")
+	}
+}
+
+// On a board anyone may read, a token the server does not know is still
+// rejected: its owner has to find out.
+func TestPublicBoardRejectsUnknownTokens(t *testing.T) {
+	ts := newTestServer(t, func(o *Options) { o.PublicRead = true })
+	if code := ts.do(t, http.MethodGet, "/v1/whoami", "", nil, nil); code != http.StatusOK {
+		t.Fatalf("anonymous: %d", code)
+	}
+	req, _ := http.NewRequest(http.MethodGet, ts.url+"/v1/whoami", nil)
+	req.Header.Set("Authorization", "Bearer ia_typo")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil || resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unknown token: %v %v", resp, err)
+	}
+	_ = resp.Body.Close()
+}
+
+func TestTokenAddRunsDoNotLoseEachOther(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "team.json")
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			if _, err := AddMember(p, fmt.Sprintf("m%d", i), false); err != nil {
+				t.Error(err)
+			}
+		}(i)
+	}
+	wg.Wait()
+	fc, err := LoadFileConfig(p)
+	if err != nil || len(fc.Members) != 8 {
+		t.Fatalf("members = %d, %v", len(fc.Members), err)
 	}
 }

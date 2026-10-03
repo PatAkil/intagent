@@ -186,6 +186,9 @@ func (a *App) login(ctx context.Context, args []string) error {
 			}
 			return fmt.Errorf("could not reach %s: %w (use --no-verify to save anyway)", u, err)
 		}
+		if w.Member == "" {
+			return fmt.Errorf("%s answers anyone, but does not know this token; check it with whoever runs the server", u)
+		}
 		who = w.Member
 	}
 	uc, p, err := client.LoadUserConfig()
