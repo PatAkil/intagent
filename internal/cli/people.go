@@ -161,7 +161,7 @@ func (a *App) note(ctx context.Context, args []string) error {
 	if refs := ws.refs(dir, []string{to}); strings.ContainsAny(to, "/.") && len(refs) == 1 {
 		to = refs[0].Path
 	}
-	res, err := ws.client.Note(ctx, board.NoteRequest{Where: ws.where, To: to, Text: strings.Join(fs.Args()[1:], " ")})
+	res, err := ws.client.Note(ctx, board.NoteRequest{Where: ws.where, To: to, Text: strings.Join(fs.Args()[1:], " "), ByPerson: true})
 	if err != nil {
 		return err
 	}

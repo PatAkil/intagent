@@ -23,7 +23,7 @@ import (
 var (
 	ErrInvalid     = errors.New("invalid request")
 	ErrRateLimited = errors.New("too many notes; try again in a minute")
-	ErrNoTarget    = errors.New("no claim matches the note's recipient")
+	ErrNoTarget    = errors.New("nobody by that name, claim or path has work in this repository right now")
 	ErrNotFound    = errors.New("not found")
 )
 
@@ -1063,7 +1063,8 @@ func (b *Board) Declare(now time.Time, r DeclareRequest) (DeclareResult, error) 
 			if against, ok := b.exclusiveClash(c, pat, live); ok {
 				res.Rejected = append(res.Rejected, Rejection{
 					Pattern: pat,
-					Reason:  fmt.Sprintf("%s holds an exclusive intent on %s; declare it shared or coordinate with them", against.Member, against.Pattern),
+					Reason: fmt.Sprintf("%s's agent holds %s exclusively, and a shared intent of yours would not change "+
+						"that: work elsewhere, ask them with a note, or tell your user", against.Member, against.Pattern),
 					Against: against,
 				})
 				continue
@@ -1088,7 +1089,7 @@ func (b *Board) Declare(now time.Time, r DeclareRequest) (DeclareResult, error) 
 		b.record(Activity{At: now, Kind: "intent.declared", Repo: c.Repo, Member: c.Member, ClaimID: c.ID,
 			Paths: intentPatterns(res.Accepted), Text: fmt.Sprintf("%s: %s", mode, summary)})
 	}
-	res.Text = renderDeclare(now, res)
+	res.Text = renderDeclare(now, res, b.cfg.Policy)
 	return res, nil
 }
 
@@ -1269,6 +1270,8 @@ type NoteRequest struct {
 	// To is a claim ID, a member name, or a repo-relative path.
 	To   string `json:"to"`
 	Text string `json:"text"`
+	// ByPerson says the member wrote the note themselves, not their agent.
+	ByPerson bool `json:"by_person,omitempty"`
 }
 
 // NoteResult lists the claims a note was queued for.
@@ -1312,7 +1315,11 @@ func (b *Board) Note(now time.Time, r NoteRequest) (NoteResult, error) {
 	}
 	var res NoteResult
 	for _, t := range targets {
-		b.enqueue(now, t, InboxItem{Kind: "note", FromClaim: from.ID, From: r.Member, Text: fmt.Sprintf("Note from %s: %s", who(from), quote(text))})
+		sender := who(from)
+		if r.ByPerson {
+			sender = from.Member
+		}
+		b.enqueue(now, t, InboxItem{Kind: "note", FromClaim: from.ID, From: r.Member, Text: fmt.Sprintf("Note from %s: %s", sender, quote(text))})
 		res.Delivered = append(res.Delivered, t.ID)
 	}
 	b.statsOf(w.Repo, now).Notes += len(targets)

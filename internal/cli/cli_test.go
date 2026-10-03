@@ -231,7 +231,7 @@ func TestTwoMembersCollideThroughHooks(t *testing.T) {
 		t.Fatalf("note: %s %s", out, errOut)
 	}
 	out, _, _ = tm.as("alice", a, claudeEvent("a1", a, "PostToolUse", map[string]any{"tool_name": "Bash", "tool_input": map[string]any{"command": "go test"}}), "hook", "claude-code")
-	if _, _, ctx := decision(t, out); !strings.Contains(ctx, `Note from bob's agent: "I need retry.go for a hotfix"`) {
+	if _, _, ctx := decision(t, out); !strings.Contains(ctx, `Note from bob: "I need retry.go for a hotfix"`) {
 		t.Fatalf("alice did not get the note: %q", out)
 	}
 

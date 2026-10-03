@@ -17,6 +17,15 @@ const (
 	maxBoardRows = 8
 )
 
+// actionWords say what a policy action does to a teammate's edit.
+var actionWords = map[Action]string{
+	Deny: "refused",
+	Ask:  "asked to check with their person first",
+	Bump: "refused once and allowed on retry",
+	Warn: "only warned",
+	Off:  "not stopped",
+}
+
 func describeConflict(now time.Time, cf Conflict) string {
 	return "- " + conflictLine(now, cf)
 }
@@ -31,12 +40,13 @@ func conflictLine(now time.Time, cf Conflict) string {
 	if cf.Branch != "" && !cf.SameClaim {
 		b.WriteString(" on branch " + cf.Branch)
 	}
-	state := "active"
+	state := "running now"
 	if !cf.Active {
 		state = "not running"
 	}
-	if !cf.Since.IsZero() {
-		state += ", " + since(now, cf.Since)
+	if !cf.Since.IsZero() && cf.Pattern == "" {
+		// When the file changed, not when the agent was last seen.
+		state += "; changed " + since(now, cf.Since)
 	}
 	fmt.Fprintf(&b, " (%s) %s", state, cf.Why)
 	if cf.Task != "" && cf.Pattern == "" && !cf.SameClaim {
@@ -221,13 +231,17 @@ func relevance(o *Claim, mine map[string]bool, live map[string]bool) int {
 	return r
 }
 
-func renderDeclare(now time.Time, res DeclareResult) string {
+func renderDeclare(now time.Time, res DeclareResult, p Policy) string {
 	var lines []string
 	if len(res.Accepted) > 0 {
 		lines = append(lines, fmt.Sprintf("Declared %s intent on %s. Teammates' agents will be told before they edit these paths.",
 			res.Accepted[0].Mode, listPaths(intentPatterns(res.Accepted), 6)))
 		if res.Accepted[0].Mode == Exclusive {
-			lines = append(lines, "Their edits there are refused while an agent of yours is running in this worktree; once none is, they are only warned. Release the intent with release_intent when you are done.")
+			// An exclusive intent blocks while its claim is live and counts as an
+			// overlap once it is not.
+			lines = append(lines, fmt.Sprintf("While an agent of yours is running in this worktree, teammates' agents are %s "+
+				"there; when none is, they are %s. Release it when you are done (the release_intent tool, or intagent release).",
+				actionWords[p.Block], actionWords[p.Overlap]))
 		}
 	}
 	for _, r := range res.Rejected {

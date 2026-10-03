@@ -478,7 +478,7 @@ func TestDeclareRejectsCompetingExclusiveIntents(t *testing.T) {
 	if len(res.Accepted) != 1 || res.Accepted[0].Pattern != "services/billing/**" {
 		t.Fatalf("accepted = %+v", res.Accepted)
 	}
-	mustContain(t, res.Text, "Not declared: services/payments/client.go", "alice holds an exclusive intent")
+	mustContain(t, res.Text, "Not declared: services/payments/client.go", "alice's agent holds services/payments/** exclusively")
 
 	shared := h.declare("bob", Shared, "fix timeout", "services/payments/client.go")
 	if len(shared.Accepted) != 1 || len(shared.Overlaps) != 1 || shared.Overlaps[0].Severity != Block {
