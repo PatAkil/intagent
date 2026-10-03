@@ -59,7 +59,9 @@ func (a *App) serve(ctx context.Context, args []string) error {
 		if err != nil {
 			return fmt.Errorf("TLS: %w", err)
 		}
-		tlsConfig = &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}
+		// h2 first: each open dashboard holds a stream, and HTTP/1.1 browsers
+		// allow only six connections to a server.
+		tlsConfig = &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12, NextProtos: []string{"h2", "http/1.1"}}
 	}
 	ln, err := new(net.ListenConfig).Listen(ctx, "tcp", *addr)
 	if err != nil {

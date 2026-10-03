@@ -758,7 +758,8 @@ func TestServeHTTPS(t *testing.T) {
 	defer func() { cancel(); <-done }()
 	pool := x509.NewCertPool()
 	pool.AddCert(must(x509.ParseCertificate(der)))
-	hc := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}}, Timeout: 2 * time.Second}
+	hc := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}, ForceAttemptHTTP2: true},
+		Timeout: 2 * time.Second}
 	var resp *http.Response
 	for i := 0; i < 50; i++ {
 		if resp, err = hc.Get("https://" + addr + "/healthz"); err == nil {
@@ -766,7 +767,8 @@ func TestServeHTTPS(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if err != nil || resp.StatusCode != http.StatusOK || resp.TLS == nil {
+	// HTTP/2, so that open dashboards share one connection.
+	if err != nil || resp.StatusCode != http.StatusOK || resp.TLS == nil || resp.ProtoMajor != 2 {
 		t.Fatalf("https healthz: %v %v", resp, err)
 	}
 	_ = resp.Body.Close()

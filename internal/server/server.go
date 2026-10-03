@@ -41,6 +41,8 @@ type Options struct {
 	// PublicRead lets anyone who can reach the server read the board and the
 	// dashboard without a token. Writes still need one.
 	PublicRead bool
+	// Demo marks a server whose members nobody can sign in as (intagent demo).
+	Demo bool
 	// Logger receives operational logs. Nil discards them.
 	Logger *slog.Logger
 	// Now replaces the clock, for tests.
@@ -62,6 +64,7 @@ type Server struct {
 	now        func() time.Time
 	dataDir    string
 	publicRead bool
+	demo       bool
 	sweepEvery time.Duration
 	dashboard  http.Handler
 	saved      uint64
@@ -91,6 +94,7 @@ func New(o Options) (*Server, error) {
 		now:        o.Now,
 		dataDir:    o.DataDir,
 		publicRead: o.PublicRead,
+		demo:       o.Demo,
 		sweepEvery: o.SweepEvery,
 		dashboard:  o.Dashboard,
 		closing:    make(chan struct{}),
@@ -361,7 +365,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"member": memberFrom(r), "version": Version, "policy": s.board.Config().Policy})
+	writeJSON(w, http.StatusOK, map[string]any{"member": memberFrom(r), "version": Version, "policy": s.board.Config().Policy, "demo": s.demo})
 }
 
 func (s *Server) handleHook(w http.ResponseWriter, r *http.Request) {

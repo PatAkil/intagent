@@ -138,10 +138,12 @@
   }
 
   // A repo-relative path, its directory quieter than its base name.
+  // It may wrap after a slash, so a narrow screen does not split a name.
   function pathNode(p) {
     const i = p.lastIndexOf('/');
+    const dir = i >= 0 ? p.slice(0, i + 1).split('/').slice(0, -1).flatMap((seg) => [seg + '/', el('wbr')]) : [];
     return el('code', { class: 'path', title: p },
-      i >= 0 ? el('span', { class: 'path-dir' }, p.slice(0, i + 1)) : null,
+      i >= 0 ? el('span', { class: 'path-dir' }, dir) : null,
       el('span', { class: 'path-base' }, i >= 0 ? p.slice(i + 1) : p));
   }
 
@@ -290,8 +292,18 @@
 
   class AuthError extends Error {}
 
+  // A request that hangs must not hold the board's refresh slot for good.
+  const FETCH_TIMEOUT_MS = 15000;
+
   async function getJSON(url) {
-    const r = await fetch(url, { credentials: 'same-origin', cache: 'no-store', headers: { Accept: 'application/json' } });
+    const ctl = typeof AbortController === 'function' ? new AbortController() : null;
+    const timer = ctl ? setTimeout(() => ctl.abort(), FETCH_TIMEOUT_MS) : 0;
+    let r;
+    try {
+      r = await fetch(url, { credentials: 'same-origin', cache: 'no-store', headers: { Accept: 'application/json' }, signal: ctl ? ctl.signal : undefined });
+    } finally {
+      clearTimeout(timer);
+    }
     if (r.status === 401) throw new AuthError('not signed in');
     if (!r.ok) {
       let msg = 'HTTP ' + r.status;
@@ -380,10 +392,11 @@
       show('logout-form', true);
       show('signin-btn', false);
     } else {
-      who.append(el('span', { class: 'ro', title: 'This server lets anyone who can reach it read the board' },
-        icon('eye'), 'read-only'));
+      who.append(S.demo
+        ? el('span', { class: 'ro', title: 'Simulated agents on an in-memory board; nothing is saved' }, icon('play'), 'demo')
+        : el('span', { class: 'ro', title: 'This server lets anyone who can reach it read the board' }, icon('eye'), 'read-only'));
       show('logout-form', false);
-      show('signin-btn', true);
+      show('signin-btn', !S.demo);
     }
   }
 
@@ -412,6 +425,7 @@
     S.timers = [];
     clearTimeout(S.reconnectTimer);
     clearTimeout(S.debounce);
+    S.debounce = 0;
     if (S.es) { S.es.close(); S.es = null; }
   }
 
@@ -485,9 +499,11 @@
     }, delay);
   }
 
+  // Throttled, not debounced: under steady activity a debounce would never
+  // fire, and the board would sit still while the feed moved.
   function scheduleRefresh() {
-    clearTimeout(S.debounce);
-    S.debounce = setTimeout(refreshBoard, DEBOUNCE_MS);
+    if (S.debounce) return;
+    S.debounce = setTimeout(() => { S.debounce = 0; refreshBoard(); }, DEBOUNCE_MS);
   }
 
   // --- repositories ------------------------------------------------------------
@@ -687,14 +703,27 @@
         }
       }
     }
+    // Files where an agent was refused or asked are contested too, though
+    // only one claim changed them.
+    const byId = new Map(claims.map((c) => [c.id, c]));
+    const refusedAt = new Map();
+    for (const a of S.feed.values()) {
+      if (!a || a.kind !== 'conflict' || (a.decision !== 'deny' && a.decision !== 'ask') || !byId.has(a.claim_id)) continue;
+      for (const p of arr(a.paths)) {
+        if (!refusedAt.has(p)) refusedAt.set(p, new Set());
+        refusedAt.get(p).add(a.claim_id);
+        if (!byPath.has(p)) byPath.set(p, []);
+      }
+    }
     const files = new Map();
     for (const [path, touchers] of byPath) {
       const involved = new Map();
       const role = (c) => {
-        if (!involved.has(c.id)) involved.set(c.id, { claim: c, changed: false, intents: [] });
+        if (!involved.has(c.id)) involved.set(c.id, { claim: c, changed: false, refused: false, intents: [] });
         return involved.get(c.id);
       };
       for (const c of touchers) role(c).changed = true;
+      for (const id of refusedAt.get(path) || []) role(byId.get(id)).refused = true;
       for (const c of claims) {
         for (const it of c.intents) if (globMatch(it.pattern, path)) role(c).intents.push(it);
       }
@@ -713,7 +742,7 @@
   function spotSeverity(involved) {
     for (const r of involved.values()) {
       if (!reserves(r)) continue;
-      for (const o of involved.values()) if (o !== r && o.changed) return 'block';
+      for (const o of involved.values()) if (o !== r && (o.changed || o.refused)) return 'block';
     }
     return 'overlap';
   }
@@ -721,6 +750,7 @@
   function roleText(r) {
     const out = [];
     if (r.changed) out.push('changed');
+    if (r.refused) out.push('was refused');
     const intents = r.intents || [];
     if (intents.some((i) => i.mode === 'exclusive')) out.push(r.claim.active ? 'reserves' : 'reserved (not running)');
     else if (intents.length) out.push('plans');
@@ -746,7 +776,11 @@
     const st = v ? v.stats : {};
     // Loading shows dashes; a server with no repositories has honestly counted nothing.
     const known = !!v || !S.repo;
-    const caught = n(st.refused) + n(st.bumped);
+    // Under a radar policy nothing is stopped: the headline counts what was
+    // spotted and warned about instead of a permanent zero.
+    const policy = (v && v.policy) || S.policy || {};
+    const radar = policy.block === 'warn' || policy.block === 'off';
+    const caught = radar ? n(st.warned) + n(st.refused) + n(st.bumped) + n(st.asked) : n(st.refused) + n(st.bumped);
     const checks = n(st.checks);
     const share = checks ? Math.min(1, caught / checks) : 0;
     const since = tsOf(st.since);
@@ -755,14 +789,18 @@
       el('span', { class: 'meter-fill', style: 'width:' + (share * 100).toFixed(1) + '%' }));
 
     const hero = el('div', { class: 'hero' },
-      el('p', { class: 'hero-label' }, 'Collisions caught before they happened'),
+      el('p', { class: 'hero-label' }, radar ? 'Would-be collisions spotted' : 'Collisions caught before they happened'),
       el('div', { class: 'hero-row' },
-        el('p', { class: 'hero-value', title: 'refused + bumped' }, known ? fmtNum(caught) : '–'),
-        el('dl', { class: 'hero-split' },
-          el('div', { title: 'Edits refused outright: an active claim holds the file exclusively' },
-            el('dt', null, 'Refused'), el('dd', null, known ? fmtNum(st.refused) : '–')),
-          el('div', { title: 'First attempts stopped with an explanation; a retry of the same path goes through' },
-            el('dt', null, 'Bumped'), el('dd', null, known ? fmtNum(st.bumped) : '–')))),
+        el('p', { class: 'hero-value', title: radar ? 'warned, under a policy that stops nothing' : 'refused + bumped' }, known ? fmtNum(caught) : '–'),
+        radar
+          ? el('dl', { class: 'hero-split' },
+            el('div', { title: 'Agents told before the edit; the team policy lets them go ahead (block → ' + policy.block + ')' },
+              el('dt', null, 'Warned'), el('dd', null, known ? fmtNum(st.warned) : '–')))
+          : el('dl', { class: 'hero-split' },
+            el('div', { title: 'Edits refused outright: an active claim holds the file exclusively' },
+              el('dt', null, 'Refused'), el('dd', null, known ? fmtNum(st.refused) : '–')),
+            el('div', { title: 'First attempts stopped with an explanation; a retry of the same path goes through' },
+              el('dt', null, 'Bumped'), el('dd', null, known ? fmtNum(st.bumped) : '–')))),
       meter,
       el('p', { class: 'hero-foot' }, checks
         ? [fmtNum(caught), ' of ', fmtNum(checks), ' checked edits (', (share * 100).toFixed(share && share < 0.1 ? 1 : 0), '%)']
@@ -866,7 +904,7 @@
         el('h3', { id: cid + '-t' },
           el('span', { class: 'member' }, c.member),
           el('span', { class: 'branch' + (c.branch ? '' : ' muted') }, icon('branch'), c.branch || 'no branch')),
-        el('p', { class: 'where', title: 'host:worktree' }, c.host, el('span', { class: 'sep' }, ':'), c.worktree)),
+        el('p', { class: 'where', title: c.host + ':' + c.worktree }, c.host, el('span', { class: 'sep' }, ':'), c.worktree)),
       badges);
 
     const task = c.task
@@ -916,7 +954,26 @@
       ? el('span', { class: 'sess-tool' }, el('span', { class: 'sr-only' }, 'running '), code(String(s.tool)),
         s.tool_since ? [' ', timeNode(s.tool_since, 'dur', 'In this tool since')] : null)
       : null,
-    el('span', { class: 'sess-seen' }, timeNode(s.last_seen, 'seen', 'Last event at')));
+    el('span', { class: 'sess-seen' }, timeNode(s.last_seen, 'seen', 'Last event at')),
+    stopsLine(s));
+  }
+
+  // What stopped this session, from the feed: a team lead sees who is blocked
+  // and by whose reservation without reading the whole feed.
+  function stopsLine(s) {
+    const mine = [...S.feed.values()].filter((a) => a && a.kind === 'conflict' && a.session && a.session === s.id)
+      .sort((x, y) => (y.seq || 0) - (x.seq || 0));
+    if (!mine.length) return null;
+    const refused = mine.filter((a) => a.decision === 'deny' || a.decision === 'ask');
+    const last = refused[0] || mine[0];
+    const holder = (/→ (\S+) \(/.exec(String(last.text || '')) || [])[1] || '';
+    const path = arr(last.paths)[0] || '';
+    const what = refused.length
+      ? (last.decision === 'ask' ? 'asked' : 'refused') + (refused.length > 1 ? ' ' + refused.length + '×' : '')
+      : 'changed a reserved file';
+    return el('span', { class: 'sess-stops' + (refused.length ? '' : ' unchecked'), title: String(last.text || '') },
+      icon(refused.length ? 'deny' : 'warn'), what, path ? [' · ', pathNode(path)] : '',
+      holder ? ' (' + holder + "'s)" : '', ' · ', timeNode(last.at, 'ago', 'At'));
   }
 
   function intentsBlock(c) {
@@ -1005,6 +1062,7 @@
   function alsoNodes(o, path) {
     const parts = [];
     if (o.changed) parts.push('changed it');
+    if (o.refused) parts.push('was refused at it');
     for (const i of o.intents) {
       const verb = i.mode === 'exclusive' ? (o.claim.active ? 'reserves ' : 'reserved, not running, ') : 'plans ';
       parts.push(i.pattern === path ? verb + 'it' : [verb, code(i.pattern, 'path')]);
@@ -1200,7 +1258,10 @@
       case 'intent.released': return [m, ' released ', pathList(a.paths, 3)];
       case 'note.sent': {
         const mm = /^to ([^:]+): ([\s\S]*)$/.exec(text);
-        return mm ? [m, ' sent ', strong(mm[1]), ' a note: ', el('q', null, mm[2])] : [m, ' sent a note: ', el('q', null, text)];
+        if (!mm) return [m, ' sent a note: ', el('q', null, text)];
+        return /[/.]/.test(mm[1])
+          ? [m, ' sent a note to whoever works on ', pathNode(mm[1]), ': ', el('q', null, mm[2])]
+          : [m, ' sent ', strong(mm[1]), ' a note: ', el('q', null, mm[2])];
       }
       case 'conflict': return conflictSentence(a);
       default: return [m, ' ', code(String(a.kind || 'event')), text ? ': ' + text : ''];
@@ -1287,8 +1348,17 @@
         renderFeed();
       });
     }
+    // A hidden tab gives its stream back: browsers allow six connections to a
+    // server over HTTP/1.1, and every open dashboard tab would hold one.
     document.addEventListener('visibilitychange', () => {
-      if (!document.hidden && S.repo && !$('board').hidden) { refreshBoard(); updateTimes(); }
+      if ($('board').hidden) return;
+      if (document.hidden) {
+        clearTimeout(S.reconnectTimer);
+        if (S.es) { S.es.close(); S.es = null; }
+        return;
+      }
+      if (!S.es) connectStream();
+      if (S.repo) { refreshBoard(); updateTimes(); }
     });
   }
 
@@ -1303,6 +1373,7 @@
       return;
     }
     S.me = me && typeof me.member === 'string' ? me.member : '';
+    S.demo = !!(me && me.demo);
     S.version = me && typeof me.version === 'string' ? me.version : '';
     S.policy = me && me.policy && typeof me.policy === 'object' ? me.policy : null;
     if (S.loginFailed) { showLogin(true); return; }

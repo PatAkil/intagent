@@ -729,6 +729,17 @@ main:focus { outline: none; }
   font-size: 11.5px;
 }
 .sess-seen { margin-left: auto; color: var(--ink-3); font-size: 11.5px; white-space: nowrap; }
+.sess-stops {
+  flex-basis: 100%;
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  color: var(--crit);
+  font-size: 11.5px;
+}
+.sess-stops.unchecked { color: var(--warn); }
 
 .st-working .sess-state { background: var(--ok-tint); color: var(--ok); }
 .st-working .sess-state .ic { animation: breathe 2.4s ease-in-out infinite; }
@@ -756,7 +767,7 @@ main:focus { outline: none; }
   font-size: 12px;
   min-height: 24px;
 }
-.intent-pat { overflow-wrap: break-word; min-width: 0; max-width: calc(100% - 20px); font-size: 12px; }
+.intent-pat { overflow-wrap: anywhere; min-width: 0; max-width: calc(100% - 20px); font-size: 12px; }
 .intent-mode {
   font-size: 10.5px;
   font-weight: 650;
