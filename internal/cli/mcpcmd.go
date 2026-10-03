@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path"
+	"path/filepath"
 	"strings"
 
 	"github.com/patakil/intagent/internal/board"
@@ -28,22 +30,24 @@ func (a *App) mcp(ctx context.Context, args []string) error {
 
 // mcpWorkspace resolves the project the MCP server serves: Claude Code's
 // project directory if set, otherwise the working directory.
-func (a *App) mcpWorkspace(ctx context.Context) (*workspace, string, error) {
+// mcpWorkspace opens the repository the agent works in. Tool paths are
+// repository-relative wherever in it the agent started.
+func (a *App) mcpWorkspace(ctx context.Context) (*workspace, error) {
 	dir := os.Getenv("CLAUDE_PROJECT_DIR")
 	if dir == "" {
 		var err error
 		if dir, err = a.workdir(); err != nil {
-			return nil, "", err
+			return nil, err
 		}
 	}
 	ws, err := openWorkspace(ctx, dir)
 	if err != nil {
-		return nil, "", fmt.Errorf("intagent works inside a git repository; %s is not in one", dir)
+		return nil, fmt.Errorf("intagent works inside a git repository; %s is not in one", dir)
 	}
 	if err := ws.requireConnection(); err != nil {
-		return nil, "", err
+		return nil, err
 	}
-	return ws, dir, nil
+	return ws, nil
 }
 
 func (a *App) mcpTools() []mcp.Tool {
@@ -75,12 +79,12 @@ func (a *App) mcpTools() []mcp.Tool {
 				if err := mcp.Args(call, &in); err != nil {
 					return "", err
 				}
-				ws, dir, err := a.mcpWorkspace(ctx)
+				ws, err := a.mcpWorkspace(ctx)
 				if err != nil {
 					return "", err
 				}
 				res, err := ws.client.Declare(ctx, board.DeclareRequest{
-					Where: ws.where, Summary: in.Summary, Patterns: ws.patterns(dir, in.Paths), Mode: board.Mode(in.Mode),
+					Where: ws.where, Summary: in.Summary, Patterns: ws.patterns(ws.wt.Root, in.Paths), Mode: board.Mode(in.Mode),
 				})
 				if err != nil {
 					return "", err
@@ -105,11 +109,11 @@ func (a *App) mcpTools() []mcp.Tool {
 				if err := mcp.Args(call, &in); err != nil {
 					return "", err
 				}
-				ws, dir, err := a.mcpWorkspace(ctx)
+				ws, err := a.mcpWorkspace(ctx)
 				if err != nil {
 					return "", err
 				}
-				refs := ws.refs(dir, in.Paths)
+				refs := ws.refs(ws.wt.Root, in.Paths)
 				if len(refs) == 0 {
 					return "None of these paths are inside this repository.", nil
 				}
@@ -127,7 +131,7 @@ func (a *App) mcpTools() []mcp.Tool {
 			ReadOnly:    true,
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
 			Handler: func(ctx context.Context, _ mcp.Call) (string, error) {
-				ws, _, err := a.mcpWorkspace(ctx)
+				ws, err := a.mcpWorkspace(ctx)
 				if err != nil {
 					return "", err
 				}
@@ -155,12 +159,12 @@ func (a *App) mcpTools() []mcp.Tool {
 				if err := mcp.Args(call, &in); err != nil {
 					return "", err
 				}
-				ws, dir, err := a.mcpWorkspace(ctx)
+				ws, err := a.mcpWorkspace(ctx)
 				if err != nil {
 					return "", err
 				}
 				to := in.To
-				if refs := ws.refs(dir, []string{to}); strings.ContainsAny(to, "/.") && len(refs) == 1 {
+				if refs := ws.refs(ws.wt.Root, []string{to}); strings.ContainsAny(to, "/.") && len(refs) == 1 {
 					to = refs[0].Path
 				}
 				res, err := ws.client.Note(ctx, board.NoteRequest{Where: ws.where, To: to, Text: in.Text})
@@ -185,11 +189,11 @@ func (a *App) mcpTools() []mcp.Tool {
 				if err := mcp.Args(call, &in); err != nil {
 					return "", err
 				}
-				ws, dir, err := a.mcpWorkspace(ctx)
+				ws, err := a.mcpWorkspace(ctx)
 				if err != nil {
 					return "", err
 				}
-				n, err := ws.client.Release(ctx, board.ReleaseRequest{Where: ws.where, Patterns: ws.patterns(dir, in.Paths)})
+				n, err := ws.client.Release(ctx, board.ReleaseRequest{Where: ws.where, Patterns: ws.patterns(ws.wt.Root, in.Paths)})
 				if err != nil {
 					return "", err
 				}
@@ -199,19 +203,23 @@ func (a *App) mcpTools() []mcp.Tool {
 	}
 }
 
-// patterns makes declared paths repository-relative. Absolute paths inside the
-// worktree are converted; globs and relative paths are kept as written.
+// patterns makes declared paths and globs repository-relative. Absolute paths
+// inside the worktree are converted; relative ones are taken from base, the
+// way git reads pathspecs from the current directory.
 func (w *workspace) patterns(base string, in []string) []string {
+	prefix := ""
+	if rel, ok := w.wt.Rel(base); ok && rel != "." {
+		prefix = rel
+	}
 	out := make([]string, 0, len(in))
 	for _, p := range in {
-		if strings.HasPrefix(p, "/") {
+		switch {
+		case filepath.IsAbs(p):
 			if rel, ok := w.wt.Rel(p); ok {
 				p = rel
 			}
-		} else if base != w.wt.Root && !strings.ContainsAny(p, "*?[") {
-			if rel, ok := w.wt.Rel(base + "/" + p); ok {
-				p = rel
-			}
+		case prefix != "":
+			p = path.Join(prefix, filepath.ToSlash(p))
 		}
 		out = append(out, p)
 	}

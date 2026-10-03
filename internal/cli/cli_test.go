@@ -480,11 +480,12 @@ func TestMCPToolsAgainstServer(t *testing.T) {
 	tm.enrol(map[string]string{"alice": a, "bob": b})
 	tm.as("bob", b, claudeEvent("b1", b, "PostToolUse", map[string]any{"tool_name": "Edit", "tool_input": map[string]any{"file_path": filepath.Join(b, "svc/pay/retry.go")}}), "hook", "claude-code")
 
-	t.Setenv("CLAUDE_PROJECT_DIR", a)
+	// Started in a subdirectory: tool paths are still repository-relative.
+	t.Setenv("CLAUDE_PROJECT_DIR", filepath.Join(a, "svc"))
 	calls := []string{
 		`{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}`,
 		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"declare_intent","arguments":{"summary":"Retry rewrite","paths":["svc/pay/**"],"mode":"shared"}}}`,
-		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"check_paths","arguments":{"paths":["` + filepath.Join(a, "svc/pay/retry.go") + `"]}}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"check_paths","arguments":{"paths":["svc/pay/retry.go","` + filepath.Join(a, "svc/pay/go.mod") + `"]}}}`,
 		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"team_board","arguments":{}}}`,
 		`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"send_note","arguments":{"to":"bob","text":"heads up"}}}`,
 		`{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"release_intent","arguments":{}}}`,
@@ -514,6 +515,15 @@ func TestMCPToolsAgainstServer(t *testing.T) {
 		if !strings.Contains(texts[i], want) {
 			t.Errorf("call %d: %q does not contain %q", i+1, texts[i], want)
 		}
+	}
+	if strings.Contains(texts[0], "svc/svc") || !strings.Contains(texts[1], "svc/pay/retry.go") {
+		t.Errorf("paths resolved against the start directory: %q / %q", texts[0], texts[1])
+	}
+
+	// A person typing in a subdirectory means paths and globs from there, as git does.
+	out, errOut, code = tm.as("alice", filepath.Join(a, "svc"), "", "declare", "-m", "Pay", "pay/**", "../README.md")
+	if code != 0 || !strings.Contains(out, "svc/pay/**, README.md") {
+		t.Fatalf("declare from a subdirectory: %s %s", out, errOut)
 	}
 }
 
@@ -760,5 +770,29 @@ func TestAskThroughCodexLetsTheRetryThrough(t *testing.T) {
 	}
 	if out, _, _ := tm.as("bob", b, string(cx), "hook", "codex"); out != "" {
 		t.Fatalf("the retry was not let through: %q", out)
+	}
+}
+
+// INTAGENT_URL names a server; it must not make hooks report a repository
+// that never enrolled (a personal project, with user-level hooks installed).
+func TestHooksIgnoreRepositoriesThatDidNotEnrol(t *testing.T) {
+	tm := newTeam(t, "alice", "bob")
+	personal := filepath.Join(tm.dir, "side-project")
+	gitRun(t, tm.dir, "init", "-q", personal)
+	gitRun(t, personal, "remote", "add", "origin", "git@github.com:bob/side-project.git")
+	t.Setenv("INTAGENT_URL", tm.url)
+	t.Setenv("INTAGENT_TOKEN", tm.tokens["bob"])
+	for _, name := range []string{"SessionStart", "UserPromptSubmit"} {
+		ev := claudeEvent("b1", personal, name, map[string]any{"prompt": "Draft my resignation letter"})
+		if out, _, code := tm.as("bob", personal, ev, "hook"); out != "" || code != 0 {
+			t.Fatalf("%s: %q %d", name, out, code)
+		}
+	}
+	if repos := tm.srv.Board().Repos(time.Now()); len(repos) != 0 {
+		t.Fatalf("a repository that did not enrol was reported: %+v", repos)
+	}
+	// Commands a person types still work with the override.
+	if out, errOut, code := tm.as("bob", personal, "", "board"); code != 0 {
+		t.Fatalf("board: %s %s", out, errOut)
 	}
 }

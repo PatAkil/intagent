@@ -148,9 +148,11 @@ func Resolve(root string) (Settings, error) {
 	if uc.SharePrompts != nil {
 		s.SharePrompts = *uc.SharePrompts
 	}
+	// The variable names the server; it does not enrol a repository. Hooks
+	// report only repositories whose team committed .intagent.json, so user
+	// hooks never report a personal project.
 	if v := os.Getenv("INTAGENT_URL"); v != "" {
 		s.URL = NormalizeURL(v)
-		s.Enrolled = true
 	}
 	if cred, ok := uc.Servers[s.URL]; ok {
 		s.Token = cred.Token
