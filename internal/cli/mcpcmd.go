@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path"
@@ -9,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/patakil/intagent/internal/board"
+	"github.com/patakil/intagent/internal/gitx"
 	"github.com/patakil/intagent/internal/mcp"
 )
 
@@ -41,8 +43,11 @@ func (a *App) mcpWorkspace(ctx context.Context) (*workspace, error) {
 		}
 	}
 	ws, err := openWorkspace(ctx, dir)
-	if err != nil {
+	switch {
+	case errors.Is(err, gitx.ErrNotRepo):
 		return nil, fmt.Errorf("intagent works inside a git repository; %s is not in one", dir)
+	case err != nil:
+		return nil, err
 	}
 	if err := ws.requireConnection(); err != nil {
 		return nil, err

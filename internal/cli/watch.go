@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/patakil/intagent/internal/board"
 	"github.com/patakil/intagent/internal/client"
+	"github.com/patakil/intagent/internal/gitx"
 )
 
 // watch keeps a worktree on the board for agents that have no hooks, or for
@@ -79,7 +81,17 @@ func (a *App) guard(ctx context.Context, args []string) error {
 		return err
 	}
 	ws, err := openWorkspace(ctx, dir)
-	if err != nil || !ws.settings.Enrolled || ws.settings.Disabled {
+	switch {
+	case errors.Is(err, gitx.ErrNotRepo):
+		return nil
+	case err != nil:
+		if os.Getenv("INTAGENT_FAIL") == "closed" {
+			return exitError{code: 1, msg: fmt.Sprintf("intagent guard: %v; INTAGENT_FAIL=closed is set, so the commit is refused.", err)}
+		}
+		fmt.Fprintf(a.Err, "intagent guard: %v, so this commit was not checked against teammates' work.\n", err)
+		return nil
+	}
+	if !ws.settings.Enrolled || ws.settings.Disabled {
 		return nil
 	}
 	staged, err := ws.wt.Staged(ctx)

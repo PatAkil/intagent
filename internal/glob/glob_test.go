@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestCleanPath(t *testing.T) {
@@ -174,5 +175,25 @@ func TestOverlapAgreesWithMatch(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// Matching stays fast however many ** a pattern has: a teammate's intent is
+// matched under the board's lock on every hook.
+func TestMatchManyDoubleStars(t *testing.T) {
+	t.Parallel()
+	name := strings.Repeat("a/", 30) + "b.go"
+	for _, pattern := range []string{strings.Repeat("**/", 10) + "zzz", strings.Repeat("**/a/", 7) + "zzz", strings.Repeat("**/", 300) + "b.go"} {
+		start := time.Now()
+		Match(pattern, name)
+		if d := time.Since(start); d > time.Second {
+			t.Errorf("Match(%.20q…) took %s", pattern, d)
+		}
+	}
+	if !Match("**/a/**/b.go", name) || Match("**/c/**", name) {
+		t.Error("wrong answer")
+	}
+	if got, _ := CleanPattern("**/**/x/**/**"); got != "**/x/**" {
+		t.Errorf("CleanPattern collapsed to %q", got)
 	}
 }

@@ -1074,3 +1074,28 @@ func TestServeReloadsMembers(t *testing.T) {
 		t.Fatalf("the rotated-out token still answers %d", code)
 	}
 }
+
+// A broken .intagent.json is not "outside a repository": doctor names it,
+// the hook logs it, and fail-closed refuses edits instead of passing them.
+func TestBrokenRepoFileIsReported(t *testing.T) {
+	tm := newTeam(t, "alice")
+	a := tm.clone("alice")
+	tm.enrol(map[string]string{"alice": a})
+	writeFile(t, filepath.Join(a, ".intagent.json"), `{"url": "`+tm.url+`",}`)
+	if out, _, code := tm.as("alice", a, "", "doctor"); code != 1 || !strings.Contains(out, ".intagent.json") || strings.Contains(out, "not inside a git repository") {
+		t.Fatalf("doctor: %d\n%s", code, out)
+	}
+	edit := claudeEvent("a1", a, "PreToolUse", map[string]any{"tool_name": "Edit", "tool_input": map[string]any{"file_path": filepath.Join(a, "README.md")}})
+	if out, _, code := tm.as("alice", a, edit, "hook"); out != "" || code != 0 {
+		t.Fatalf("hook: %q %d", out, code)
+	}
+	logged, _ := os.ReadFile(filepath.Join(os.Getenv("XDG_CACHE_HOME"), "intagent", "hook.log"))
+	if !strings.Contains(string(logged), ".intagent.json") {
+		t.Fatalf("hook log: %s", logged)
+	}
+	t.Setenv("INTAGENT_FAIL", "closed")
+	out, _, _ := tm.as("alice", a, edit, "hook")
+	if dec, reason, _ := decision(t, out); dec != "deny" || !strings.Contains(reason, "could not read this repository's setup") {
+		t.Fatalf("fail closed: %q", out)
+	}
+}

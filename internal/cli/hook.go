@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/patakil/intagent/internal/board"
 	"github.com/patakil/intagent/internal/client"
+	"github.com/patakil/intagent/internal/gitx"
 	"github.com/patakil/intagent/internal/hook"
 )
 
@@ -83,8 +85,18 @@ func (a *App) handleHook(ctx context.Context, ad hook.Adapter, ev hook.Event) (h
 		}
 	}
 	ws, err := openWorkspace(ctx, cwd)
-	if err != nil {
+	switch {
+	case errors.Is(err, gitx.ErrNotRepo):
 		return hook.Output{}, nil // not a git repository: nothing to coordinate
+	case err != nil:
+		// A broken .intagent.json or a failing git: say so in the hook log, and
+		// under fail-closed refuse edits rather than pass them unchecked.
+		if ev.Kind == board.KindPreEdit && os.Getenv("INTAGENT_FAIL") == "closed" {
+			return ad.Render(ev, board.HookResult{Decision: board.Refuse, Reason: fmt.Sprintf("[intagent] intagent could not read "+
+				"this repository's setup (%v), and INTAGENT_FAIL=closed is set in your user's environment, so edits are refused "+
+				"until it is fixed. Tell your user.", err)}), err
+		}
+		return hook.Output{}, err
 	}
 	if !ws.settings.Enrolled || ws.settings.Disabled {
 		return hook.Output{}, nil // not a team repository, or switched off on purpose

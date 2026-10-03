@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"slices"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -67,7 +68,11 @@ func CleanPattern(p string) (string, error) {
 		// Said to be a directory: keep that, even for a name like conf.d.
 		c += "/**"
 	}
-	for _, seg := range strings.Split(c, "/") {
+	segs := strings.Split(c, "/")
+	// "**/**" means "**"; keeping one makes matching cheaper.
+	segs = slices.CompactFunc(segs, func(a, b string) bool { return a == "**" && b == "**" })
+	c = strings.Join(segs, "/")
+	for _, seg := range segs {
 		if seg == "**" {
 			continue
 		}
@@ -88,29 +93,38 @@ func hasDrive(p string) bool {
 // Match reports whether pattern covers the file or directory at name. Both
 // must already be clean; an invalid pattern matches nothing.
 func Match(pattern, name string) bool {
-	return match(strings.Split(pattern, "/"), strings.Split(name, "/"))
+	m := matcher{p: strings.Split(pattern, "/"), s: strings.Split(name, "/"), memo: map[[2]int]bool{}}
+	return m.match(0, 0)
 }
 
-func match(p, s []string) bool {
-	for len(p) > 0 {
-		if p[0] == "**" {
-			for k := 0; k <= len(s); k++ {
-				if match(p[1:], s[k:]) {
-					return true
-				}
-			}
-			return false
-		}
-		if len(s) == 0 {
-			return false
-		}
-		if ok, err := path.Match(p[0], s[0]); err != nil || !ok {
-			return false
-		}
-		p, s = p[1:], s[1:]
+// matcher matches pattern segments p[i:] against name segments s[j:]; memo
+// keeps patterns with many ** segments polynomial instead of exponential.
+type matcher struct {
+	p, s []string
+	memo map[[2]int]bool
+}
+
+func (m *matcher) match(i, j int) bool {
+	if i == len(m.p) {
+		// The pattern is used up: it matched name itself or a directory above it.
+		return true
 	}
-	// The pattern is used up: it matched name itself or a directory above it.
-	return true
+	key := [2]int{i, j}
+	if v, ok := m.memo[key]; ok {
+		return v
+	}
+	var v bool
+	switch {
+	case m.p[i] == "**":
+		v = m.match(i+1, j) || (j < len(m.s) && m.match(i, j+1))
+	case j == len(m.s):
+		v = false
+	default:
+		ok, err := path.Match(m.p[i], m.s[j])
+		v = err == nil && ok && m.match(i+1, j+1)
+	}
+	m.memo[key] = v
+	return v
 }
 
 // Overlap reports whether some path could be covered by both patterns. It

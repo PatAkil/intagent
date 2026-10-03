@@ -53,8 +53,12 @@ func Open(ctx context.Context, dir string) (*Worktree, error) {
 	if err != nil {
 		// A repository without commits has no HEAD to abbreviate.
 		top, err2 := run(ctx, dir, "rev-parse", "--show-toplevel")
-		if err2 != nil {
+		switch {
+		case err2 != nil && strings.Contains(err2.Error(), "not a git repository"):
 			return nil, fmt.Errorf("%w: %s", ErrNotRepo, dir)
+		case err2 != nil:
+			// git missing, timed out or failing: not the same as "no repository".
+			return nil, err2
 		}
 		out = append(append([]byte{}, top...), "HEAD\n"...)
 	}

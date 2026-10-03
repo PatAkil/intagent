@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/patakil/intagent/internal/client"
+	"github.com/patakil/intagent/internal/gitx"
 )
 
 // doctor checks every link between this worktree, its agents and the server.
@@ -33,8 +35,12 @@ func (a *App) doctor(ctx context.Context, args []string) error {
 		return err
 	}
 	ws, err := openWorkspace(ctx, dir)
-	if err != nil {
+	switch {
+	case errors.Is(err, gitx.ErrNotRepo):
 		bad("%s is not inside a git repository", dir)
+		return exitError{code: 1}
+	case err != nil:
+		bad("%v", err)
 		return exitError{code: 1}
 	}
 	root := ws.wt.Root
