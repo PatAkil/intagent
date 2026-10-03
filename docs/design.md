@@ -98,7 +98,8 @@ off. An explicit `declare_intent` summary replaces it.
 
 ## Footprint from git
 
-At `SessionStart`, `Stop` and `SessionEnd` the hook computes the worktree's real footprint:
+At session start, after shell commands (at most every 15 seconds), at `Stop` and at `SessionEnd` the hook computes the
+worktree's real footprint:
 
 - the default branch from `refs/remotes/origin/HEAD` (falling back to `origin/main`, `origin/master`, `main`, `master`);
 - `git merge-base HEAD <default>`;

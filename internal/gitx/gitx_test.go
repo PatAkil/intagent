@@ -112,6 +112,18 @@ func TestOpenAndChanges(t *testing.T) {
 		t.Fatalf("limit not applied: %v %v", files, truncated)
 	}
 
+	// Undoing a committed change in the worktree undoes it in the footprint.
+	git(t, clone, "rm", "-q", "--cached", "services/payments/backoff.go")
+	if err := os.Remove(filepath.Join(clone, "services/payments/backoff.go")); err != nil {
+		t.Fatal(err)
+	}
+	files, _, _ = w.Changes(ctx, 0)
+	if got := strings.Join(files, ","); got != ".gitignore,notes/new file.txt,services/payments/retry.go" {
+		t.Fatalf("after undoing backoff.go: %s", got)
+	}
+	git(t, clone, "reset", "-q", "HEAD")
+	write(t, clone, "services/payments/backoff.go", "package pay\n")
+
 	// Once the branch is merged and pushed, nothing differs from the default branch.
 	git(t, clone, "add", "-A")
 	git(t, clone, "commit", "-q", "-m", "rest")

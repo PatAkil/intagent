@@ -173,34 +173,38 @@ func (w *Worktree) DefaultBranch(ctx context.Context) (string, error) {
 func (w *Worktree) Changes(ctx context.Context, limit int) ([]string, bool, error) {
 	seen := map[string]bool{}
 	var files []string
-	add := func(p string) {
-		if p != "" && !seen[p] {
-			seen[p] = true
-			files = append(files, p)
+	add := func(list []byte) {
+		for _, p := range bytes.Split(list, []byte{0}) {
+			if len(p) > 0 && !seen[string(p)] {
+				seen[string(p)] = true
+				files = append(files, string(p))
+			}
 		}
 	}
+	base := ""
 	if def, err := w.DefaultBranch(ctx); err == nil {
 		if out, err := run(ctx, w.Root, "merge-base", "HEAD", def); err == nil {
-			base := strings.TrimSpace(string(out))
-			diff, err := run(ctx, w.Root, "diff", "--name-only", "--no-renames", "-z", base, "HEAD", "--")
-			if err != nil {
-				return nil, false, err
-			}
-			for _, p := range bytes.Split(diff, []byte{0}) {
-				add(string(p))
-			}
+			base = strings.TrimSpace(string(out))
 		}
 	}
-	status, err := run(ctx, w.Root, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames")
+	if base == "" {
+		base = "HEAD" // no default branch to compare with: uncommitted work only
+	}
+	// The worktree against the base, committed or not: a change made on the
+	// branch and then undone is no change at all.
+	tracked, err := run(ctx, w.Root, "diff", "--name-only", "--no-renames", "-z", base, "--")
+	if err != nil {
+		if base != "HEAD" {
+			return nil, false, err
+		}
+		tracked = nil // a repository without commits yet
+	}
+	add(tracked)
+	untracked, err := run(ctx, w.Root, "ls-files", "--others", "--exclude-standard", "-z")
 	if err != nil {
 		return nil, false, err
 	}
-	for _, entry := range bytes.Split(status, []byte{0}) {
-		// Each entry is "XY path"; with --no-renames there are no second paths.
-		if len(entry) > 3 {
-			add(string(entry[3:]))
-		}
-	}
+	add(untracked)
 	sort.Strings(files)
 	if limit > 0 && len(files) > limit {
 		return files[:limit], true, nil
