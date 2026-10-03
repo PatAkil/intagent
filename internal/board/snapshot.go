@@ -101,9 +101,15 @@ func (b *Board) Restore(data []byte) error {
 	}
 	b.seq = s.Seq
 	b.recent = s.Recent
+	if over := len(b.recent) - b.cfg.KeepActivities; over > 0 {
+		b.recent = b.recent[over:] // the feed is kept shorter now
+	}
 	b.stats = s.Stats
 	if b.stats == nil {
 		b.stats = map[string]*Stats{}
 	}
+	// What happened before the snapshot is in it, or gone with the process.
+	b.notes = map[string][]time.Time{}
+	b.pending = nil
 	return nil
 }

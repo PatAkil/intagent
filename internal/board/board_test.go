@@ -1035,6 +1035,14 @@ func TestSnapshotRoundTrip(t *testing.T) {
 	if err != nil || res.Decision != DecisionRefuse {
 		t.Fatalf("after restore: %s %v", res.Decision, err)
 	}
+	// A board started with a shorter feed keeps the newest of the snapshot's.
+	short := New(Config{KeepActivities: 2})
+	if err := short.Restore(data); err != nil {
+		t.Fatal(err)
+	}
+	if v := short.View(h.now, repo); len(v.Recent) != 2 || v.Recent[1].Seq != v.LastSeq {
+		t.Fatalf("restored feed = %+v (last seq %d)", v.Recent, v.LastSeq)
+	}
 	if err := restored.Restore([]byte(`{"format":99}`)); err == nil {
 		t.Fatal("restored an unknown format")
 	}
