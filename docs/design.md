@@ -169,10 +169,12 @@ All endpoints take and return JSON and require `Authorization: Bearer <token>`, 
   separator characters or exceed 1024 bytes; branch, agent, tool and repository names are reduced to one token with
   no spaces, quotes or angle brackets.
 - Webhook messages escape `&`, `<` and `>`, which Slack reads as mentions and links.
-- Notes are rate-limited per claim.
+- Notes are rate-limited per member.
 - Request bodies are capped. Paths are validated.
-- The hook fails open with a short timeout. `INTAGENT_FAIL=closed` turns unreachable-server into a refusal for teams
-  that want it.
+- The hook fails open with a short timeout. `INTAGENT_FAIL=closed` turns an unreachable server, or a setup intagent
+  cannot read, into a refusal of edits in enrolled repositories, for teams that want it. A whole hook run, git
+  included, has 8 seconds (2 at a session's end), under the timeouts `init` gives the agents, which would otherwise
+  kill it and let the edit through; git gets at most half of what is left, so the event still reaches the server.
 
 ## What it deliberately does not do
 
