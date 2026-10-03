@@ -105,15 +105,23 @@ func (b *Board) renderWarnings(now time.Time, cs []Conflict) string {
 	return strings.Join(lines, "\n")
 }
 
-func (b *Board) renderInbox(now time.Time, items []InboxItem) string {
-	if len(items) == 0 {
-		return ""
+func (b *Board) renderInbox(now time.Time, fresh, earlier []InboxItem) string {
+	var blocks []string
+	if len(fresh) > 0 {
+		lines := []string{fmt.Sprintf("%s News from your team %s:", prefix, dataNotice)}
+		for _, it := range fresh {
+			lines = append(lines, fmt.Sprintf("- %s: %s", since(now, it.At), it.Text))
+		}
+		blocks = append(blocks, strings.Join(lines, "\n"))
 	}
-	lines := []string{fmt.Sprintf("%s News from your team %s:", prefix, dataNotice)}
-	for _, it := range items {
-		lines = append(lines, fmt.Sprintf("- %s: %s", since(now, it.At), it.Text))
+	if len(earlier) > 0 {
+		lines := []string{fmt.Sprintf("%s Earlier news, already shown to another session in this worktree %s:", prefix, dataNotice)}
+		for _, it := range earlier {
+			lines = append(lines, fmt.Sprintf("- %s: %s", since(now, it.At), it.Text))
+		}
+		blocks = append(blocks, strings.Join(lines, "\n"))
 	}
-	return strings.Join(lines, "\n")
+	return joinBlocks(blocks...)
 }
 
 // renderStart greets a session with the state of the board.

@@ -934,6 +934,29 @@ func TestUncheckedChangeInsideAReservation(t *testing.T) {
 	}
 }
 
+// A note shown to one session is not news to the next one in the same
+// worktree: it is told once more, but as earlier news.
+func TestNotesAreNewsOnce(t *testing.T) {
+	h := newHarness(t)
+	h.hook(KindPrompt, "alice", "a1")
+	h.edit("alice", "a1", "svc/x.go") // work in progress keeps the claim between sessions
+	h.hook(KindPrompt, "bob", "b1")
+	if _, err := h.b.Note(h.now, NoteRequest{Member: "bob", Where: whereOf("bob"), To: "alice", Text: "I renamed UserID"}); err != nil {
+		t.Fatal(err)
+	}
+	first := h.hook(KindToolEnd, "alice", "a1").Context
+	mustContain(t, first, "News from your team", "I renamed UserID")
+	h.hook(KindSessionEnd, "alice", "a1")
+	next := h.hook(KindSessionStart, "alice", "a2").Context
+	mustContain(t, next, "Earlier news, already shown to another session in this worktree", "I renamed UserID")
+	if strings.Contains(next, "News from your team") {
+		t.Fatalf("shown as new again:\n%s", next)
+	}
+	if again := h.hook(KindToolEnd, "alice", "a2").Context; strings.Contains(again, "UserID") {
+		t.Fatalf("told twice to one session: %q", again)
+	}
+}
+
 func TestClean(t *testing.T) {
 	for in, want := range map[string]string{
 		"  a\n\tb  ":         "a b",

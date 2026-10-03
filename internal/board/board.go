@@ -981,23 +981,30 @@ func (b *Board) deliver(now time.Time, c *Claim, s *Session) string {
 	return joinBlocks(pending, b.deliverInbox(now, c, s))
 }
 
+// Each session hears an item once. One that another session of this claim
+// already showed its agent is still told (that session may have stopped
+// without acting on it), but as earlier news, not new.
 func (b *Board) deliverInbox(now time.Time, c *Claim, s *Session) string {
-	var items []InboxItem
+	var fresh, earlier []InboxItem
 	for i := range c.Inbox {
 		it := &c.Inbox[i]
 		if now.Sub(it.At) >= inboxTTL || it.DeliveredTo[s.Key] {
 			continue
 		}
-		if len(items) == b.cfg.InboxPerHook {
+		if len(fresh)+len(earlier) == b.cfg.InboxPerHook {
 			break
+		}
+		if len(it.DeliveredTo) > 0 {
+			earlier = append(earlier, *it)
+		} else {
+			fresh = append(fresh, *it)
 		}
 		if it.DeliveredTo == nil {
 			it.DeliveredTo = map[string]bool{}
 		}
 		it.DeliveredTo[s.Key] = true
-		items = append(items, *it)
 	}
-	return b.renderInbox(now, items)
+	return b.renderInbox(now, fresh, earlier)
 }
 
 // --- intents -------------------------------------------------------------
