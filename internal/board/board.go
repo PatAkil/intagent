@@ -365,28 +365,11 @@ func (b *Board) liveSessions(now time.Time) map[string]bool {
 // It never refuses on error: callers should allow the agent to continue.
 func (b *Board) Hook(now time.Time, ev HookEvent) (HookResult, error) {
 	allow := HookResult{Decision: Allow}
-	w, err := cleanWhere(ev.Where)
+	ev, err := ev.clean()
 	if err != nil {
 		return allow, err
 	}
-	ev.Where = w
-	ev.SessionID = Clean(ev.SessionID, 200)
-	ev.Agent = Agent(ident(string(ev.Agent), 40))
-	ev.Tool = ident(ev.Tool, 60)
-	ev.ToolUseID = Clean(ev.ToolUseID, 200)
-	if ev.Member == "" || ev.SessionID == "" || ev.Agent == "" {
-		return allow, fmt.Errorf("%w: member, agent and session_id are required", ErrInvalid)
-	}
-	if !knownKinds[ev.Kind] {
-		// Before anything is created: an event this board does not know (from
-		// a newer client, say) must not bring a dormant claim back to life.
-		return allow, fmt.Errorf("%w: unknown event kind %q", ErrInvalid, ev.Kind)
-	}
-	paths, err := cleanPaths(ev.Paths)
-	if err != nil {
-		return allow, err
-	}
-	ev.Paths = paths
+	w := ev.Where
 
 	b.lock()
 	defer b.unlock()
@@ -463,6 +446,30 @@ func (b *Board) Hook(now time.Time, ev HookEvent) (HookResult, error) {
 	return res, nil
 }
 
+// clean validates an event, before anything is created for it, and bounds
+// its fields.
+func (ev HookEvent) clean() (HookEvent, error) {
+	w, err := cleanWhere(ev.Where)
+	if err != nil {
+		return ev, err
+	}
+	ev.Where = w
+	ev.SessionID = Clean(ev.SessionID, 200)
+	ev.Agent = Agent(ident(string(ev.Agent), 40))
+	ev.Tool = ident(ev.Tool, 60)
+	ev.ToolUseID = Clean(ev.ToolUseID, 200)
+	if ev.Member == "" || ev.SessionID == "" || ev.Agent == "" {
+		return ev, fmt.Errorf("%w: member, agent and session_id are required", ErrInvalid)
+	}
+	if !knownKinds[ev.Kind] {
+		// An event this board does not know (from a newer client, say) must
+		// not bring a dormant claim back to life.
+		return ev, fmt.Errorf("%w: unknown event kind %q", ErrInvalid, ev.Kind)
+	}
+	ev.Paths, err = cleanPaths(ev.Paths)
+	return ev, err
+}
+
 var knownKinds = map[Kind]bool{
 	KindSessionStart: true, KindPrompt: true, KindPreEdit: true, KindPostEdit: true, KindToolStart: true,
 	KindToolEnd: true, KindStop: true, KindSessionEnd: true, KindHeartbeat: true,
@@ -516,13 +523,13 @@ func clearTools(s *Session) {
 
 func (b *Board) taskFromPrompt(c *Claim, s *Session, prompt string) {
 	prompt = Clean(firstLine(prompt), maxTaskLen)
-	if prompt == "" || s.Acked["task:prompted"] {
+	if prompt == "" || s.Acked[ackPrompted] {
 		return
 	}
 	if s.Acked == nil {
 		s.Acked = map[string]bool{}
 	}
-	s.Acked["task:prompted"] = true
+	s.Acked[ackPrompted] = true
 	if c.Task == "" || !c.taskFromIntent() {
 		c.Task = prompt
 	}
@@ -883,79 +890,50 @@ func ackKey(c Conflict) string {
 	return c.Severity.String() + "|" + c.ClaimID + "|" + subject
 }
 
-// decide applies the policy to the conflicts on every path being written.
+// Session.Acked remembers what a session has been told: an ackKey for each
+// conflict the policy has dealt with, a toldKey for each collision counted and
+// announced, and ackPrompted once a prompt has named the claim's task.
+const ackPrompted = "task:prompted"
+
+func toldKey(cf Conflict) string { return "told|" + ackKey(cf) }
+
+// verdict sorts the conflicts on one edit by what the policy does about them.
+type verdict struct {
+	all, refused, asked, warned []Conflict
+	// askKeys and warnKeys are acknowledged only if the answer shows them: a
+	// refusal of the same edit hides questions and warnings.
+	askKeys, warnKeys []string
+}
+
+// acted is what the agent is told about: refusals, else questions, else warnings.
+func (v verdict) acted() []Conflict {
+	switch {
+	case len(v.refused) > 0:
+		return v.refused
+	case len(v.asked) > 0:
+		return v.asked
+	}
+	return v.warned
+}
+
+// decide answers an agent about to write, and counts and announces the edit
+// if it runs into a collision this session has not been told about.
 func (b *Board) decide(now time.Time, c *Claim, s *Session, paths []PathRef, noAsk bool) HookResult {
-	live, liveSess := b.liveClaims(now), b.liveSessions(now)
-	var refused, asked, warned, all []Conflict
-	var askKeys, warnKeys []string
 	if s.Acked == nil {
 		s.Acked = map[string]bool{}
 	}
-	for _, p := range paths {
-		for _, cf := range b.conflictsFor(now, c, s.Key, p, live, liveSess) {
-			all = append(all, cf)
-			key := ackKey(cf)
-			action := b.cfg.Policy.action(cf.Severity)
-			if action == Bump && breachedReservation(c, cf) {
-				// A teammate changed a file inside this claim's reservation
-				// after it was made: the owner is told, not stopped.
-				action = Warn
-			}
-			switch {
-			case action == Deny:
-				refused = append(refused, cf)
-			case action == Ask && !noAsk:
-				asked = append(asked, cf)
-			case action == Ask && !s.Acked[key]:
-				asked = append(asked, cf)
-				askKeys = append(askKeys, key)
-			case action == Bump && !s.Acked[key]:
-				s.Acked[key] = true
-				refused = append(refused, cf)
-			case action == Warn && !s.Acked[key]:
-				warned = append(warned, cf)
-				warnKeys = append(warnKeys, key)
-			}
-		}
-	}
-	res := HookResult{Decision: Allow, Conflicts: all}
-	switch {
-	case len(refused) > 0:
-		res.Decision = Refuse
-		res.Reason = b.renderRefusal(now, refused, b.cfg.Policy)
-	case len(asked) > 0:
-		res.Decision = DecideAsk
-		res.Reason = b.renderRefusal(now, asked, b.cfg.Policy)
-		// An agent that cannot ask was told to ask its person; its retry is the
-		// answer. Not when a refusal of the same edit hid the question.
-		for _, k := range askKeys {
-			s.Acked[k] = true
-		}
-	case len(warned) > 0:
-		res.Context = b.renderWarnings(now, warned)
-		// A warning counts as told only once it is shown, not when a refusal
-		// of the same edit hid it.
-		for _, k := range warnKeys {
-			s.Acked[k] = true
-		}
-	}
-	acted := refused
-	if len(acted) == 0 {
-		acted = asked
-	}
-	if len(acted) == 0 {
-		acted = warned
-	}
+	v := b.judge(now, c, s, paths, noAsk)
+	res := b.answer(now, s, v)
 	// A retry that meets the same conflicts again is checked, but it is not
 	// a new collision: counting it, or announcing it, would inflate both.
 	var fresh []Conflict
-	for _, cf := range acted {
-		if k := "told|" + ackKey(cf); !s.Acked[k] {
+	for _, cf := range v.acted() {
+		if k := toldKey(cf); !s.Acked[k] {
 			s.Acked[k] = true
 			fresh = append(fresh, cf)
 		}
 	}
-	b.count(now, c.Repo, all, refused, asked, warned, len(fresh) > 0)
+	b.count(now, c.Repo, v, len(fresh) > 0)
 	if len(fresh) > 0 {
 		top := mostSevere(fresh)
 		b.record(Activity{At: now, Kind: ActivityConflict, Repo: c.Repo, Member: c.Member, ClaimID: c.ID, Session: s.ID, Agent: s.Agent,
@@ -965,16 +943,76 @@ func (b *Board) decide(now time.Time, c *Claim, s *Session, paths []PathRef, noA
 	return res
 }
 
+// judge applies the policy to the conflicts on every path being written. A
+// bump counts as acknowledged as soon as it is met: its retry goes through.
+func (b *Board) judge(now time.Time, c *Claim, s *Session, paths []PathRef, noAsk bool) verdict {
+	live, liveSess := b.liveClaims(now), b.liveSessions(now)
+	var v verdict
+	for _, p := range paths {
+		for _, cf := range b.conflictsFor(now, c, s.Key, p, live, liveSess) {
+			v.all = append(v.all, cf)
+			key := ackKey(cf)
+			action := b.cfg.Policy.action(cf.Severity)
+			if action == Bump && breachedReservation(c, cf) {
+				// A teammate changed a file inside this claim's reservation
+				// after it was made: the owner is told, not stopped.
+				action = Warn
+			}
+			switch {
+			case action == Deny:
+				v.refused = append(v.refused, cf)
+			case action == Ask && !noAsk:
+				v.asked = append(v.asked, cf)
+			case action == Ask && !s.Acked[key]:
+				v.asked = append(v.asked, cf)
+				v.askKeys = append(v.askKeys, key)
+			case action == Bump && !s.Acked[key]:
+				s.Acked[key] = true
+				v.refused = append(v.refused, cf)
+			case action == Warn && !s.Acked[key]:
+				v.warned = append(v.warned, cf)
+				v.warnKeys = append(v.warnKeys, key)
+			}
+		}
+	}
+	return v
+}
+
+// answer turns a verdict into what the hook says, and acknowledges the
+// questions and warnings it shows.
+func (b *Board) answer(now time.Time, s *Session, v verdict) HookResult {
+	res := HookResult{Decision: Allow, Conflicts: v.all}
+	switch {
+	case len(v.refused) > 0:
+		res.Decision = Refuse
+		res.Reason = b.renderRefusal(now, v.refused, b.cfg.Policy)
+	case len(v.asked) > 0:
+		res.Decision = DecideAsk
+		res.Reason = b.renderRefusal(now, v.asked, b.cfg.Policy)
+		// An agent that cannot ask was told to ask its person; its retry is the answer.
+		for _, k := range v.askKeys {
+			s.Acked[k] = true
+		}
+	case len(v.warned) > 0:
+		res.Context = b.renderWarnings(now, v.warned)
+		for _, k := range v.warnKeys {
+			s.Acked[k] = true
+		}
+	}
+	return res
+}
+
 // count adds one checked edit to the repository's stats, under its most
-// severe conflict and what was done about it.
-func (b *Board) count(now time.Time, repo string, all, refused, asked, warned []Conflict, fresh bool) {
+// severe conflict and what was done about it. A retry that met only
+// collisions already counted is counted as a check alone.
+func (b *Board) count(now time.Time, repo string, v verdict, fresh bool) {
 	st := b.statsOf(repo, now)
 	st.Checks++
-	if !fresh && len(refused)+len(asked)+len(warned) > 0 {
+	if !fresh && len(v.acted()) > 0 {
 		return
 	}
-	if len(all) > 0 {
-		switch mostSevere(all).Severity {
+	if len(v.all) > 0 {
+		switch mostSevere(v.all).Severity {
 		case Block:
 			st.Blocks++
 		case Overlap:
@@ -983,20 +1021,15 @@ func (b *Board) count(now time.Time, repo string, all, refused, asked, warned []
 			st.Nearby++
 		}
 	}
-	hard := false
-	for _, cf := range refused {
-		if b.cfg.Policy.action(cf.Severity) == Deny {
-			hard = true
-		}
-	}
+	hard := slices.ContainsFunc(v.refused, func(cf Conflict) bool { return b.cfg.Policy.action(cf.Severity) == Deny })
 	switch {
 	case hard:
 		st.Refused++
-	case len(refused) > 0:
+	case len(v.refused) > 0:
 		st.Bumped++
-	case len(asked) > 0:
+	case len(v.asked) > 0:
 		st.Asked++
-	case len(warned) > 0:
+	case len(v.warned) > 0:
 		st.Warned++
 	}
 }
