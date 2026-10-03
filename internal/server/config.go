@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -63,7 +64,9 @@ func LoadFileConfig(path string) (FileConfig, error) {
 	if err != nil {
 		return fc, err
 	}
-	if err := json.Unmarshal(data, &fc); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields() // a misspelt setting must not be silently ignored
+	if err := dec.Decode(&fc); err != nil {
 		return fc, fmt.Errorf("%s: %w", path, err)
 	}
 	return fc, fc.validate()

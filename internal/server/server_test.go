@@ -509,3 +509,13 @@ func TestConfigFiles(t *testing.T) {
 		t.Fatal("New accepted no members")
 	}
 }
+
+func TestTeamFileRejectsUnknownSettings(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "team.json")
+	if err := os.WriteFile(p, []byte(`{"members":[],"stall-after":"5m"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadFileConfig(p); err == nil || !strings.Contains(err.Error(), "stall-after") {
+		t.Fatalf("err = %v", err)
+	}
+}

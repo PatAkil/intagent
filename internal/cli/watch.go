@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/patakil/intagent/internal/board"
+	"github.com/patakil/intagent/internal/client"
 )
 
 // watch keeps a worktree on the board for agents that have no hooks, or for
@@ -78,20 +79,34 @@ func (a *App) guard(ctx context.Context, args []string) error {
 		return err
 	}
 	ws, err := openWorkspace(ctx, dir)
-	if err != nil || !ws.settings.Enrolled || !ws.settings.Ready() {
+	if err != nil || !ws.settings.Enrolled || ws.settings.Disabled {
 		return nil
 	}
 	staged, err := ws.wt.Staged(ctx)
 	if err != nil || len(staged) == 0 {
 		return nil
 	}
+	// Unchecked is said out loud, and refused under INTAGENT_FAIL=closed.
+	unchecked := func(why string) error {
+		msg := fmt.Sprintf("intagent guard: %s, so this commit was not checked against teammates' work.", why)
+		if ws.settings.FailClosed {
+			return exitError{code: 1, msg: msg + " INTAGENT_FAIL=closed is set, so the commit is refused."}
+		}
+		fmt.Fprintln(a.Err, msg)
+		return nil
+	}
+	if ws.settings.Token == "" {
+		return unchecked("not signed in to " + ws.settings.URL + " (run: intagent login --url " + ws.settings.URL + ")")
+	}
 	refs := ws.refs(ws.wt.Root, staged)
 	ctx, cancel := context.WithTimeout(ctx, ws.settings.Timeout)
 	defer cancel()
 	res, err := ws.client.Check(ctx, board.CheckRequest{Where: ws.where, Paths: refs})
-	if err != nil {
-		fmt.Fprintf(a.Err, "intagent guard: server unreachable, not checking (%v)\n", err)
-		return nil
+	switch {
+	case client.IsUnauthorized(err):
+		return unchecked(ws.settings.URL + " rejected your token (rotated?); get a new one and run: intagent login --url " + ws.settings.URL)
+	case err != nil:
+		return unchecked(fmt.Sprintf("%s did not answer (%v)", ws.settings.URL, err))
 	}
 	var blocked, overlap []board.Conflict
 	for _, c := range res.Conflicts {
@@ -114,7 +129,8 @@ func (a *App) guard(ctx context.Context, args []string) error {
 		for _, c := range blocked {
 			fmt.Fprintf(&b, "  %s: %s (%s)\n", c.Path, c.Member, c.Why)
 		}
-		b.WriteString("Coordinate with them, or bypass with 'git commit --no-verify'.")
+		b.WriteString("If you are an agent: do not bypass this; tell your user. A person who has agreed it with them can " +
+			"commit with 'git commit --no-verify'.")
 		return exitError{code: 1, msg: b.String()}
 	}
 	return nil

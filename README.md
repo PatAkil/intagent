@@ -78,6 +78,9 @@ intagent token add bob   --config team.json
 intagent serve --config team.json --addr :7400 --data ./intagent-data
 ```
 
+Members added, or tokens rotated with `token add <name> --rotate`, take effect on a running server within seconds;
+the replaced token stops working then.
+
 Or as a container, with everything it keeps in one volume:
 
 ```sh

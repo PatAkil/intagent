@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/patakil/intagent/internal/board"
+	"github.com/patakil/intagent/internal/client"
 	"github.com/patakil/intagent/internal/hook"
 )
 
@@ -85,8 +86,12 @@ func (a *App) handleHook(ctx context.Context, ad hook.Adapter, ev hook.Event) (h
 	if err != nil {
 		return hook.Output{}, nil // not a git repository: nothing to coordinate
 	}
-	if !ws.settings.Enrolled || !ws.settings.Ready() {
-		return hook.Output{}, nil // repository not enrolled, or member not logged in
+	if !ws.settings.Enrolled || ws.settings.Disabled {
+		return hook.Output{}, nil // not a team repository, or switched off on purpose
+	}
+	login := "intagent login --url " + ws.settings.URL
+	if ws.settings.Token == "" {
+		return offBoard(ad, ev, ws, "this computer is not signed in to "+ws.settings.URL, "run: "+login), nil
 	}
 	refs := ws.refs(cwd, ev.Paths)
 	if (ev.Kind == board.KindPreEdit || ev.Kind == board.KindPostEdit) && len(refs) == 0 {
@@ -110,15 +115,43 @@ func (a *App) handleHook(ctx context.Context, ad hook.Adapter, ev hook.Event) (h
 		}
 	}
 	res, err := ws.client.Hook(ctx, hev)
-	if err != nil {
+	switch {
+	case client.IsUnauthorized(err):
+		return offBoard(ad, ev, ws, ws.settings.URL+" rejected this computer's token (it may have been rotated)",
+			"get a new token from whoever runs the server, then run: "+login), err
+	case err != nil:
 		if ws.settings.FailClosed && ev.Kind == board.KindPreEdit {
-			res = board.HookResult{Decision: board.Refuse, Reason: fmt.Sprintf(
-				"[intagent] The team's intagent server at %s did not answer, and this repository is set to refuse edits until it does. Tell your user. (%v)", ws.settings.URL, err)}
+			res = board.HookResult{Decision: board.Refuse, Reason: fmt.Sprintf("[intagent] The team's intagent server at %s did not "+
+				"answer, and INTAGENT_FAIL=closed is set in your user's environment, so edits are refused until it does. "+
+				"Tell your user. (%v)", ws.settings.URL, err)}
 			return ad.Render(ev, res), err
 		}
 		return hook.Output{}, err
 	}
 	return ad.Render(ev, res), nil
+}
+
+// offBoard answers when the repository is a team's but this member cannot
+// reach the board: the agent hears it once, at the start of its session, so
+// its person can fix it; under INTAGENT_FAIL=closed its edits are refused.
+func offBoard(ad hook.Adapter, ev hook.Event, ws *workspace, why, fix string) hook.Output {
+	switch {
+	case ev.Kind == board.KindSessionStart:
+		return ad.Render(ev, board.HookResult{Context: fmt.Sprintf("[intagent] This repository uses intagent, but %s, so "+
+			"teammates cannot see this session and you will not hear about their work. Tell your user to %s.", why, fix)})
+	case ev.Kind == board.KindPreEdit && ws.settings.FailClosed:
+		return ad.Render(ev, board.HookResult{Decision: board.Refuse, Reason: fmt.Sprintf("[intagent] %s, and "+
+			"INTAGENT_FAIL=closed is set in your user's environment, so edits are refused until this is fixed. "+
+			"Tell your user to %s.", capitalize(why), fix)})
+	}
+	return hook.Output{}
+}
+
+func capitalize(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
 }
 
 // footprintEvery limits how often a shell command triggers a footprint scan,

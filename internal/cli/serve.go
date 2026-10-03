@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/patakil/intagent/internal/client"
 	"github.com/patakil/intagent/internal/server"
@@ -36,6 +37,7 @@ func (a *App) serve(ctx context.Context, args []string) error {
 		return fmt.Errorf("--log-level: %w", err)
 	}
 	logger := slog.New(slog.NewTextHandler(a.Err, &slog.HandlerOptions{Level: lvl}))
+	loaded := teamStamp(*cfgPath) // before reading, so a change while starting is not missed
 	fc, err := server.LoadFileConfig(*cfgPath)
 	if errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("%s not found: create it with 'intagent token add <name> --config %s'", *cfgPath, *cfgPath)
@@ -70,10 +72,52 @@ func (a *App) serve(ctx context.Context, args []string) error {
 	policy := fc.BoardConfig().Policy
 	logger.Info("intagent server listening", "url", url, "members", len(fc.Members),
 		"policy", fmt.Sprintf("block=%s overlap=%s nearby=%s", policy.Block, policy.Overlap, policy.Nearby), "data", *data)
+	go watchTeamFile(ctx, *cfgPath, loaded, srv, logger)
 	err = srv.Serve(ctx, ln)
 	logger.Info("intagent server stopped", "err", err)
 	return err
 }
+
+// watchTeamFile applies changes to the team file's members while the server
+// runs: 'token add' and '--rotate' take effect within seconds, and a rotated
+// token stops working. Policy and other settings apply at the next start.
+func watchTeamFile(ctx context.Context, path, last string, srv *server.Server, logger *slog.Logger) {
+	t := time.NewTicker(teamFilePoll)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		now := teamStamp(path)
+		if now == last || now == "" {
+			continue
+		}
+		last = now
+		fc, err := server.LoadFileConfig(path)
+		if err == nil {
+			err = srv.SetMembers(fc.Members)
+		}
+		if err != nil {
+			logger.Warn("team file changed but was not applied", "file", path, "err", err)
+			continue
+		}
+		logger.Info("members reloaded", "file", path, "members", len(fc.Members))
+	}
+}
+
+// teamStamp identifies a version of the team file.
+func teamStamp(path string) string {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprint(fi.ModTime().UnixNano(), fi.Size())
+}
+
+// teamFilePoll is how often serve looks for changes to the team file.
+var teamFilePoll = 2 * time.Second
 
 func (a *App) token(_ context.Context, args []string) error {
 	if len(args) == 0 || args[0] != "add" {
@@ -97,6 +141,7 @@ func (a *App) token(_ context.Context, args []string) error {
 	}
 	fmt.Fprintf(a.Out, "Token for %s (shown once; the server keeps only its hash):\n\n  %s\n\n", name, tok)
 	fmt.Fprintf(a.Out, "%s connects with:\n\n  intagent login --url <server-url> --token %s\n", name, tok)
+	fmt.Fprintln(a.Out, "\nA running 'intagent serve' picks this up within a few seconds; a replaced token stops working then.")
 	return nil
 }
 

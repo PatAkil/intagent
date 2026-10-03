@@ -966,3 +966,104 @@ func TestCLIArgumentsKeepTheirShape(t *testing.T) {
 		t.Fatalf("notes as delivered: %s", out)
 	}
 }
+
+// A teammate who is not signed in, or whose token was rotated, hears so;
+// before, the hook went quiet and they were invisible to the team.
+func TestMembersOffTheBoardAreTold(t *testing.T) {
+	tm := newTeam(t, "alice")
+	a := tm.clone("alice")
+	tm.enrol(map[string]string{"alice": a})
+	start := claudeEvent("d1", a, "SessionStart", map[string]any{"source": "startup"})
+	out, _, code := tm.as("dave", a, start, "hook") // dave never ran intagent login
+	if _, _, ctx := decision(t, out); code != 0 || !strings.Contains(ctx, "this computer is not signed in to "+tm.url) ||
+		!strings.Contains(ctx, "intagent login --url "+tm.url) {
+		t.Fatalf("not signed in: %d %q", code, out)
+	}
+	t.Setenv("INTAGENT_TOKEN", "ia_rotated")
+	out, _, _ = tm.as("alice", a, start, "hook")
+	if _, _, ctx := decision(t, out); !strings.Contains(ctx, "rejected this computer's token") {
+		t.Fatalf("rejected token: %q", out)
+	}
+	// Only the session's start says it; edits stay quiet...
+	edit := claudeEvent("d1", a, "PreToolUse", map[string]any{"tool_name": "Edit", "tool_input": map[string]any{"file_path": filepath.Join(a, "README.md")}})
+	if out, _, _ := tm.as("alice", a, edit, "hook"); out != "" {
+		t.Fatalf("edit while rejected: %q", out)
+	}
+	// ...unless the person asked for fail-closed.
+	t.Setenv("INTAGENT_FAIL", "closed")
+	out, _, _ = tm.as("alice", a, edit, "hook")
+	if dec, reason, _ := decision(t, out); dec != "deny" || !strings.Contains(reason, "INTAGENT_FAIL=closed is set in your user's environment") {
+		t.Fatalf("fail closed with a rejected token: %q", out)
+	}
+	// The guard says it did not check, and refuses under fail-closed.
+	writeFile(t, filepath.Join(a, "x.go"), "package x\n")
+	gitRun(t, a, "add", "x.go")
+	if _, errOut, code := tm.as("alice", a, "", "guard"); code != 1 || !strings.Contains(errOut, "rejected your token") {
+		t.Fatalf("guard, fail-closed: %d %s", code, errOut)
+	}
+	t.Setenv("INTAGENT_FAIL", "")
+	if _, errOut, code := tm.as("alice", a, "", "guard"); code != 0 || !strings.Contains(errOut, "was not checked") {
+		t.Fatalf("guard: %d %s", code, errOut)
+	}
+}
+
+// Members added or rotated while the server runs take effect without a
+// restart, and a rotated token stops working.
+func TestServeReloadsMembers(t *testing.T) {
+	old := teamFilePoll
+	teamFilePoll = 20 * time.Millisecond
+	t.Cleanup(func() { teamFilePoll = old })
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "team.json")
+	run := func(args ...string) string {
+		t.Helper()
+		var out, errb bytes.Buffer
+		app := &App{In: strings.NewReader(""), Out: &out, Err: &errb, Version: "test", Dir: dir}
+		if code := app.Run(context.Background(), args); code != 0 {
+			t.Fatalf("%v: %s", args, errb.String())
+		}
+		return strings.TrimSpace(strings.Split(out.String(), "\n")[2])
+	}
+	run("token", "add", "alice", "--config", cfg)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan int)
+	go func() {
+		var out, errb bytes.Buffer
+		app := &App{In: strings.NewReader(""), Out: &out, Err: &errb, Version: "test", Dir: dir}
+		done <- app.Run(ctx, []string{"serve", "--config", cfg, "--addr", addr, "--data", ""})
+	}()
+	defer func() { cancel(); <-done }()
+	whoami := func(tok string) int {
+		req, _ := http.NewRequest(http.MethodGet, "http://"+addr+"/v1/whoami", nil)
+		req.Header.Set("Authorization", "Bearer "+tok)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return 0
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+	waitFor := func(tok string, want int) {
+		t.Helper()
+		for i := 0; i < 200; i++ {
+			if whoami(tok) == want {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatalf("token %s… never answered %d", tok[:6], want)
+	}
+	carol := run("token", "add", "carol", "--config", cfg)
+	waitFor(carol, http.StatusOK)
+	rotated := run("token", "add", "carol", "--config", cfg, "--rotate")
+	waitFor(rotated, http.StatusOK)
+	if code := whoami(carol); code != http.StatusUnauthorized {
+		t.Fatalf("the rotated-out token still answers %d", code)
+	}
+}

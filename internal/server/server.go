@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/patakil/intagent/internal/board"
@@ -55,7 +56,7 @@ type Options struct {
 // Server serves one team's board.
 type Server struct {
 	board      *board.Board
-	members    []memberHash
+	members    atomic.Pointer[[]memberHash] // swapped whole when team.json changes
 	hub        *hub
 	log        *slog.Logger
 	now        func() time.Time
@@ -103,15 +104,8 @@ func New(o Options) (*Server, error) {
 	if s.sweepEvery <= 0 {
 		s.sweepEvery = 15 * time.Second
 	}
-	for _, m := range o.Members {
-		h, err := hex.DecodeString(m.TokenSHA256)
-		if err != nil || !ValidMemberName(m.Name) {
-			return nil, fmt.Errorf("member %q is not valid", m.Name)
-		}
-		s.members = append(s.members, memberHash{name: m.Name, hash: h})
-	}
-	if len(s.members) == 0 {
-		return nil, errors.New("no members configured: add one with 'intagent token add <name>'")
+	if err := s.SetMembers(o.Members); err != nil {
+		return nil, err
 	}
 	publish := s.hub.publish
 	if o.Webhook.URL != "" {
@@ -179,13 +173,31 @@ func (s *Server) sessionMember(cookie string) (string, bool) {
 		return "", false
 	}
 	name := ""
-	for _, m := range s.members {
+	for _, m := range *s.members.Load() {
 		want, _ := hex.DecodeString(s.session(m))
 		if hmac.Equal(got, want) {
 			name = m.name
 		}
 	}
 	return name, name != ""
+}
+
+// SetMembers replaces who may use the server: new members can sign in, and a
+// removed or rotated token stops working at once.
+func (s *Server) SetMembers(ms []Member) error {
+	list := make([]memberHash, 0, len(ms))
+	for _, m := range ms {
+		h, err := hex.DecodeString(m.TokenSHA256)
+		if err != nil || !ValidMemberName(m.Name) {
+			return fmt.Errorf("member %q is not valid", m.Name)
+		}
+		list = append(list, memberHash{name: m.Name, hash: h})
+	}
+	if len(list) == 0 {
+		return errors.New("no members configured: add one with 'intagent token add <name>'")
+	}
+	s.members.Store(&list)
+	return nil
 }
 
 // Board exposes the board, for tests and embedding.
@@ -264,7 +276,7 @@ func (s *Server) authenticate(token string) (string, bool) {
 	}
 	got, _ := hex.DecodeString(HashToken(token))
 	name := ""
-	for _, m := range s.members {
+	for _, m := range *s.members.Load() {
 		if subtle.ConstantTimeCompare(got, m.hash) == 1 {
 			name = m.name
 		}
@@ -315,7 +327,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var session string
-	for _, m := range s.members {
+	for _, m := range *s.members.Load() {
 		if m.name == name {
 			session = s.session(m)
 		}
