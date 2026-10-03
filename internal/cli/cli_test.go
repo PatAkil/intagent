@@ -36,6 +36,8 @@ type team struct {
 	origin string
 	dir    string
 	tokens map[string]string
+	// hookBudget, when set, replaces the hooks' time budget.
+	hookBudget time.Duration
 }
 
 func gitRun(t *testing.T, dir string, args ...string) string {
@@ -125,7 +127,7 @@ func (tm *team) as(member, dir, stdin string, args ...string) (string, string, i
 	tm.t.Setenv("INTAGENT_CONFIG", filepath.Join(tm.dir, member+".json"))
 	tm.t.Setenv("INTAGENT_HOST", member+"-laptop")
 	var out, errb bytes.Buffer
-	app := &App{In: strings.NewReader(stdin), Out: &out, Err: &errb, Version: "test", Dir: dir}
+	app := &App{In: strings.NewReader(stdin), Out: &out, Err: &errb, Version: "test", Dir: dir, HookBudget: tm.hookBudget}
 	code := app.Run(context.Background(), args)
 	return out.String(), errb.String(), code
 }
@@ -1040,9 +1042,6 @@ func TestMembersOffTheBoardAreTold(t *testing.T) {
 // Members added or rotated while the server runs take effect without a
 // restart, and a rotated token stops working.
 func TestServeReloadsMembers(t *testing.T) {
-	old := teamFilePoll
-	teamFilePoll = 20 * time.Millisecond
-	t.Cleanup(func() { teamFilePoll = old })
 	dir := t.TempDir()
 	cfg := filepath.Join(dir, "team.json")
 	run := func(args ...string) string {
@@ -1065,7 +1064,7 @@ func TestServeReloadsMembers(t *testing.T) {
 	done := make(chan int)
 	go func() {
 		var out, errb bytes.Buffer
-		app := &App{In: strings.NewReader(""), Out: &out, Err: &errb, Version: "test", Dir: dir}
+		app := &App{In: strings.NewReader(""), Out: &out, Err: &errb, Version: "test", Dir: dir, TeamFilePoll: 20 * time.Millisecond}
 		done <- app.Run(ctx, []string{"serve", "--config", cfg, "--addr", addr, "--data", ""})
 	}()
 	defer func() { cancel(); <-done }()
@@ -1127,9 +1126,7 @@ func TestHookKeepsToItsBudget(t *testing.T) {
 	tm := newTeam(t, "alice")
 	a := tm.clone("alice")
 	tm.enrol(map[string]string{"alice": a})
-	old := hookBudget
-	hookBudget = 300 * time.Millisecond
-	t.Cleanup(func() { hookBudget = old })
+	tm.hookBudget = 300 * time.Millisecond
 	// A git that hangs, as one can on a network file system or behind a stuck lock.
 	slow := t.TempDir()
 	writeFile(t, filepath.Join(slow, "git"), "#!/bin/sh\nexec sleep 30\n")
@@ -1142,7 +1139,7 @@ func TestHookKeepsToItsBudget(t *testing.T) {
 	start := time.Now()
 	out, _, _ := tm.as("alice", a, edit, "hook")
 	if took := time.Since(start); took > 3*time.Second {
-		t.Fatalf("the hook took %s with a budget of %s", took, hookBudget)
+		t.Fatalf("the hook took %s with a budget of %s", took, tm.hookBudget)
 	}
 	if dec, reason, _ := decision(t, out); dec != "deny" || !strings.Contains(reason, "could not read this repository's setup") {
 		t.Fatalf("a hook out of time under fail-closed: %q", out)

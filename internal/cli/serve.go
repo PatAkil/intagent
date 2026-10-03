@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -45,9 +46,8 @@ func (a *App) serve(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	server.Version = a.Version
 	srv, err := server.New(server.Options{
-		Members: fc.Members, Board: fc.BoardConfig(), DataDir: *data, PublicRead: *public,
+		Members: fc.Members, Version: a.Version, Board: fc.BoardConfig(), DataDir: *data, PublicRead: *public,
 		Logger: logger, Dashboard: web.Handler(), Webhook: fc.Webhook,
 	})
 	if err != nil {
@@ -74,7 +74,7 @@ func (a *App) serve(ctx context.Context, args []string) error {
 	policy := fc.BoardConfig().Policy
 	logger.Info("intagent server listening", "url", url, "members", len(fc.Members),
 		"policy", fmt.Sprintf("block=%s overlap=%s nearby=%s", policy.Block, policy.Overlap, policy.Nearby), "data", *data)
-	go watchTeamFile(ctx, *cfgPath, loaded, srv, logger)
+	go watchTeamFile(ctx, *cfgPath, loaded, srv, logger, cmp.Or(a.TeamFilePoll, 2*time.Second))
 	err = srv.Serve(ctx, ln)
 	logger.Info("intagent server stopped", "err", err)
 	return err
@@ -83,8 +83,8 @@ func (a *App) serve(ctx context.Context, args []string) error {
 // watchTeamFile applies changes to the team file's members while the server
 // runs: 'token add' and '--rotate' take effect within seconds, and a rotated
 // token stops working. Policy and other settings apply at the next start.
-func watchTeamFile(ctx context.Context, path, last string, srv *server.Server, logger *slog.Logger) {
-	t := time.NewTicker(teamFilePoll)
+func watchTeamFile(ctx context.Context, path, last string, srv *server.Server, logger *slog.Logger, every time.Duration) {
+	t := time.NewTicker(every)
 	defer t.Stop()
 	for {
 		select {
@@ -117,9 +117,6 @@ func teamStamp(path string) string {
 	}
 	return fmt.Sprint(fi.ModTime().UnixNano(), fi.Size())
 }
-
-// teamFilePoll is how often serve looks for changes to the team file.
-var teamFilePoll = 2 * time.Second
 
 func (a *App) token(_ context.Context, args []string) error {
 	if len(args) == 0 || args[0] != "add" {

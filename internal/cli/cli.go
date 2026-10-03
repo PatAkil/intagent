@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 )
 
 // App runs intagent subcommands against injectable streams.
@@ -19,6 +20,13 @@ type App struct {
 	Version string
 	// Dir overrides the working directory, for tests.
 	Dir string
+	// HookBudget bounds one hook run, git included. Zero means 8 seconds, under
+	// the 10 seconds init gives each hook: an agent that kills a slow hook
+	// lets the edit through, even under INTAGENT_FAIL=closed.
+	HookBudget time.Duration
+	// TeamFilePoll is how often serve looks for changes to the team file.
+	// Zero means 2 seconds.
+	TeamFilePoll time.Duration
 }
 
 const usage = `intagent: intent for agents. Every coding agent on your team sees what the

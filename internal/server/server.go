@@ -3,6 +3,7 @@
 package server
 
 import (
+	"cmp"
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
@@ -28,13 +29,12 @@ import (
 	"github.com/patakil/intagent/internal/fsutil"
 )
 
-// Version is the server's version, set by the CLI.
-var Version = "dev"
-
 // Options configures a Server.
 type Options struct {
-	// Members may connect. Required unless Insecure is set.
+	// Members may connect; there must be at least one.
 	Members []Member
+	// Version is reported by /healthz and /v1/whoami. Empty reports "dev".
+	Version string
 	// Board holds timings and policy.
 	Board board.Config
 	// DataDir keeps the board's snapshot. Empty keeps everything in memory.
@@ -66,6 +66,7 @@ type Server struct {
 	dataDir    string
 	publicRead bool
 	demo       bool
+	version    string
 	sweepEvery time.Duration
 	dashboard  http.Handler
 	saved      uint64
@@ -96,6 +97,7 @@ func New(o Options) (*Server, error) {
 		dataDir:    o.DataDir,
 		publicRead: o.PublicRead,
 		demo:       o.Demo,
+		version:    cmp.Or(o.Version, "dev"),
 		sweepEvery: o.SweepEvery,
 		dashboard:  o.Dashboard,
 		closing:    make(chan struct{}),
@@ -362,11 +364,11 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 // --- handlers ---------------------------------------------------------------
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "version": Version})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "version": s.version})
 }
 
 func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, board.Whoami{Member: memberFrom(r), Version: Version, Policy: s.board.Config().Policy, Demo: s.demo})
+	writeJSON(w, http.StatusOK, board.Whoami{Member: memberFrom(r), Version: s.version, Policy: s.board.Config().Policy, Demo: s.demo})
 }
 
 func (s *Server) handleHook(w http.ResponseWriter, r *http.Request) {

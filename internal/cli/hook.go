@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -22,11 +23,6 @@ import (
 
 // maxHookInput caps the hook payload read from stdin.
 const maxHookInput = 32 << 20
-
-// hookBudget bounds one hook run, git included. It stays under the 10 seconds
-// intagent init gives each hook, because an agent that kills a slow hook lets
-// the edit through, even under INTAGENT_FAIL=closed.
-var hookBudget = 8 * time.Second
 
 // hook handles one agent hook event. It never blocks an agent because of its
 // own failure: any error is logged and the hook exits 0 with no output, unless
@@ -68,7 +64,7 @@ func (a *App) hook(ctx context.Context, args []string) (err error) {
 	if ev.Skip || (*userLevel && projectWires(ad.Agent(), ev.Cwd)) {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(ctx, hookBudget)
+	ctx, cancel := context.WithTimeout(ctx, cmp.Or(a.HookBudget, 8*time.Second))
 	defer cancel()
 	out, err := a.handleHook(ctx, ad, ev)
 	if err != nil {

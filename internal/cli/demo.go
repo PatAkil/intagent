@@ -32,9 +32,8 @@ func (a *App) demo(ctx context.Context, args []string) error {
 	cfg := board.DefaultConfig()
 	cfg.StallAfter = 40 * time.Second // so a stall shows up within the demo
 	cfg.ToolStallAfter = 90 * time.Second
-	server.Version = a.Version
 	srv, err := server.New(server.Options{
-		Members: members, Board: cfg, PublicRead: true, Demo: true, Dashboard: web.Handler(),
+		Members: members, Version: a.Version, Board: cfg, PublicRead: true, Demo: true, Dashboard: web.Handler(),
 		Logger: slog.New(slog.NewTextHandler(a.Err, &slog.HandlerOptions{Level: slog.LevelWarn})), SweepEvery: 2 * time.Second,
 	})
 	if err != nil {
