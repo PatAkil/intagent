@@ -4,9 +4,11 @@ import (
 	"context"
 	"crypto/tls"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -42,7 +44,9 @@ func (l *limitListener) Accept() (net.Conn, error) {
 		}
 		select {
 		case l.slots <- struct{}{}:
-			return &limitConn{Conn: c, l: l}, nil
+			lc := &limitConn{Conn: c, l: l}
+			lc.heard.Store(time.Now().UnixNano())
+			return lc, nil
 		default:
 			_ = c.Close()
 			l.turnedAway()
@@ -61,11 +65,23 @@ func (l *limitListener) turnedAway() {
 	}
 }
 
-// limitConn gives its slot back when it is closed, once.
+// limitConn gives its slot back when it is closed, once. It notes when it
+// last read something from its client, for freshConns.
 type limitConn struct {
 	net.Conn
 	l    *limitListener
 	once sync.Once
+	// heard is when it was accepted or last read bytes, in Unix
+	// nanoseconds.
+	heard atomic.Int64
+}
+
+func (c *limitConn) Read(p []byte) (int, error) {
+	n, err := c.Conn.Read(p)
+	if n > 0 {
+		c.heard.Store(time.Now().UnixNano())
+	}
+	return n, err
 }
 
 func (c *limitConn) Close() error {
@@ -114,16 +130,26 @@ func (l *tlsListener) Accept() (net.Conn, error) {
 	return tc, nil
 }
 
-// freshConns follows the connections that have not sent a request yet. As
-// it stops, http.Server waits for them as for busy ones, up to Serve's
-// five seconds, and then fails: one browser's preconnect, or a client's
-// spare connection, held every restart up that long while hooks went
-// unchecked. Their clients have sent nothing, so they are closed instead.
+// unusedAfter is how long a connection that has not sent a whole request
+// must have sent nothing before the server, as it stops, takes it for
+// unused. One whose client is sending its request, or is in a TLS
+// handshake, has sent something within a round trip.
+const unusedAfter = 500 * time.Millisecond
+
+// freshConns follows the connections that have not sent a whole request
+// yet. As it stops, http.Server waits for them as for busy ones, up to
+// Serve's five seconds, and then fails: one browser's preconnect, or a
+// client's spare connection, held every restart up that long while hooks
+// went unchecked. So once the server starts to stop, each is closed when it
+// has sent nothing for quiet, unless its request has arrived by then. One
+// whose request is under way, or whose TLS handshake is, is left to be
+// answered: closed, its hook would go ahead unchecked.
 type freshConns struct {
 	mu    sync.Mutex
 	conns map[net.Conn]struct{}
-	// done is set once they are closed: one that turns up after that, as
-	// the listener closes, is closed as it arrives.
+	quiet time.Duration
+	// done is set once the server starts to stop: a connection that turns
+	// up after that, as the listener closes, is closed once quiet too.
 	done bool
 }
 
@@ -131,24 +157,55 @@ type freshConns struct {
 func (f *freshConns) track(c net.Conn, st http.ConnState) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	switch {
-	case st == http.StateNew && f.done:
-		_ = c.Close()
-	case st == http.StateNew:
-		f.conns[c] = struct{}{}
-	default:
+	if st != http.StateNew {
 		delete(f.conns, c)
+		return
+	}
+	f.conns[c] = struct{}{}
+	if f.done {
+		f.closeWhenQuiet(c)
 	}
 }
 
-// closeAll closes the connections that have sent nothing, when the server
-// starts to stop.
+// closeAll closes the connections that have not sent a whole request once
+// each has been quiet for f.quiet, when the server starts to stop.
 func (f *freshConns) closeAll() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.done = true
 	for c := range f.conns {
-		_ = c.Close()
+		f.closeWhenQuiet(c)
 	}
-	clear(f.conns)
+}
+
+// closeWhenQuiet closes c if it has sent nothing for f.quiet, or looks again
+// once it would have, if it is still fresh then. f.mu is held.
+func (f *freshConns) closeWhenQuiet(c net.Conn) {
+	wait := f.quiet - quietFor(c)
+	if wait <= 0 {
+		_ = c.Close()
+		delete(f.conns, c)
+		return
+	}
+	time.AfterFunc(wait, func() {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if _, ok := f.conns[c]; ok {
+			f.closeWhenQuiet(c)
+		}
+	})
+}
+
+// quietFor is how long the server has read nothing from c: since it was
+// accepted, or since the last bytes of its TLS handshake or request. A
+// connection that is not the server's own is taken for quiet.
+func quietFor(c net.Conn) time.Duration {
+	if tc, ok := c.(*tls.Conn); ok {
+		c = tc.NetConn()
+	}
+	lc, ok := c.(*limitConn)
+	if !ok {
+		return math.MaxInt64
+	}
+	return time.Since(time.Unix(0, lc.heard.Load()))
 }

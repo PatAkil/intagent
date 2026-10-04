@@ -97,10 +97,12 @@ type Server struct {
 	tls     *tls.Config
 	// maxConns, readTimeout and handshakeTimeout bound what clients can
 	// hold: connections, and the time to send a request or finish a TLS
-	// handshake.
+	// handshake. As the server stops, a connection that has not sent a
+	// whole request is closed once it has sent nothing for unusedAfter.
 	maxConns         int
 	readTimeout      time.Duration
 	handshakeTimeout time.Duration
+	unusedAfter      time.Duration
 	// admit meters what members ask of the server.
 	admit *admission
 	// saves follows the board's snapshots (persist.go). saveFile writes
@@ -158,6 +160,7 @@ func New(o Options) (*Server, error) {
 		s.sweepEvery = 15 * time.Second
 	}
 	s.tls, s.maxConns, s.readTimeout, s.handshakeTimeout = o.TLS, o.MaxConnections, readTimeout, handshakeTimeout
+	s.unusedAfter = unusedAfter
 	if s.maxConns <= 0 {
 		s.maxConns = DefaultMaxConnections
 	}
@@ -359,7 +362,7 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 		ln = &tlsListener{Listener: ln, config: s.tls, timeout: s.handshakeTimeout}
 	}
 	srv.RegisterOnShutdown(func() { s.closeOnce.Do(func() { close(s.closing) }) })
-	fresh := &freshConns{conns: map[net.Conn]struct{}{}}
+	fresh := &freshConns{conns: map[net.Conn]struct{}{}, quiet: s.unusedAfter}
 	srv.ConnState = fresh.track
 	srv.RegisterOnShutdown(fresh.closeAll)
 	// The sweeper and the persister stop as the server starts to stop: no

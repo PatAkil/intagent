@@ -3,6 +3,7 @@ package server
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -155,10 +156,11 @@ func TestStreamOutlivesReadTimeout(t *testing.T) {
 }
 
 // A connection that has sent nothing does not hold up a stop: Serve closes
-// it and returns at once, with no error. It waited five seconds for it, and
-// then returned one.
+// it once it has been quiet for unusedAfter, and returns with no error. It
+// waited five seconds for it, and then returned one.
 func TestShutdownClosesUnusedConnections(t *testing.T) {
 	ts := newTestServer(t)
+	ts.unusedAfter = 50 * time.Millisecond
 	stop := serveTest(t, ts)
 	idle, err := net.Dial("tcp", strings.TrimPrefix(ts.url, "http://"))
 	if err != nil {
@@ -181,6 +183,57 @@ func TestShutdownClosesUnusedConnections(t *testing.T) {
 	_ = idle.SetReadDeadline(time.Now().Add(5 * time.Second))
 	if _, err := idle.Read(make([]byte, 1)); err == nil {
 		t.Fatal("the unused connection is still open")
+	}
+}
+
+// A connection whose request is under way as the server starts to stop is
+// answered, over TLS too: here the request's first line has arrived, and
+// the rest comes after the stop began. Every connection that had not sent a
+// whole request was closed, and its hook went ahead unchecked.
+func TestShutdownAnswersARequestUnderWay(t *testing.T) {
+	cert, pool := ecdsaCert(t)
+	for _, secure := range []bool{false, true} {
+		ts := newTestServer(t, func(o *Options) {
+			if secure {
+				o.TLS = TLSConfig([]tls.Certificate{cert})
+			}
+		})
+		ts.unusedAfter = 2 * time.Second
+		stop := serveTest(t, ts)
+		addr := strings.TrimPrefix(ts.url, "http://")
+		var c net.Conn
+		var err error
+		if secure {
+			c, err = tls.Dial("tcp", addr, &tls.Config{RootCAs: pool, ServerName: "127.0.0.1", MinVersion: tls.VersionTLS12})
+		} else {
+			c, err = net.Dial("tcp", addr)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = c.Close() }()
+		if _, err := io.WriteString(c, "GET /healthz HTTP/1.1\r\nHost: intagent\r\n"); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(50 * time.Millisecond) // the server reads it
+		stopped := make(chan error, 1)
+		go func() { stopped <- stop() }()
+		time.Sleep(100 * time.Millisecond) // the stop has begun
+		if _, err := io.WriteString(c, "\r\n"); err != nil {
+			t.Fatalf("TLS %t: the rest of the request: %v", secure, err)
+		}
+		_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
+		resp, err := http.ReadResponse(bufio.NewReader(c), nil)
+		if err != nil {
+			t.Fatalf("TLS %t: a request under way as the server stopped: %v", secure, err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("TLS %t: a request under way as the server stopped: %d", secure, resp.StatusCode)
+		}
+		if err := <-stopped; err != nil {
+			t.Fatalf("TLS %t: Serve: %v", secure, err)
+		}
 	}
 }
 
