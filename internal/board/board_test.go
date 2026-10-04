@@ -1126,7 +1126,7 @@ func TestParseHelpers(t *testing.T) {
 func TestClonesShareNothingMutable(t *testing.T) {
 	c := &claim{Intents: []Intent{{Pattern: "a/**"}}, Footprint: map[string]*touch{"a.go": {}},
 		Inbox: []InboxItem{{Paths: []string{"a"}, DeliveredTo: map[string]bool{"s": true}}}, Alerted: map[string]bool{"k": true}}
-	s := &session{Acked: map[string]bool{"k": true}, Calls: map[string]bool{"t": true}}
+	s := &session{Acked: map[string]bool{"k": true}, Calls: map[string]bool{"t": true}, refused: []string{"t"}}
 	for _, pair := range [][2]any{{c, c.clone()}, {s, s.clone()}} {
 		a, b := reflect.ValueOf(pair[0]).Elem(), reflect.ValueOf(pair[1]).Elem()
 		for i := 0; i < a.NumField(); i++ {

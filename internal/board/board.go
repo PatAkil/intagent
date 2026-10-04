@@ -394,6 +394,9 @@ func (b *Board) Hook(now time.Time, ev HookEvent) (HookResult, error) {
 
 	c := b.claimFor(now, ev.Member, w)
 	s := b.sessionFor(now, ev, c)
+	if ev.Kind == KindPostEdit && ev.ToolUseID != "" && !s.Calls[ev.ToolUseID] {
+		b.unansweredEdit(now, c, s, ev)
+	}
 	was := b.state(now, s)
 	res := HookResult{Decision: DecisionAllow, ClaimID: c.ID}
 
@@ -419,7 +422,7 @@ func (b *Board) Hook(now time.Time, ev HookEvent) (HookResult, error) {
 		if res.Decision == DecisionRefuse || (res.Decision == DecisionAsk && ev.NoAsk) {
 			// The edit does not run, so no tool end will follow it. (An ask that
 			// the person answers runs, or not, and the agent reports either.)
-			endTool(s, ev.ToolUseID)
+			refuseTool(s, ev.ToolUseID)
 		} else if ev.LateContext && res.Context != "" {
 			s.Pending, res.Context = joinBlocks(s.Pending, res.Context), ""
 		}

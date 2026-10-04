@@ -2,6 +2,7 @@ package board
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -161,4 +162,127 @@ func TestLateQuestionCreatesNothing(t *testing.T) {
 		t.Fatalf("claims %d, unheard %d", len(v.Claims), v.Stats.Unheard)
 	}
 	mustContain(t, h.b.View(h.now, repo).Text(), "1 edit went ahead unchecked")
+}
+
+func (h *harness) call(kind Kind, member, session, id string, paths ...string) HookResult {
+	h.t.Helper()
+	res, err := h.b.Hook(h.now, HookEvent{Kind: kind, Member: member, Agent: AgentClaudeCode, SessionID: session, Where: whereOf(member),
+		Tool: "Edit", ToolUseID: id, Paths: refs(paths...)})
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	return res
+}
+
+// An edit whose check the agent never heard is checked when the edit is
+// reported, and what the check finds is told then, as information, without
+// spending the bump the agent's next edit of the file gets.
+func TestEditMadeWithoutACheckIsToldAfterwards(t *testing.T) {
+	h := newHarness(t)
+	h.hook(KindPrompt, "bob", "b1")
+	h.edit("bob", "b1", "svc/pay/retry.go")
+	h.hook(KindPrompt, "alice", "a1")
+
+	// A call checked as usual says nothing more when it ends.
+	h.call(KindPreEdit, "alice", "a1", "t1", "docs/a.md")
+	if res := h.call(KindPostEdit, "alice", "a1", "t1", "docs/a.md"); res.Context != "" {
+		t.Fatalf("checked edit: %q", res.Context)
+	}
+	// One whose pre_edit never arrived is told what its check would have said.
+	res := h.call(KindPostEdit, "alice", "a1", "t2", "svc/pay/retry.go")
+	mustContain(t, res.Context, "Your edit of svc/pay/retry.go was not checked before it ran", dataNotice,
+		"bob's agent", "has unmerged changes to this file", "Keep your change compatible")
+	if res := h.call(KindPreEdit, "alice", "a1", "t3", "svc/pay/retry.go"); res.Decision != DecisionRefuse {
+		t.Fatalf("next edit of the file: %s, want the bump it has not had", res.Decision)
+	}
+	if n := conflictsOf(h, "alice"); n != 1 {
+		t.Fatalf("%d collisions announced, want the bump's alone", n)
+	}
+}
+
+// A refusal whose post_edit arrives never reached the agent, which made the
+// edit: it hears the check then, and its next edit of the file is refused
+// again, not let through as the retry of a refusal it heard.
+func TestRefusalTheAgentDidNotHearIsUnspent(t *testing.T) {
+	h := newHarness(t)
+	h.hook(KindPrompt, "bob", "b1")
+	h.edit("bob", "b1", "svc/pay/retry.go")
+	h.hook(KindPrompt, "alice", "a1")
+
+	if res := h.call(KindPreEdit, "alice", "a1", "t1", "svc/pay/retry.go"); res.Decision != DecisionRefuse {
+		t.Fatalf("first edit: %s", res.Decision)
+	}
+	res := h.call(KindPostEdit, "alice", "a1", "t1", "svc/pay/retry.go")
+	mustContain(t, res.Context, "was not checked before it ran", "bob's agent")
+	if res := h.call(KindPreEdit, "alice", "a1", "t2", "svc/pay/retry.go"); res.Decision != DecisionRefuse {
+		t.Fatalf("next edit after the unheard refusal: %s, want refused", res.Decision)
+	}
+	if res := h.call(KindPreEdit, "alice", "a1", "t3", "svc/pay/retry.go"); res.Decision != DecisionAllow {
+		t.Fatalf("retry of a refusal she heard: %s, want allowed", res.Decision)
+	}
+}
+
+// Refused calls are remembered while others are refused and end, a few at a
+// time.
+func TestRefusedCallsAreRememberedAFewAtATime(t *testing.T) {
+	h := newHarness(t)
+	h.hook(KindPrompt, "bob", "b1")
+	h.declare("bob", ModeExclusive, "Mine", "svc/**")
+	h.hook(KindPrompt, "alice", "a1")
+	for i := range maxRefused + 2 {
+		h.call(KindToolStart, "alice", "a1", fmt.Sprintf("shell%d", i))
+		if res := h.call(KindPreEdit, "alice", "a1", fmt.Sprintf("t%d", i), "svc/x.go"); res.Decision != DecisionRefuse {
+			t.Fatalf("edit %d: %s", i, res.Decision)
+		}
+		h.call(KindToolEnd, "alice", "a1", fmt.Sprintf("shell%d", i))
+	}
+	s := h.b.sessions[sessionKey("alice", AgentClaudeCode, "a1")]
+	if len(s.refused) != maxRefused || s.refused[0] != "t2" || s.refused[maxRefused-1] != fmt.Sprintf("t%d", maxRefused+1) {
+		t.Fatalf("refused calls remembered: %q", s.refused)
+	}
+}
+
+// An unchecked edit inside an active reservation is a breach, recorded once
+// per file, and the agent is told to undo it or agree it.
+func TestUncheckedEditInsideAReservationIsABreach(t *testing.T) {
+	h := newHarness(t)
+	h.hook(KindPrompt, "bob", "b1")
+	h.declare("bob", ModeExclusive, "Rewrite the guide", "docs/**")
+	h.hook(KindPrompt, "alice", "a1")
+
+	res := h.call(KindPostEdit, "alice", "a1", "t1", "docs/guide.md")
+	mustContain(t, res.Context, "docs/guide.md was not checked", `"Rewrite the guide"`, "Undo your change", "tell your user")
+	got := breaches(h)
+	if len(got) != 1 || got[0].Member != "alice" || got[0].Severity != SeverityBlock || got[0].Decision != DecisionAllow ||
+		got[0].Paths[0] != "docs/guide.md" {
+		t.Fatalf("breaches = %+v", got)
+	}
+	h.call(KindPostEdit, "alice", "a1", "t2", "docs/guide.md")
+	if n := len(breaches(h)); n != 1 {
+		t.Fatalf("%d breaches for one file", n)
+	}
+	// A change git found first is not reported again by the edit's report.
+	scan(t, h, "alice", "a1", "docs/guide.md", "docs/index.md")
+	if n := len(breaches(h)); n != 2 {
+		t.Fatalf("%d breaches after the scan found a second file", n)
+	}
+	h.call(KindPostEdit, "alice", "a1", "t3", "docs/index.md")
+	if n := len(breaches(h)); n != 2 {
+		t.Fatalf("%d breaches: the scan's file reported twice", n)
+	}
+}
+
+// An unchecked edit reported late is held, like everything else nobody
+// would read, for the session's next answer.
+func TestUncheckedEditReportedLateIsToldNextTime(t *testing.T) {
+	h := newHarness(t)
+	h.hook(KindPrompt, "bob", "b1")
+	h.edit("bob", "b1", "svc/pay/retry.go")
+	h.hook(KindPrompt, "alice", "a1")
+	res, err := h.b.Hook(h.now, HookEvent{Kind: KindPostEdit, Member: "alice", Agent: AgentClaudeCode, SessionID: "a1", Where: whereOf("alice"),
+		Tool: "Edit", ToolUseID: "t1", Paths: refs("svc/pay/retry.go"), Late: func() bool { return true }})
+	if err != nil || res.Context != "" {
+		t.Fatalf("late post_edit: %v %q", err, res.Context)
+	}
+	mustContain(t, h.hook(KindPrompt, "alice", "a1").Context, "Your edit of svc/pay/retry.go was not checked", "bob's agent")
 }
