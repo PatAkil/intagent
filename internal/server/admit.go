@@ -109,7 +109,9 @@ func (s *Server) admitBody(w http.ResponseWriter, r *http.Request, member string
 		writeError(w, http.StatusTooManyRequests, "this member is sending more data than the server takes at once; try again in a second")
 		return nil, false
 	}
-	buf := bytes.NewBuffer(make([]byte, 0, n+bytes.MinRead))
+	// The buffer grows as the body arrives: a client that says a megabyte
+	// is coming and sends nothing must not hold a megabyte.
+	buf := bytes.NewBuffer(make([]byte, 0, min(n, 64<<10)+bytes.MinRead))
 	if _, err := buf.ReadFrom(http.MaxBytesReader(w, r.Body, maxBody)); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
 		return nil, false
