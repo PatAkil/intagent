@@ -441,9 +441,10 @@ func TestWebhookDropsWhatTheEndpointRefuses(t *testing.T) {
 }
 
 // An endpoint that never answers holds the sender for the client's timeout on
-// every post. A storm of 100,000 stalls then keeps at most maxPending of them
-// queued and counts the rest; once the endpoint answers again, one message
-// says how many came.
+// every post, and an activity is dropped after six. A storm of 100,000 stalls
+// keeps at most maxPending of them queued and only counts the rest, at no
+// cost to the board; once the endpoint answers again, one message carries
+// what is left and says how many came.
 func TestWebhookHungEndpointKeepsMemoryBounded(t *testing.T) {
 	ep := &fakeEndpoint{hang: true}
 	s := newStorm(t, ep, WebhookConfig{})
@@ -460,6 +461,12 @@ func TestWebhookHungEndpointKeepsMemoryBounded(t *testing.T) {
 			t.Fatalf("after sweep %d: %d queued (capacity %d), %d kinds counted, %d sessions held", sweep, pending, capacity, kinds, held)
 		}
 	}
+	// Past the bound, handing over an activity costs the board a count.
+	wanted := 100000
+	more := []board.Activity{stall("m", "github.com/acme/r00", "late")}
+	if allocs := testing.AllocsPerRun(1000, func() { s.n.enqueue(more); wanted++ }); allocs != 0 {
+		t.Errorf("enqueue into a full queue allocates %v times", allocs)
+	}
 	// 25 minutes: the first posts back off from one second, then there is
 	// one every 32 s plus the 5 s the endpoint hangs for.
 	if posts := len(ep.requests); posts > 50 {
@@ -473,12 +480,12 @@ func TestWebhookHungEndpointKeepsMemoryBounded(t *testing.T) {
 	}
 	ep.hang = false
 	s.until(stormStart.Add(time.Hour))
-	s.coverage(100000 - dropped)
+	s.coverage(wanted - dropped)
 	if len(ep.delivered) == 0 || !strings.Contains(ep.delivered[0].text, "came while the webhook was behind") {
 		t.Errorf("the message after the outage does not say how many came: %+v", ep.delivered)
 	}
 	t.Logf("%d posts, %d dropped after %d attempts, then %d messages for the other %d", len(ep.requests)-len(ep.delivered), dropped,
-		maxAttempts, len(ep.delivered), 100000-dropped)
+		maxAttempts, len(ep.delivered), wanted-dropped)
 }
 
 // Every evening people stop prompting their agents and leave them open; two
