@@ -746,8 +746,8 @@ func (b *Board) reservationHolders(now time.Time, c *claim) []*claim {
 }
 
 // blockerOf is the block conflict conflictsFor lists first for p, given the
-// claims that hold reservations: each holder's first exclusive intent that
-// covers p, in the order conflicts are sorted, and on a tie the first holder.
+// claims that hold reservations: of each holder's first exclusive intent that
+// covers p, the first in the order conflicts are sorted.
 func blockerOf(p PathRef, holders []*claim) (Conflict, bool) {
 	var best Conflict
 	var by *Intent
@@ -950,7 +950,9 @@ func sortConflicts(cs []Conflict) {
 }
 
 // conflictBefore orders conflicts as agents read them: the most severe
-// first, then those of running agents, then the newest.
+// first, then those of running agents, then the newest. Conflicts that tie
+// go by member, branch, path and claim, so the order never depends on how
+// the board happened to find them.
 func conflictBefore(a, b Conflict) bool {
 	if a.Severity != b.Severity {
 		return a.Severity > b.Severity
@@ -958,7 +960,19 @@ func conflictBefore(a, b Conflict) bool {
 	if a.Active != b.Active {
 		return a.Active
 	}
-	return a.Since.After(b.Since)
+	if c := a.Since.Compare(b.Since); c != 0 {
+		return c > 0
+	}
+	if a.Member != b.Member {
+		return a.Member < b.Member
+	}
+	if a.Branch != b.Branch {
+		return a.Branch < b.Branch
+	}
+	if a.Path != b.Path {
+		return a.Path < b.Path
+	}
+	return a.ClaimID < b.ClaimID
 }
 
 // ackKey names what an agent has been told about a conflict: a file, or for

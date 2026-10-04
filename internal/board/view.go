@@ -1,7 +1,9 @@
 package board
 
 import (
+	"slices"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -76,12 +78,9 @@ func (b *Board) View(now time.Time, repo string) View {
 	v := View{Repo: repo, At: now, Policy: b.cfg.Policy, LastSeq: b.seq, Claims: []ClaimView{}, Recent: []Activity{}}
 	live := b.liveClaims(now)
 	members := map[string]bool{}
-	bySession := map[string][]SessionView{}
+	bySession := map[string][]*session{}
 	for _, s := range b.sessions {
-		st := b.state(now, s)
-		bySession[s.ClaimID] = append(bySession[s.ClaimID], SessionView{
-			ID: s.ID, Agent: s.Agent, State: st, Tool: s.Tool, ToolSince: s.ToolSince, StartedAt: s.StartedAt, LastSeen: s.LastSeen,
-		})
+		bySession[s.ClaimID] = append(bySession[s.ClaimID], s)
 	}
 	claims := b.claimsInRepo(repo)
 	changedBy := map[string]int{} // how many claims changed each file
@@ -95,12 +94,8 @@ func (b *Board) View(now time.Time, repo string) View {
 		cv := ClaimView{
 			ID: c.ID, Member: c.Member, Host: c.Host, Worktree: c.Worktree, Branch: c.Branch, Task: c.Task,
 			Active: live[c.ID], Intents: append([]Intent{}, c.Intents...), Truncated: c.FootprintTruncated,
-			Sessions: bySession[c.ID], CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt, Files: []FileView{},
+			Sessions: b.sessionViews(now, bySession[c.ID]), CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt, Files: []FileView{},
 		}
-		if cv.Sessions == nil {
-			cv.Sessions = []SessionView{}
-		}
-		sort.Slice(cv.Sessions, func(i, j int) bool { return cv.Sessions[i].LastSeen.After(cv.Sessions[j].LastSeen) })
 		for _, s := range cv.Sessions {
 			if s.State.Live() {
 				v.Sessions++
@@ -171,7 +166,29 @@ func (b *Board) Repos(now time.Time) []RepoSummary {
 	for _, r := range byRepo {
 		out = append(out, *r)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].UpdatedAt.After(out[j].UpdatedAt) })
+	slices.SortFunc(out, func(x, y RepoSummary) int {
+		if c := y.UpdatedAt.Compare(x.UpdatedAt); c != 0 {
+			return c
+		}
+		return strings.Compare(x.Repo, y.Repo)
+	})
+	return out
+}
+
+// sessionViews shows a claim's sessions, the most recently seen first, and
+// those seen at the same moment by key.
+func (b *Board) sessionViews(now time.Time, ss []*session) []SessionView {
+	slices.SortFunc(ss, func(x, y *session) int {
+		if c := y.LastSeen.Compare(x.LastSeen); c != 0 {
+			return c
+		}
+		return strings.Compare(x.Key, y.Key)
+	})
+	out := make([]SessionView, 0, len(ss))
+	for _, s := range ss {
+		out = append(out, SessionView{ID: s.ID, Agent: s.Agent, State: b.state(now, s), Tool: s.Tool, ToolSince: s.ToolSince,
+			StartedAt: s.StartedAt, LastSeen: s.LastSeen})
+	}
 	return out
 }
 

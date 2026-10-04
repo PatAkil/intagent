@@ -196,6 +196,13 @@ func testReportUncheckedMatchesTheOracle(t *testing.T, ties bool) {
 
 func TestReportUncheckedMatchesTheOracle(t *testing.T) { testReportUncheckedMatchesTheOracle(t, false) }
 
+// Reservations declared at the same instant tie; the old function took the
+// first conflict its sort left in front, which sortConflicts now orders
+// whatever order the claims were found in.
+func TestReportUncheckedMatchesTheOracleWithTies(t *testing.T) {
+	testReportUncheckedMatchesTheOracle(t, true)
+}
+
 // A reconcile reports breaches by checking its new files against the
 // exclusive intents of the claims that hold reservations, and nothing else:
 // not every teammate's files and areas, however many there are.

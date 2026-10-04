@@ -56,6 +56,39 @@ func writeTranscript(t *testing.T, full []byte) {
 	}
 }
 
+// TestBoardTranscriptWithTies runs the workload on a clock that moves in
+// whole seconds and often not at all, so claims change files, declare
+// intents and are seen at the same instant, and pins what the board says
+// then. It runs the workload three times: an answer that depends on the
+// order Go iterates a map comes out differently between runs.
+func TestBoardTranscriptWithTies(t *testing.T) {
+	sec := transcriptSection{name: "default policy, a clock that often stands still", seed: 4, steps: 2000, cfg: func(*Config) {}}
+	var first []byte
+	for run := range 3 {
+		var digest, full bytes.Buffer
+		runTranscript(&digest, &full, sec, true)
+		if run == 0 {
+			first = full.Bytes()
+			if *transcriptFile != "" {
+				if err := os.WriteFile(*transcriptFile+".ties", first, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			compareGolden(t, "testdata/transcript-ties.golden", digest.Bytes())
+			continue
+		}
+		if !bytes.Equal(full.Bytes(), first) {
+			g, w := strings.Split(full.String(), "\n"), strings.Split(string(first), "\n")
+			for i := range min(len(g), len(w)) {
+				if g[i] != w[i] {
+					t.Fatalf("run %d differs from the first at line %d:\n got: %.400s\nwant: %.400s", run, i+1, g[i], w[i])
+				}
+			}
+			t.Fatalf("run %d differs from the first in length", run)
+		}
+	}
+}
+
 // transcriptSection is one run of the workload, under one configuration.
 type transcriptSection struct {
 	name  string
