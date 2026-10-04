@@ -266,6 +266,11 @@ type Footprint struct {
 	Files []PathRef `json:"files"`
 	// Truncated is set when the client capped the list.
 	Truncated bool `json:"truncated,omitempty"`
+	// Dirs, sent only with a truncated list, are directories the worktree
+	// added whole, each in place of every file under it that Files leaves
+	// out: a .venv or build output not ignored, say. Its Area is that of the
+	// files directly inside.
+	Dirs []PathRef `json:"dirs,omitempty"`
 }
 
 // Kind is a normalised lifecycle event.

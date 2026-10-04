@@ -241,6 +241,49 @@ func (w *Worktree) Changes(ctx context.Context) ([]string, string, error) {
 	return files, base, nil
 }
 
+// Committed lists the files the branch's own commits changed since base, as
+// Changes returned it: a tree-to-tree diff, which reads neither the working
+// tree nor the index. With no default branch to compare with ("HEAD") there
+// are none.
+func (w *Worktree) Committed(ctx context.Context, base string) ([]string, error) {
+	if base == "" || base == "HEAD" {
+		return nil, nil
+	}
+	out, err := run(ctx, w.Root, "diff", "--name-only", "--no-renames", "-z", base, "HEAD", "--")
+	if err != nil {
+		return nil, err
+	}
+	return splitNul(out), nil
+}
+
+// UntrackedDirs lists the directories the worktree added whole: untracked
+// directories holding files git does not ignore, the outermost only, without
+// a trailing slash. Changes lists their files one by one.
+func (w *Worktree) UntrackedDirs(ctx context.Context) ([]string, error) {
+	out, err := run(ctx, w.Root, "ls-files", "--others", "--exclude-standard", "--directory", "--no-empty-directory", "-z")
+	if err != nil {
+		return nil, err
+	}
+	var dirs []string
+	for _, p := range splitNul(out) {
+		if d, ok := strings.CutSuffix(p, "/"); ok && d != "" {
+			dirs = append(dirs, d)
+		}
+	}
+	return dirs, nil
+}
+
+// splitNul splits git's -z output.
+func splitNul(out []byte) []string {
+	var list []string
+	for _, p := range bytes.Split(out, []byte{0}) {
+		if len(p) > 0 {
+			list = append(list, string(p))
+		}
+	}
+	return list
+}
+
 // privateIndex copies the worktree's index into a temporary directory. It
 // returns the environment that points git at the copy, and a function that
 // removes the copy.
@@ -312,13 +355,7 @@ func (w *Worktree) Staged(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	var files []string
-	for _, p := range bytes.Split(out, []byte{0}) {
-		if len(p) > 0 {
-			files = append(files, string(p))
-		}
-	}
-	return files, nil
+	return splitNul(out), nil
 }
 
 // HooksDir returns the directory git runs hooks from for this worktree.

@@ -111,6 +111,12 @@ The diff runs on a private copy of the index (`GIT_INDEX_FILE`): git diff writes
 it is held. Git out of time is stopped with SIGTERM, so it removes its lock files (Windows has no such signal: there it
 is killed, and the private index is what keeps the real one unlocked).
 
+The files the repository's `ignore` patterns match are left out first. A footprint keeps at most 2000 files; past
+that, each directory the worktree added whole (a `.venv`, build output nobody ignored), the largest first, is sent as
+one entry in `dirs` instead of its files until the rest fit. If they still do not, the client keeps one file of each
+changed area, then the files the branch has not committed, then the branch's commits (`git diff --name-only
+<merge-base> HEAD`), each in path order, and sends them in that order, since the server keeps the first files it can.
+
 The server replaces the claim's git-derived footprint with this list. Hook-recorded touches newer than the
 reconciliation stay. Once a branch is merged and the worktree is clean, the footprint is empty and the claim releases
 itself.

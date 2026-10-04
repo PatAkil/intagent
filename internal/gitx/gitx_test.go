@@ -252,3 +252,41 @@ func TestChangesBeforeTheFirstCommit(t *testing.T) {
 		t.Fatalf("changes = %v, %v", files, err)
 	}
 }
+
+// Over its cap a footprint tells committed changes from work in progress,
+// and directories the worktree added whole from single new files.
+func TestCommittedAndUntrackedDirs(t *testing.T) {
+	ctx := context.Background()
+	_, clone := newRepo(t)
+	git(t, clone, "checkout", "-q", "-b", "feat")
+	write(t, clone, "services/payments/backoff.go", "package pay\n")
+	git(t, clone, "add", ".")
+	git(t, clone, "commit", "-q", "-m", "backoff")
+	write(t, clone, "services/payments/retry.go", "package pay // changed\n")
+	write(t, clone, "services/payments/jitter.go", "package pay\n")
+	write(t, clone, ".venv/lib/site.py", "")
+	write(t, clone, ".venv/pyvenv.cfg", "")
+	write(t, clone, "tools/new/main.go", "package main\n")
+	write(t, clone, ".gitignore", "build/\n")
+	write(t, clone, "build/out.bin", "")
+	if err := os.MkdirAll(filepath.Join(clone, "empty"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	w, err := Open(ctx, clone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, base, err := w.Changes(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := w.Committed(ctx, base); err != nil || strings.Join(got, ",") != "services/payments/backoff.go" {
+		t.Fatalf("Committed = %v, %v", got, err)
+	}
+	if got, err := w.Committed(ctx, "HEAD"); err != nil || len(got) != 0 {
+		t.Fatalf("Committed with no default branch = %v, %v", got, err)
+	}
+	if got, err := w.UntrackedDirs(ctx); err != nil || strings.Join(got, ",") != ".venv,tools" {
+		t.Fatalf("UntrackedDirs = %v, %v", got, err)
+	}
+}
