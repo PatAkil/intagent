@@ -80,12 +80,17 @@ type Server struct {
 type memberHash struct {
 	name string
 	hash []byte
+	// session is the member's dashboard cookie, computed when the list is.
+	session [sha256.Size]byte
 }
 
 const (
 	maxBody     = 1 << 20
 	cookieName  = "intagent_session"
 	sseKeepAway = 20 * time.Second
+	// maxToken bounds a bearer token, far above the 51 bytes of a real one,
+	// so a request cannot make the server hash a megabyte to reject it.
+	maxToken = 256
 )
 
 // New builds a server and restores its board from DataDir.
@@ -111,6 +116,13 @@ func New(o Options) (*Server, error) {
 	if s.sweepEvery <= 0 {
 		s.sweepEvery = 15 * time.Second
 	}
+	// The key comes first: SetMembers computes each member's dashboard cookie
+	// with it.
+	key, err := loadUIKey(s.dataDir)
+	if err != nil {
+		return nil, err
+	}
+	s.uiKey = key
 	if err := s.SetMembers(o.Members); err != nil {
 		return nil, err
 	}
@@ -126,11 +138,6 @@ func New(o Options) (*Server, error) {
 	if err := s.load(); err != nil {
 		return nil, err
 	}
-	key, err := loadUIKey(s.dataDir)
-	if err != nil {
-		return nil, err
-	}
-	s.uiKey = key
 	return s, nil
 }
 
@@ -163,26 +170,36 @@ func randomKey() ([]byte, error) {
 	return key, nil
 }
 
-// session is a member's dashboard cookie: a MAC of their token's hash. It
+// sessionMAC is a member's dashboard cookie: a MAC of their token's hash. It
 // grants reading only, ends when the token is rotated, and cannot be used as a
 // token or derived from the team file.
-func (s *Server) session(m memberHash) string {
-	mac := hmac.New(sha256.New, s.uiKey)
+func sessionMAC(key, tokenHash []byte) [sha256.Size]byte {
+	mac := hmac.New(sha256.New, key)
 	mac.Write([]byte("intagent dashboard session\x00"))
-	mac.Write(m.hash)
-	return hex.EncodeToString(mac.Sum(nil))
+	mac.Write(tokenHash)
+	var out [sha256.Size]byte
+	mac.Sum(out[:0])
+	return out
 }
 
-// sessionMember finds the member a dashboard cookie belongs to.
+// session returns a member's dashboard cookie.
+func (s *Server) session(m memberHash) string { return hex.EncodeToString(m.session[:]) }
+
+// sessionMember finds the member a dashboard cookie belongs to. It compares
+// with every member's cookie, computed when the list was, in constant time:
+// anyone who can reach the server can send a cookie, so checking one must not
+// cost a MAC per member.
 func (s *Server) sessionMember(cookie string) (string, bool) {
-	got, err := hex.DecodeString(cookie)
-	if err != nil || len(got) != sha256.Size {
+	var got [sha256.Size]byte
+	if len(cookie) != hex.EncodedLen(len(got)) {
+		return "", false
+	}
+	if _, err := hex.Decode(got[:], []byte(cookie)); err != nil {
 		return "", false
 	}
 	name := ""
 	for _, m := range *s.members.Load() {
-		want, _ := hex.DecodeString(s.session(m))
-		if hmac.Equal(got, want) {
+		if subtle.ConstantTimeCompare(got[:], m.session[:]) == 1 {
 			name = m.name
 		}
 	}
@@ -192,13 +209,17 @@ func (s *Server) sessionMember(cookie string) (string, bool) {
 // SetMembers replaces who may use the server: new members can sign in, and a
 // removed or rotated token stops working at once.
 func (s *Server) SetMembers(ms []Member) error {
+	if len(s.uiKey) == 0 {
+		// A cookie computed without the key could be made from the team file.
+		return errors.New("the dashboard key must be loaded before the members")
+	}
 	list := make([]memberHash, 0, len(ms))
 	for _, m := range ms {
 		h, err := hex.DecodeString(m.TokenSHA256)
 		if err != nil || !ValidMemberName(m.Name) {
 			return fmt.Errorf("member %q is not valid", m.Name)
 		}
-		list = append(list, memberHash{name: m.Name, hash: h})
+		list = append(list, memberHash{name: m.Name, hash: h, session: sessionMAC(s.uiKey, h)})
 	}
 	if len(list) == 0 {
 		return errors.New("no members configured: add one with 'intagent token add <name>'")
@@ -282,7 +303,7 @@ func memberFrom(r *http.Request) string {
 
 // authenticate resolves a token to a member, comparing in constant time.
 func (s *Server) authenticate(token string) (string, bool) {
-	if token == "" {
+	if token == "" || len(token) > maxToken {
 		return "", false
 	}
 	got, _ := hex.DecodeString(HashToken(token))
