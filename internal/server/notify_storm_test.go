@@ -42,6 +42,7 @@ type fakeEndpoint struct {
 	hang       bool   // never answers within the client's timeout
 	fail       int    // answers 503 to this many posts first
 	refuse     int    // answers this status to every post
+	during     func() // runs once while the next post is in flight
 
 	tokens    float64
 	last      time.Time
@@ -73,6 +74,10 @@ func (e *fakeEndpoint) RoundTrip(req *http.Request) (*http.Response, error) {
 	if e.hang {
 		e.clock.t = start.Add(webhookTimeout)
 		return nil, context.DeadlineExceeded
+	}
+	if f := e.during; f != nil {
+		e.during = nil
+		f()
 	}
 	e.clock.t = start.Add(e.rtt)
 	status, header := e.decide(start), http.Header{}
@@ -218,6 +223,15 @@ func (s *storm) coverage(wanted int) {
 	if n := s.n.queued(); n != 0 {
 		s.t.Errorf("%d activities still queued", n)
 	}
+	if n := s.n.held(); n != 0 {
+		s.t.Errorf("%d sessions' alerts still held for pairing", n)
+	}
+}
+
+func (n *notifier) held() int {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return len(n.alerts)
 }
 
 func (n *notifier) queued() int {
@@ -440,10 +454,10 @@ func TestWebhookHungEndpointKeepsMemoryBounded(t *testing.T) {
 		}
 		s.at(stormStart.Add(time.Duration(sweep)*15*time.Second), acts...)
 		s.n.mu.Lock()
-		pending, capacity, kinds := len(s.n.pending), cap(s.n.pending), len(s.n.counted)
+		pending, capacity, kinds, held := len(s.n.pending), cap(s.n.pending), len(s.n.counted), len(s.n.alerts)
 		s.n.mu.Unlock()
-		if pending > maxPending || capacity > 2*maxPending || kinds > 1 {
-			t.Fatalf("after sweep %d: %d queued (capacity %d), %d kinds counted", sweep, pending, capacity, kinds)
+		if pending > maxPending || capacity > 2*maxPending || kinds > 1 || held > maxPending {
+			t.Fatalf("after sweep %d: %d queued (capacity %d), %d kinds counted, %d sessions held", sweep, pending, capacity, kinds, held)
 		}
 	}
 	// 25 minutes: the first posts back off from one second, then there is
@@ -528,5 +542,109 @@ func TestWebhookEveningWaveIsQuiet(t *testing.T) {
 				t.Errorf("sent %+v", a)
 			}
 		}
+	}
+}
+
+func recovery(member, repo, session string) board.Activity {
+	return board.Activity{Kind: board.ActivitySessionRecovered, Repo: repo, Member: member, Session: session, Agent: board.AgentClaudeCode}
+}
+
+func texts(ds []delivery) string {
+	var out []string
+	for _, d := range ds {
+		out = append(out, d.text)
+	}
+	return strings.Join(out, "\n")
+}
+
+// A "looks stuck" still waiting when its agent reports again is dropped:
+// telling a person about an agent that is already back is noise.
+func TestWebhookDropsAStallWhoseAgentIsBack(t *testing.T) {
+	s := newStorm(t, &fakeEndpoint{}, WebhookConfig{})
+	s.at(stormStart, refusal("bob", repo, "b1", "svc/x.go")) // goes at once; the next message waits a second
+	s.at(stormStart.Add(100*time.Millisecond), stall("alice", repo, "a1"), stall("carol", repo, "c1"))
+	s.at(stormStart.Add(500*time.Millisecond), recovery("alice", repo, "a1"))
+	s.until(stormStart.Add(time.Minute))
+	want := "intagent: bob's claude-code agent was refused an edit in github.com/acme/mono: svc/x.go → alice (declared exclusive intent svc/**: \"retry\").\n" +
+		"intagent: carol's claude-code agent in github.com/acme/mono looks stuck: silent for 10m."
+	if got := texts(s.ep.delivered); got != want {
+		t.Errorf("sent\n%s\nwant\n%s", got, want)
+	}
+	s.coverage(2)
+}
+
+// With session.recovered subscribed, a person who was told an agent looked
+// stuck is told when it is back, and only then: not for a stall that was never
+// sent, nor for an agent nobody announced (as after a restart).
+func TestWebhookPairsRecoveriesWithAnnouncedStalls(t *testing.T) {
+	ep := &fakeEndpoint{}
+	s := newStorm(t, ep, WebhookConfig{Events: []board.ActivityKind{board.ActivitySessionStalled, board.ActivitySessionGone,
+		board.ActivityConflict, board.ActivitySessionRecovered}})
+	s.at(stormStart, stall("alice", repo, "a1"))
+	s.at(stormStart.Add(100*time.Millisecond), stall("carol", repo, "c1"))
+	s.at(stormStart.Add(200*time.Millisecond), recovery("carol", repo, "c1"))
+	s.at(stormStart.Add(300*time.Millisecond), recovery("dave", repo, "d1"))
+	s.at(stormStart.Add(5*time.Second), recovery("alice", repo, "a1"))
+	// erin is back while her stall is being posted: the recovery follows it.
+	s.until(stormStart.Add(9 * time.Second))
+	ep.during = func() {
+		a := recovery("erin", repo, "e1")
+		s.seq++
+		a.Seq, a.At = s.seq, s.clock.t
+		s.n.enqueue([]board.Activity{a})
+	}
+	s.at(stormStart.Add(10*time.Second), stall("erin", repo, "e1"))
+	s.until(stormStart.Add(time.Minute))
+	want := strings.Join([]string{
+		"intagent: alice's claude-code agent in github.com/acme/mono looks stuck: silent for 10m.",
+		"intagent: alice's claude-code agent in github.com/acme/mono is reporting again.",
+		"intagent: erin's claude-code agent in github.com/acme/mono looks stuck: silent for 10m.",
+		"intagent: erin's claude-code agent in github.com/acme/mono is reporting again.",
+	}, "\n")
+	if got := texts(s.ep.delivered); got != want {
+		t.Errorf("sent\n%s\nwant\n%s", got, want)
+	}
+	s.coverage(4)
+
+	// After a blip, the agents announced as stuck come back together; so do
+	// others, never announced, whose recoveries say nothing to anyone.
+	ep = &fakeEndpoint{}
+	s = newStorm(t, ep, WebhookConfig{Events: []board.ActivityKind{board.ActivitySessionStalled, board.ActivitySessionRecovered}})
+	var stalls []board.Activity
+	for i := range 300 {
+		stalls = append(stalls, stall(fmt.Sprintf("m%03d", i), repo, "s"))
+	}
+	s.at(stormStart, stalls...)
+	for i := range 500 {
+		s.at(stormStart.Add(time.Minute+time.Duration(i)*20*time.Millisecond), recovery(fmt.Sprintf("m%03d", i), repo, "s"))
+	}
+	s.until(stormStart.Add(5 * time.Minute))
+	s.coverage(600)
+	if n := len(ep.delivered); n > 12 || !strings.Contains(texts(ep.delivered), "that were announced as quiet are reporting again") {
+		t.Errorf("%d messages:\n%s", n, texts(ep.delivered))
+	}
+}
+
+// The sessions remembered as announced are bounded; the oldest are forgotten
+// first, and their recoveries go unsaid.
+func TestWebhookForgetsTheOldestAnnouncedSessions(t *testing.T) {
+	ep := &fakeEndpoint{}
+	s := newStorm(t, ep, WebhookConfig{Events: []board.ActivityKind{board.ActivitySessionStalled, board.ActivitySessionRecovered}})
+	for round := range 3 {
+		var stalls []board.Activity
+		for i := range 3000 {
+			stalls = append(stalls, stall("m", repo, fmt.Sprint(round*3000+i)))
+		}
+		s.at(stormStart.Add(time.Duration(round)*time.Minute), stalls...)
+	}
+	s.until(stormStart.Add(5 * time.Minute))
+	if len(s.n.told.added) != maxTold || len(s.n.told.order) > 2*maxTold {
+		t.Fatalf("told holds %d sessions in %d entries", len(s.n.told.added), len(s.n.told.order))
+	}
+	s.at(stormStart.Add(10*time.Minute), recovery("m", repo, "0"), recovery("m", repo, "8999"))
+	s.until(stormStart.Add(15 * time.Minute))
+	last := ep.delivered[len(ep.delivered)-1]
+	if last.count != 1 || last.acts[0].Session != "8999" {
+		t.Errorf("last message %+v, want only the newest session's recovery", last)
 	}
 }

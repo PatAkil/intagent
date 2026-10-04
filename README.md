@@ -195,7 +195,9 @@ about one activity is `{"text", "activity"}`; a message about several is `{"text
 "more"}`, where `activity` is the first one the text names, `activities` lists up to 50 and `more` counts the rest.
 An endpoint that answers 429 is left alone for as long as its `Retry-After` asks, up to a minute; one that fails or
 cannot be reached is tried again after 1, 2, 4 … 32 seconds, and an activity is dropped, with a log line, after six
-tries. Each post carries an `Idempotency-Key` header, so an endpoint can drop a post it has already received.
+tries. Each post carries an `Idempotency-Key` header, so an endpoint can drop a post it has already received. A stall
+or gone still waiting to be sent when its agent reports again is not sent at all; `session.recovered`, if listed, is
+sent only for an agent whose stall or gone was.
 
 ## Commands
 

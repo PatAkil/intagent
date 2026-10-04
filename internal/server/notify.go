@@ -80,6 +80,9 @@ const (
 	maxRetryAfter = 60 * time.Second
 	// maxDrain is how much of an answer is read so its connection is reused.
 	maxDrain = 64 << 10
+	// maxTold bounds the sessions remembered as announced quiet, for pairing
+	// their recoveries; the oldest are forgotten first.
+	maxTold = 4096
 )
 
 // notifier posts the activities a webhook wants. The board hands them over
@@ -100,6 +103,13 @@ type notifier struct {
 	pending []*pendingItem
 	// counted holds, by kind, what came while the queue was full.
 	counted map[board.ActivityKind]int
+	// alerts holds each session's stalled and gone items, queued or being
+	// sent, so its recovery can cancel them or follow them.
+	alerts map[string][]*pendingItem
+	// told remembers the sessions whose stall or gone was delivered, when the
+	// webhook wants session.recovered: only those recoveries are sent.
+	told      toldSet
+	recovered bool // the webhook wants session.recovered
 
 	// Only the sender touches these.
 	notBefore    time.Time // no message starts before this
@@ -111,6 +121,9 @@ type notifier struct {
 type pendingItem struct {
 	act      board.Activity
 	attempts int
+	// recovery is the session.recovered that came after this stall or gone
+	// was queued: unsent, the alert is dropped; sent, the recovery follows.
+	recovery *board.Activity
 }
 
 func newNotifier(cfg WebhookConfig, log *slog.Logger) *notifier {
@@ -121,7 +134,8 @@ func newNotifier(cfg WebhookConfig, log *slog.Logger) *notifier {
 		log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 	return &notifier{cfg: cfg, client: &http.Client{Timeout: webhookTimeout}, log: log,
-		now: time.Now, pace: webhookPace, wake: make(chan struct{}, 1)}
+		now: time.Now, pace: webhookPace, wake: make(chan struct{}, 1), alerts: map[string][]*pendingItem{},
+		recovered: slices.Contains(cfg.Events, board.ActivitySessionRecovered)}
 }
 
 func (n *notifier) wants(a board.Activity) bool {
@@ -145,12 +159,21 @@ func (n *notifier) enqueue(acts []board.Activity) {
 	queued := false
 	n.mu.Lock()
 	for _, a := range acts {
+		if a.Kind == board.ActivitySessionRecovered {
+			queued = n.recover(a) || queued
+			continue
+		}
 		if !n.wants(a) {
 			continue
 		}
 		queued = true
 		if len(n.pending) < maxPending {
-			n.pending = append(n.pending, &pendingItem{act: a})
+			it := &pendingItem{act: a}
+			n.pending = append(n.pending, it)
+			if quiet(a.Kind) {
+				k := sessionOf(a)
+				n.alerts[k] = append(n.alerts[k], it)
+			}
 			continue
 		}
 		if len(n.counted) == 0 {
@@ -166,6 +189,66 @@ func (n *notifier) enqueue(acts []board.Activity) {
 		select {
 		case n.wake <- struct{}{}:
 		default:
+		}
+	}
+}
+
+func quiet(k board.ActivityKind) bool {
+	return k == board.ActivitySessionStalled || k == board.ActivitySessionGone
+}
+
+func sessionOf(a board.Activity) string {
+	return a.Member + "\x00" + string(a.Agent) + "\x00" + a.Session
+}
+
+// recover pairs a session.recovered with what was said about the session:
+// an alert still queued or being sent takes it along, and otherwise it is
+// queued only if the webhook wants it and was told the session went quiet.
+// It reports whether it queued anything. Called with n.mu held.
+func (n *notifier) recover(a board.Activity) bool {
+	k := sessionOf(a)
+	if its := n.alerts[k]; len(its) > 0 {
+		for _, it := range its {
+			it.recovery = &a
+		}
+		return false
+	}
+	if !n.recovered || !n.told.remove(k) {
+		return false
+	}
+	if len(n.pending) < maxPending {
+		n.pending = append(n.pending, &pendingItem{act: a})
+	} else {
+		n.counted = addCount(n.counted, a.Kind, 1)
+	}
+	return true
+}
+
+// settle ends what the notifier holds about alerts that were delivered, or
+// dropped, and queues the recoveries that came for them while they waited
+// and that a person now needs to hear. Called with n.mu held.
+func (n *notifier) settle(items []*pendingItem, delivered bool) {
+	var back []*pendingItem
+	for _, it := range items {
+		if !quiet(it.act.Kind) {
+			continue
+		}
+		k := sessionOf(it.act)
+		if n.alerts[k] = slices.DeleteFunc(n.alerts[k], func(x *pendingItem) bool { return x == it }); len(n.alerts[k]) == 0 {
+			delete(n.alerts, k)
+		}
+		if delivered && n.recovered {
+			n.told.add(k)
+		}
+		if it.recovery != nil {
+			back = append(back, it)
+		}
+	}
+	for _, it := range back {
+		// Another alert of the session still waiting carries the same
+		// recovery, and settles it in turn.
+		if k := sessionOf(it.act); len(n.alerts[k]) == 0 {
+			n.recover(*it.recovery)
 		}
 	}
 }
@@ -211,11 +294,24 @@ func (n *notifier) nextSend() (time.Time, bool) {
 	return n.notBefore, len(n.pending) > 0 || len(n.counted) > 0
 }
 
-// take empties the queue into one message's worth.
+// take empties the queue into one message's worth, leaving out stalls and
+// gones whose agent has been heard from since: "looks stuck" about an agent
+// that is back is noise.
 func (n *notifier) take() ([]*pendingItem, map[board.ActivityKind]int) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	items, counted := n.pending, n.counted
+	var back []*pendingItem
+	items := slices.DeleteFunc(n.pending, func(it *pendingItem) bool {
+		if it.recovery != nil {
+			back = append(back, it)
+			return true
+		}
+		return false
+	})
+	n.pending = nil
+	n.settle(back, false)
+	items = append(items, n.pending...)
+	counted := n.counted
 	n.pending, n.counted = nil, nil
 	return items, counted
 }
@@ -225,16 +321,19 @@ func (n *notifier) take() ([]*pendingItem, map[board.ActivityKind]int) {
 // are the counts once maxAttempts posts carrying them failed. It returns how
 // many activities it dropped.
 func (n *notifier) giveBack(items []*pendingItem, counted map[board.ActivityKind]int, attempted bool) int {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	var gone []*pendingItem
 	dropped := 0
 	if attempted {
 		items = slices.DeleteFunc(items, func(it *pendingItem) bool {
-			it.attempts++
-			if it.attempts >= maxAttempts {
-				dropped++
+			if it.attempts++; it.attempts >= maxAttempts {
+				gone = append(gone, it)
 				return true
 			}
 			return false
 		})
+		dropped = len(gone)
 		if len(counted) > 0 {
 			if n.countedTries++; n.countedTries >= maxAttempts {
 				for _, c := range counted {
@@ -244,10 +343,9 @@ func (n *notifier) giveBack(items []*pendingItem, counted map[board.ActivityKind
 			}
 		}
 	}
-	n.mu.Lock()
-	defer n.mu.Unlock()
 	items = append(items, n.pending...)
-	for _, it := range items[min(len(items), maxPending):] {
+	over := items[min(len(items), maxPending):]
+	for _, it := range over {
 		counted = addCount(counted, it.act.Kind, 1)
 	}
 	n.pending = items[:min(len(items), maxPending)]
@@ -255,6 +353,7 @@ func (n *notifier) giveBack(items []*pendingItem, counted map[board.ActivityKind
 		counted = addCount(counted, k, c)
 	}
 	n.counted = counted
+	n.settle(append(gone, over...), false)
 	return dropped
 }
 
@@ -280,6 +379,7 @@ func (n *notifier) flush(ctx context.Context) {
 	switch {
 	case ans.err == nil:
 		n.failures, n.countedTries = 0, 0
+		n.settled(items, true)
 	case ans.status == http.StatusTooManyRequests:
 		wait := time.Second
 		if ans.hinted {
@@ -302,8 +402,55 @@ func (n *notifier) flush(ctx context.Context) {
 		}
 	default:
 		n.failures = 0
+		n.settled(items, false)
 		n.log.Warn("webhook refused; dropping", "dropped", m.count, "err", ans.err)
 	}
+}
+
+func (n *notifier) settled(items []*pendingItem, delivered bool) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.settle(items, delivered)
+}
+
+// toldSet remembers sessions, up to maxTold, forgetting the oldest first.
+type toldSet struct {
+	added map[string]uint64 // session → its place in order
+	order []toldEntry
+	next  uint64
+}
+
+type toldEntry struct {
+	key   string
+	place uint64
+}
+
+func (t *toldSet) add(k string) {
+	if t.added == nil {
+		t.added = map[string]uint64{}
+	}
+	t.next++
+	t.added[k] = t.next
+	t.order = append(t.order, toldEntry{k, t.next})
+	for len(t.added) > maxTold {
+		e := t.order[0]
+		t.order = t.order[1:]
+		if t.added[e.key] == e.place {
+			delete(t.added, e.key)
+		}
+	}
+	if len(t.order) > 2*maxTold { // entries of sessions removed or added again since
+		t.order = slices.DeleteFunc(slices.Clone(t.order), func(e toldEntry) bool { return t.added[e.key] != e.place })
+	}
+}
+
+// remove forgets a session and reports whether it was remembered.
+func (t *toldSet) remove(k string) bool {
+	if _, ok := t.added[k]; !ok {
+		return false
+	}
+	delete(t.added, k)
+	return true
 }
 
 func later(a, b time.Time) time.Time {
@@ -545,6 +692,8 @@ func summarise(kind board.ActivityKind, acts []board.Activity) string {
 			return fmt.Sprintf("intagent: %d agents %s that were left waiting stopped reporting, %s.%s", n, where, when, who)
 		}
 		return fmt.Sprintf("intagent: %d agents %s stopped reporting without ending their sessions, %s.%s%s", n, where, when, who, correlated)
+	case board.ActivitySessionRecovered:
+		return fmt.Sprintf("intagent: %d agents %s that were announced as quiet are reporting again, %s.%s", n, where, when, who)
 	case board.ActivityConflict:
 		line := fmt.Sprintf("intagent: %d collisions %s, %s: %s.%s", n, where, when, outcomes(acts), who)
 		if files := most(acts, firstPath); files != "" {
@@ -671,6 +820,8 @@ func kindCount(k board.ActivityKind, c int) string {
 		return plural(c, "agent that stopped reporting", "agents that stopped reporting")
 	case board.ActivityConflict:
 		return plural(c, "collision", "collisions")
+	case board.ActivitySessionRecovered:
+		return plural(c, "agent reporting again", "agents reporting again")
 	}
 	return fmt.Sprintf("%d %s", c, k)
 }
@@ -698,6 +849,8 @@ func describeActivity(a board.Activity) string {
 		return fmt.Sprintf("intagent: %s in %s looks stuck: %s.", who, a.Repo, a.Text)
 	case board.ActivitySessionGone:
 		return fmt.Sprintf("intagent: %s in %s stopped reporting (%s) without ending its session.", who, a.Repo, a.Text)
+	case board.ActivitySessionRecovered:
+		return fmt.Sprintf("intagent: %s in %s is reporting again.", who, a.Repo)
 	case board.ActivityConflict:
 		verb := "was refused an edit"
 		switch {
