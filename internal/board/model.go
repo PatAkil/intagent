@@ -313,6 +313,12 @@ type HookEvent struct {
 	// the board then holds a pre_edit's warnings until the next event that
 	// can carry them, normally the edit's own post_edit.
 	LateContext bool `json:"late_context,omitempty"`
+	// Late, set by the server, reports whether the agent has stopped waiting
+	// for the answer, or will have by the time it arrives. The board asks
+	// once, when it gets to the event: a late question is dropped unanswered,
+	// and a late fact is recorded without delivering anything, which then
+	// waits for the session's next answer.
+	Late func() bool `json:"-"`
 }
 
 // HookResult is the server's answer to a hook event.
@@ -322,6 +328,10 @@ type HookResult struct {
 	Context   string     `json:"context,omitempty"`
 	ClaimID   string     `json:"claim_id,omitempty"`
 	Conflicts []Conflict `json:"conflicts,omitempty"`
+	// Unchecked says the board did not get to the event before its agent
+	// stopped waiting: nothing was checked or recorded, and the decision is
+	// allow. A client that refuses edits it cannot check refuses this one.
+	Unchecked bool `json:"unchecked,omitempty"`
 }
 
 // Conflict is one other claim that matters to a path.

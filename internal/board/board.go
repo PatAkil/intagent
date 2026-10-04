@@ -24,6 +24,9 @@ var (
 	ErrInvalid     = errors.New("invalid request")
 	ErrRateLimited = errors.New("too many notes; try again in a minute")
 	ErrNoTarget    = errors.New("nobody by that name, claim or path has work in this repository right now")
+	// ErrAbandoned reports a hook the board did not answer because its agent
+	// had stopped waiting (HookEvent.Late); the agent went ahead unchecked.
+	ErrAbandoned = errors.New("the agent stopped waiting for the answer")
 )
 
 // Config holds the board's timings and policy. A zero or negative field, and
@@ -130,6 +133,9 @@ type Board struct {
 	pending  []Activity
 	notify   func([]Activity)
 	newID    func(prefix string) string
+	// unheard is set while Hook records an event whose answer nobody will
+	// read: nothing is delivered in it.
+	unheard bool
 }
 
 // Option configures a Board.
@@ -362,6 +368,10 @@ func (b *Board) liveSessions(now time.Time) map[string]bool {
 
 // Hook applies one lifecycle event and returns what the agent should be told.
 // It never refuses on error: callers should allow the agent to continue.
+//
+// An event whose agent has stopped waiting (ev.Late) is not answered: a
+// question, such as an edit about to be made, returns ErrAbandoned having
+// changed nothing, and a fact is recorded without delivering anything.
 func (b *Board) Hook(now time.Time, ev HookEvent) (HookResult, error) {
 	allow := HookResult{Decision: DecisionAllow}
 	ev, err := ev.clean()
@@ -372,7 +382,15 @@ func (b *Board) Hook(now time.Time, ev HookEvent) (HookResult, error) {
 
 	b.lock()
 	defer b.unlock()
+	// Asked once the lock is held: a hook queued behind other work can reach
+	// the board after its agent went ahead without the answer.
+	late := ev.Late != nil && ev.Late()
+	if late && ev.advisory() {
+		return b.abandon(now, ev), ErrAbandoned
+	}
 	b.changed()
+	b.unheard = late
+	defer func() { b.unheard = false }()
 
 	c := b.claimFor(now, ev.Member, w)
 	s := b.sessionFor(now, ev, c)
@@ -1092,8 +1110,12 @@ func (b *Board) enqueue(now time.Time, c *claim, it InboxItem) {
 }
 
 // deliver renders what this session has not been told yet: context held back
-// from before an edit, then the inbox items it has not seen.
+// from before an edit, then the inbox items it has not seen. In an answer
+// nobody will read, it delivers nothing: all of it waits for the next one.
 func (b *Board) deliver(now time.Time, c *claim, s *session) string {
+	if b.unheard {
+		return ""
+	}
 	pending := s.Pending
 	s.Pending = ""
 	return joinBlocks(pending, b.deliverInbox(now, c, s))

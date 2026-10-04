@@ -124,8 +124,12 @@ func (b *Board) renderInbox(now time.Time, fresh, earlier []InboxItem) string {
 	return joinBlocks(blocks...)
 }
 
-// renderStart greets a session with the state of the board.
+// renderStart greets a session with the state of the board, unless nobody
+// will read the greeting.
 func (b *Board) renderStart(now time.Time, c *claim) string {
+	if b.unheard {
+		return ""
+	}
 	live := b.liveClaims(now)
 	var others []*claim
 	for _, o := range b.claimsInRepo(c.Repo) {
@@ -300,10 +304,14 @@ func renderView(v View) string {
 		return fmt.Sprintf("No agents have work in %s right now.", v.Repo)
 	}
 	lines := []string{fmt.Sprintf("%s: %s, %s %s", v.Repo, plural(len(v.Claims), "claim"), plural(v.Sessions, "live session"), dataNotice)}
-	if st := v.Stats; st.Checks > 0 {
-		lines = append(lines, fmt.Sprintf("Since %s: %s checked, %s caught before the edit (%d refused, %d bumped), %d asked, %d warned, %s, %s.",
+	if st := v.Stats; st.Checks > 0 || st.Unheard > 0 {
+		line := fmt.Sprintf("Since %s: %s checked, %s caught before the edit (%d refused, %d bumped), %d asked, %d warned, %s, %s.",
 			st.Since.Format("Jan 2 15:04"), plural(st.Checks, "edit"), plural(st.Refused+st.Bumped, "collision"), st.Refused, st.Bumped, st.Asked, st.Warned,
-			plural(st.Alerts, "overlap alert"), plural(st.Notes, "note")))
+			plural(st.Alerts, "overlap alert"), plural(st.Notes, "note"))
+		if st.Unheard > 0 {
+			line += fmt.Sprintf(" %s went ahead unchecked: the server got to them after their agents had stopped waiting.", plural(st.Unheard, "edit"))
+		}
+		lines = append(lines, line)
 	}
 	for _, c := range v.Claims {
 		state := "active"
