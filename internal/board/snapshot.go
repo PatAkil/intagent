@@ -222,6 +222,7 @@ func (b *Board) Restore(r io.Reader) error {
 	if err != nil {
 		return err
 	}
+	s.shareSessionKeys()
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.claims = map[string]*claim{}
@@ -384,6 +385,40 @@ func readDelim(dec *json.Decoder, want json.Delim) error {
 		return fmt.Errorf("found %v where %v belongs", tok, want)
 	}
 	return nil
+}
+
+// shareSessionKeys leaves the touches found by git without the session
+// that found them, which nothing reads, as reconcile now leaves them, and
+// has every other touch name its session with one string per session
+// rather than one per touch. Snapshots from older servers held both. It
+// drops a file whose touch is null, which no server writes.
+func (s *snapshot) shareSessionKeys() {
+	keys := make(map[string]string, len(s.Sessions))
+	for _, x := range s.Sessions {
+		if x != nil {
+			keys[x.Key] = x.Key
+		}
+	}
+	for _, c := range s.Claims {
+		if c == nil {
+			continue
+		}
+		for p, t := range c.Footprint {
+			switch {
+			case t == nil:
+				delete(c.Footprint, p) // a file with no change to restore
+			case t.FromGit:
+				t.Session = "" // decoded just now: no other reader has it
+			default:
+				k, ok := keys[t.Session]
+				if !ok {
+					k = t.Session
+					keys[k] = k
+				}
+				t.Session = k
+			}
+		}
+	}
 }
 
 // validIntents is c's intents whose patterns the board accepts, cleaned. A

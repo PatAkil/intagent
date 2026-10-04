@@ -12,6 +12,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unsafe"
 )
 
 // Snapshots share the claims' footprints with the board, and are encoded
@@ -317,4 +318,59 @@ type readSizes struct {
 func (r *readSizes) Read(p []byte) (int, error) {
 	r.largest = max(r.largest, len(p))
 	return r.r.Read(p)
+}
+
+// A file found in git names no session, which nothing reads, and so a
+// snapshot does not carry one for each: a third of its size. A file a hook
+// reported names its session, which tells whether another session of the
+// worktree made the change.
+func TestGitTouchesNameNoSession(t *testing.T) {
+	h := newHarness(t)
+	if _, err := h.b.Hook(h.now, HookEvent{Kind: KindHeartbeat, Member: "alice", Agent: AgentCodex, SessionID: "a1",
+		Where: whereOf("alice"), Footprint: &Footprint{Files: refs("a/git.go")}}); err != nil {
+		t.Fatal(err)
+	}
+	h.edit("alice", "a1", "a/hook.go")
+	c := h.b.findClaim("alice", whereOf("alice"))
+	if git, hook := c.Footprint["a/git.go"], c.Footprint["a/hook.go"]; git.Session != "" || hook.Session == "" {
+		t.Fatalf("sessions: git %q, hook %q", git.Session, hook.Session)
+	}
+	data, _, err := h.b.Snapshot(h.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims := data[bytes.Index(data, []byte(`"claims":`)):bytes.Index(data, []byte(`"sessions":`))]
+	if n := bytes.Count(claims, []byte(`"session":`)); n != 1 {
+		t.Fatalf("the snapshot's claims name a session %d times, want once:\n%s", n, claims)
+	}
+}
+
+// A snapshot from an older server, whose touches found in git name the
+// session that found them, is restored without them, and with one string
+// for each session however many touches name it; a null touch is dropped.
+func TestRestoreSharesSessionKeys(t *testing.T) {
+	key := sessionKey("alice", AgentCodex, "a1")
+	old := fmt.Sprintf(`{"format":1,"claims":[{"id":"c1","repo":%q,"member":"alice","host":"h","worktree":"/w","footprint":{`+
+		`"a/git.go":{"at":"2026-10-02T09:00:00Z","session":%q,"from_git":true},`+
+		`"a/one.go":{"at":"2026-10-02T09:00:00Z","session":%q},"a/two.go":{"at":"2026-10-02T09:00:00Z","session":%q},`+
+		`"a/gone.go":{"at":"2026-10-02T09:00:00Z","session":"swept"},"a/null.go":null}}],`+
+		`"sessions":[{"key":%q,"id":"a1","member":"alice","agent":"codex","claim_id":"c1","last_seen":"2026-10-02T09:00:00Z","phase":"working"}]}`,
+		repo, key, key, key, key)
+	b := New(DefaultConfig())
+	if err := b.Restore(strings.NewReader(old)); err != nil {
+		t.Fatal(err)
+	}
+	fp := b.claims["c1"].Footprint
+	s := b.sessions[key]
+	if fp["a/git.go"].Session != "" || fp["a/gone.go"].Session != "swept" || len(fp) != 4 {
+		t.Fatalf("restored footprint: %s", jsonOf(fp))
+	}
+	for _, p := range []string{"a/one.go", "a/two.go"} {
+		if got := fp[p].Session; got != s.Key || unsafe.StringData(got) != unsafe.StringData(s.Key) {
+			t.Errorf("%s names its session with a string of its own", p)
+		}
+	}
+	if err := b.checkIndexes(); err != nil {
+		t.Fatal(err)
+	}
 }

@@ -746,7 +746,9 @@ func (b *Board) reconcile(now time.Time, c *claim, s *session, fp *Footprint) {
 			next[f.Path] = t
 			continue
 		}
-		next[f.Path] = &touch{Area: f.Area, At: now, Session: s.Key, FromGit: true}
+		// Which session found a file in git says nothing about who changed
+		// it, so a touch from git names none.
+		next[f.Path] = &touch{Area: f.Area, At: now, FromGit: true}
 		added = append(added, f)
 	}
 	// The files are distinct, so those kept are the ones not added.

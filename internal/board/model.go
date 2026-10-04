@@ -178,9 +178,11 @@ type Intent struct {
 // never changed: a later change to the file, or to its area, puts a new one
 // in its place, so a touch can be read once the board's lock is released.
 type touch struct {
-	Area    string    `json:"area,omitempty"`
-	At      time.Time `json:"at"`
-	Session string    `json:"session,omitempty"`
+	Area string    `json:"area,omitempty"`
+	At   time.Time `json:"at"`
+	// Session is the key of the session whose hook reported the change, and
+	// empty for a change found in git.
+	Session string `json:"session,omitempty"`
 	// FromGit is true when the change was found by reconciling with git rather
 	// than reported by a hook.
 	FromGit bool `json:"from_git,omitempty"`
