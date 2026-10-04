@@ -55,6 +55,10 @@ type Config struct {
 	InboxPerHook int `json:"inbox_per_hook"`
 	// KeepActivities is the length of the recent-activity feed.
 	KeepActivities int `json:"keep_activities"`
+	// MaxSessions caps the sessions the board keeps (bounds.go).
+	MaxSessions int `json:"max_sessions"`
+	// MaxDormantClaims caps the claims with no live session the board keeps.
+	MaxDormantClaims int `json:"max_dormant_claims"`
 }
 
 // DefaultConfig returns the timings described in docs/design.md.
@@ -70,6 +74,10 @@ func DefaultConfig() Config {
 		MaxFootprint:   2000,
 		InboxPerHook:   5,
 		KeepActivities: 300,
+		// A thousand sessions and a week's dormant claims are the scale
+		// intagent is meant for; these are twenty times that.
+		MaxSessions:      20_000,
+		MaxDormantClaims: 20_000,
 	}
 }
 
@@ -103,6 +111,8 @@ func (c Config) WithDefaults() Config {
 	orInt(&c.MaxFootprint, d.MaxFootprint)
 	orInt(&c.InboxPerHook, d.InboxPerHook)
 	orInt(&c.KeepActivities, d.KeepActivities)
+	orInt(&c.MaxSessions, d.MaxSessions)
+	orInt(&c.MaxDormantClaims, d.MaxDormantClaims)
 	return c
 }
 
@@ -455,7 +465,10 @@ func (b *Board) sessionFor(now time.Time, ev HookEvent, c *claim) *session {
 		}
 		b.record(Activity{At: now, Kind: ActivitySessionStarted, Repo: c.Repo, Member: ev.Member, ClaimID: c.ID, Session: ev.SessionID, Agent: ev.Agent})
 	}
-	b.attachSession(s, c.ID)
+	if !ok || s.ClaimID != c.ID {
+		b.attachSession(s, c.ID)
+		b.trimSessions(now, c.ID, s)
+	}
 	return s
 }
 
@@ -505,6 +518,9 @@ func (b *Board) Hook(now time.Time, ev HookEvent) (HookResult, error) {
 	late := ev.Late != nil && ev.Late()
 	if late && ev.Kind == KindPreEdit {
 		return b.abandon(now, ev), ErrAbandoned
+	}
+	if b.full(ev) {
+		return b.unstored(now, ev), nil
 	}
 	b.changed()
 	b.unheard = late
@@ -2211,11 +2227,13 @@ func (b *Board) Sweep(now time.Time) {
 			live[s.ClaimID] = true
 		}
 	}
+	changed = b.evictSessions(now, keys) || changed
 	ids := make([]string, 0, len(b.claims))
 	for id := range b.claims {
 		ids = append(ids, id)
 	}
 	slices.Sort(ids)
+	dormant, idle := 0, []*claim(nil) // claims with no live session, and those of them with no intent
 	for _, id := range ids {
 		c := b.claims[id]
 		changed = b.tidy(now, c, live[c.ID]) || changed
@@ -2229,8 +2247,14 @@ func (b *Board) Sweep(now time.Time) {
 		case now.Sub(c.UpdatedAt) > b.cfg.ForgetAfter:
 			b.deleteClaim(now, c, ActivityClaimForgotten)
 			changed = true
+		case len(c.Intents) == 0:
+			dormant++
+			idle = append(idle, c)
+		default:
+			dormant++
 		}
 	}
+	changed = b.forgetDormant(now, dormant, idle) || changed
 	for m, ts := range b.notes {
 		if len(ts) == 0 || now.Sub(ts[len(ts)-1]) > noteWindow {
 			delete(b.notes, m)

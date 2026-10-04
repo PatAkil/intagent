@@ -986,6 +986,10 @@ func describeActivity(a board.Activity) string {
 			text += "; also " + strings.Join(a.Also, "; ")
 		}
 		return fmt.Sprintf("intagent: %s %s in %s: %s.", who, verb, a.Repo, text)
+	case board.ActivityClaimForgotten:
+		if a.ClaimID == "" { // claims forgotten to stay under the board's bound
+			return fmt.Sprintf("intagent: in %s, %s.", a.Repo, a.Text)
+		}
 	case board.ActivityServerDegraded:
 		return fmt.Sprintf("intagent: the team server is not answering agents in time: %s. They go ahead without a check until it does.", a.Text)
 	case board.ActivityServerRecovered:

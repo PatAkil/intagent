@@ -150,7 +150,11 @@ func TestWebhookEscapesSlackMarkup(t *testing.T) {
 	if strings.ContainsAny(got, "<>") || !strings.Contains(got, "&lt;!channel&gt; &amp; &lt;https://evil.example|the runbook&gt;") {
 		t.Fatalf("text = %s", got)
 	}
-	for _, kind := range []board.ActivityKind{"session.stalled", "session.gone", "session.recovered", "conflict", "other"} {
+	forgot := board.Activity{Kind: board.ActivityClaimForgotten, Repo: "r", Text: "3 claims nobody had worked in for longest forgotten"}
+	if got := describeActivity(forgot); got != "intagent: in r, 3 claims nobody had worked in for longest forgotten." {
+		t.Errorf("claims forgotten to stay under the bound: %s", got)
+	}
+	for _, kind := range []board.ActivityKind{"session.stalled", "session.gone", "session.recovered", "conflict", "claim.forgotten", "other"} {
 		a := board.Activity{Kind: kind, Member: "m", Agent: "a", Repo: "r", Text: "t"}
 		for _, s := range []string{describeActivity(a), batchLine(a)} {
 			if strings.ContainsAny(s, "<>&") {

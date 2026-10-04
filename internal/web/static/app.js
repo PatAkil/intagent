@@ -1429,7 +1429,11 @@
     switch (a.kind) {
       case 'claim.opened': return [m, ' opened a claim', onBranch(a)];
       case 'claim.released': return [m, '’s claim', onBranch(a), ' was released: nothing left to track'];
-      case 'claim.forgotten': return [m, '’s claim', onBranch(a), ' was forgotten after a long time without activity'];
+      case 'claim.forgotten':
+        // A sweep that forgets claims to stay under the server's bound names
+        // no claim, and says how many in its text.
+        if (!a.claim_id) return [text];
+        return [m, '’s claim', onBranch(a), ' was forgotten after a long time without activity'];
       case 'session.started': return [actor(a), ' started a session'];
       case 'session.ended': return [actor(a), ' ended its session'];
       case 'session.stalled': return [actor(a), ' has stalled', text ? ': ' + text : ''];

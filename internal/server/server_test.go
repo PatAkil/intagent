@@ -530,13 +530,15 @@ func TestConfigFiles(t *testing.T) {
 			t.Errorf("accepted %s", body)
 		}
 	}
-	_ = os.WriteFile(bad, []byte(`{"stall_after":"3m","policy":{"overlap":"warn"},"notes_per_minute":5,"webhook":{"url":"https://hooks.example.com/x","idle":true}}`), 0o600)
+	_ = os.WriteFile(bad, []byte(`{"stall_after":"3m","policy":{"overlap":"warn"},"notes_per_minute":5,"max_sessions":900,`+
+		`"max_dormant_claims":800,"webhook":{"url":"https://hooks.example.com/x","idle":true}}`), 0o600)
 	fc, err = LoadFileConfig(bad)
 	if err != nil || !fc.Webhook.Idle {
 		t.Fatal(fc.Webhook, err)
 	}
 	bc := fc.BoardConfig()
-	if bc.StallAfter != 3*time.Minute || bc.Policy.Overlap != board.ActionWarn || bc.Policy.Block != board.ActionDeny || bc.NotesPerMinute != 5 {
+	if bc.StallAfter != 3*time.Minute || bc.Policy.Overlap != board.ActionWarn || bc.Policy.Block != board.ActionDeny || bc.NotesPerMinute != 5 ||
+		bc.MaxSessions != 900 || bc.MaxDormantClaims != 800 {
 		t.Fatalf("BoardConfig = %+v", bc)
 	}
 	if _, err := New(Options{}); err == nil {

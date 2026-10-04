@@ -198,9 +198,16 @@ refusal and alert per repository.
   "tool_stall_after": "45m",
   "idle_after": "2h",
   "dormant_for": "24h",
-  "forget_after": "168h"
+  "forget_after": "168h",
+  "max_sessions": 20000,
+  "max_dormant_claims": 20000
 }
 ```
+
+`max_sessions` and `max_dormant_claims` bound what the server keeps, whatever its clients send: past the first, a new
+agent session is checked but not stored, and past the second the claims with no agent running that were quiet longest
+are forgotten, those holding an intent excepted. Both default to 20,000, twenty times the scale intagent is meant for;
+a server older than these settings refuses a team file that sets one.
 
 ## People hear about stuck agents
 

@@ -50,6 +50,10 @@ type FileConfig struct {
 	DormantFor     Duration     `json:"dormant_for,omitempty"`
 	ForgetAfter    Duration     `json:"forget_after,omitempty"`
 	NotesPerMinute int          `json:"notes_per_minute,omitempty"`
+	// MaxSessions and MaxDormantClaims bound what the board keeps
+	// (board.Config); a server older than them refuses a file that sets one.
+	MaxSessions      int `json:"max_sessions,omitempty"`
+	MaxDormantClaims int `json:"max_dormant_claims,omitempty"`
 	// Webhook sends stalls, silent agents and refused collisions to an endpoint.
 	Webhook WebhookConfig `json:"webhook,omitzero"`
 }
@@ -117,13 +121,15 @@ func (fc FileConfig) validate() error {
 // BoardConfig merges the file's settings over the defaults.
 func (fc FileConfig) BoardConfig() board.Config {
 	return board.Config{
-		StallAfter:     time.Duration(fc.StallAfter),
-		ToolStallAfter: time.Duration(fc.ToolStallAfter),
-		IdleAfter:      time.Duration(fc.IdleAfter),
-		DormantFor:     time.Duration(fc.DormantFor),
-		ForgetAfter:    time.Duration(fc.ForgetAfter),
-		Policy:         fc.Policy,
-		NotesPerMinute: fc.NotesPerMinute,
+		StallAfter:       time.Duration(fc.StallAfter),
+		ToolStallAfter:   time.Duration(fc.ToolStallAfter),
+		IdleAfter:        time.Duration(fc.IdleAfter),
+		DormantFor:       time.Duration(fc.DormantFor),
+		ForgetAfter:      time.Duration(fc.ForgetAfter),
+		Policy:           fc.Policy,
+		NotesPerMinute:   fc.NotesPerMinute,
+		MaxSessions:      fc.MaxSessions,
+		MaxDormantClaims: fc.MaxDormantClaims,
 	}.WithDefaults()
 }
 
