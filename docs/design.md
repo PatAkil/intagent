@@ -162,7 +162,9 @@ All endpoints take and return JSON and require `Authorization: Bearer <token>`, 
 - The dashboard exchanges a member's token for a read-only session cookie: an HMAC of the token's hash under a key
   kept in the data directory (`ui.key`, mode 0600), never the token itself.
 - `intagent serve --tls-cert --tls-key` serves HTTPS directly; behind a proxy, `X-Forwarded-Proto: https` marks the
-  cookie `Secure`.
+  cookie `Secure`. Each hook is a new process and a new connection, so with TLS each pays for a full handshake: ECDSA
+  certificates go first, a server with only an RSA one says at startup what that costs, and a handshake not finished
+  2 seconds after its connection was accepted is abandoned, since its hook has already failed open.
 - All member-supplied text is stripped of control and formatting characters (bidi overrides, zero-width), collapsed
   to one line and length-capped on the server, and quoted and framed as teammate data when rendered into an agent's
   context. Paths and patterns, which are shown unquoted, are rejected if they hold control, formatting or line

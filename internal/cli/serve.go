@@ -19,19 +19,21 @@ import (
 )
 
 func (a *App) serve(ctx context.Context, args []string) error {
-	fs := a.flags("serve", "serve --config team.json [--addr :7400] [--data DIR] [--tls-cert FILE --tls-key FILE]")
+	fs := a.flags("serve", "serve --config team.json [--addr :7400] [--data DIR] [--tls-cert FILE --tls-key FILE]...")
 	addr := fs.String("addr", ":7400", "address to listen on")
 	cfgPath := fs.String("config", "team.json", "team configuration: members and policy")
 	data := fs.String("data", "intagent-data", "directory for the board snapshot (\"\" keeps it in memory)")
 	public := fs.Bool("public-read", false, "let anyone who can reach the server see the board without a token")
 	level := fs.String("log-level", "info", "debug, info, warn or error")
-	tlsCert := fs.String("tls-cert", "", "serve HTTPS with this certificate chain (PEM), with --tls-key")
-	tlsKey := fs.String("tls-key", "", "the certificate's private key (PEM)")
+	var tlsCerts, tlsKeys listFlag
+	fs.Var(&tlsCerts, "tls-cert", "serve HTTPS with this certificate chain (PEM), with --tls-key; give an ECDSA and an RSA one "+
+		"each with its key to serve both, ECDSA to the clients that take it")
+	fs.Var(&tlsKeys, "tls-key", "the certificate's private key (PEM)")
 	maxConns := fs.Int("max-connections", server.DefaultMaxConnections, "connections open at once; more are closed as soon as they are accepted")
 	if err := parse(fs, args); err != nil {
 		return err
 	}
-	if (*tlsCert == "") != (*tlsKey == "") {
+	if len(tlsCerts) != len(tlsKeys) {
 		return errors.New("--tls-cert and --tls-key go together")
 	}
 	var lvl slog.Level
@@ -48,14 +50,21 @@ func (a *App) serve(ctx context.Context, args []string) error {
 		return err
 	}
 	var tlsConfig *tls.Config
-	if *tlsCert != "" {
-		cert, err := tls.LoadX509KeyPair(*tlsCert, *tlsKey)
-		if err != nil {
-			return fmt.Errorf("TLS: %w", err)
+	if len(tlsCerts) > 0 {
+		certs := make([]tls.Certificate, len(tlsCerts))
+		for i := range tlsCerts {
+			if certs[i], err = tls.LoadX509KeyPair(tlsCerts[i], tlsKeys[i]); err != nil {
+				return fmt.Errorf("TLS: %w", err)
+			}
 		}
-		// h2 first: each open dashboard holds a stream, and HTTP/1.1 browsers
-		// allow only six connections to a server.
-		tlsConfig = &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12, NextProtos: []string{"h2", "http/1.1"}}
+		tlsConfig = server.TLSConfig(certs)
+		if server.RSAOnly(tlsConfig) {
+			// Every hook is a new connection, so the handshake is most of
+			// what a hook costs the server.
+			logger.Warn("the TLS certificate has an RSA key: each hook's connection costs the server about 1.5 ms of CPU, " +
+				"three times as much as with an ECDSA P-256 certificate, or 1.5 cores at 1000 hooks a second; add an ECDSA " +
+				"certificate with a second --tls-cert and --tls-key, which intagent's clients will use")
+		}
 	}
 	srv, err := server.New(server.Options{
 		Members: fc.Members, Version: a.Version, Board: fc.BoardConfig(), DataDir: *data, PublicRead: *public,
@@ -82,6 +91,16 @@ func (a *App) serve(ctx context.Context, args []string) error {
 	err = srv.Serve(ctx, ln)
 	logger.Info("intagent server stopped", "err", err)
 	return err
+}
+
+// listFlag is a flag that may be given more than once.
+type listFlag []string
+
+func (l *listFlag) String() string { return strings.Join(*l, ", ") }
+
+func (l *listFlag) Set(v string) error {
+	*l = append(*l, v)
+	return nil
 }
 
 // watchTeamFile applies changes to the team file's members while the server
