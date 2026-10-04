@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -241,6 +243,40 @@ func TestHookTellsTheEditsItCouldNotCheck(t *testing.T) {
 	run("SessionEnd", map[string]any{})
 	if _, ctx := run("SessionStart", map[string]any{}); strings.Contains(ctx, "without a check") {
 		t.Fatalf("an ended session's edits told: %q", ctx)
+	}
+}
+
+// An answer the agent never reads does not take the ledger: Cursor's legacy
+// afterFileEdit is answered, but Cursor shows the answer to nobody. The edit
+// is told at the next answer the agent reads.
+func TestLedgerWaitsForAnAnswerTheAgentReads(t *testing.T) {
+	tm := newTeam(t, "alice")
+	a := tm.clone("alice")
+	tm.enrol(map[string]string{"alice": a})
+	cursor := func(event string, extra map[string]any) string {
+		t.Helper()
+		m := map[string]any{"conversation_id": "c1", "hook_event_name": event, "workspace_roots": []string{a}, "cursor_version": "1.7"}
+		maps.Copy(m, extra)
+		b, _ := json.Marshal(m)
+		out, errOut, code := tm.as("alice", a, string(b), "hook", "cursor")
+		if code != 0 {
+			t.Fatalf("%s: exit %d %s", event, code, errOut)
+		}
+		return out
+	}
+	file := filepath.Join(a, "README.md")
+	t.Setenv("INTAGENT_URL", "http://127.0.0.1:1")
+	t.Setenv("INTAGENT_TOKEN", tm.tokens["alice"])
+	t.Setenv("INTAGENT_TIMEOUT", "200ms")
+	cursor("preToolUse", map[string]any{"tool_name": "Write", "tool_input": map[string]any{"file_path": file}})
+	t.Setenv("INTAGENT_URL", "")
+	t.Setenv("INTAGENT_TOKEN", "")
+	t.Setenv("INTAGENT_TIMEOUT", "")
+	if out := cursor("afterFileEdit", map[string]any{"file_path": file}); strings.Contains(out, "without a check") {
+		t.Fatalf("afterFileEdit told the ledger: %s", out)
+	}
+	if out := cursor("beforeSubmitPrompt", map[string]any{"prompt": "next"}); !strings.Contains(out, "made at") || !strings.Contains(out, "README.md") {
+		t.Fatalf("the next answer the agent reads: %s", out)
 	}
 }
 
