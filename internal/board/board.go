@@ -835,13 +835,15 @@ func (b *Board) touch(now time.Time, c *claim, s *session, paths []PathRef) {
 	}
 }
 
-// alertOthers tells every other claim that changed or claimed the same files.
+// alertOthers tells every other claim that changed or claimed the same files,
+// of those still listening.
 func (b *Board) alertOthers(now time.Time, c *claim, paths []PathRef) {
 	byName := orderByName(paths)
 	covered := make([]bool, len(paths)) // by the claim being compared
 	var at map[string]int               // where each path first is in paths, once needed
+	live := b.liveAt(now)
 	for o := range b.comparing(c.Repo) {
-		if o.ID == c.ID {
+		if o.ID == c.ID || !b.listening(live, o) {
 			continue
 		}
 		// The claim's changes, from whichever of the two lists is shorter.
@@ -886,6 +888,15 @@ func (b *Board) alertOthers(now time.Time, c *claim, paths []PathRef) {
 			Text:      fmt.Sprintf("%s also changed %s%s.", who(c), listPaths(hit, 5), onBranch(c)),
 		})
 	}
+}
+
+// listening reports whether claim o's agents may still hear what is queued
+// for it: it has a live session, or it was active within DormantFor. A claim
+// quiet for longer counts only as nearby work (conflictWith), and is queued
+// nothing, nor remembers what it would have been told: an agent that comes
+// back to it hears of teammates' work from its greeting and its checks.
+func (b *Board) listening(live liveness, o *claim) bool {
+	return live.now.Sub(o.UpdatedAt) <= b.cfg.DormantFor || live.claim(o.ID)
 }
 
 // orderByName returns the positions of paths in the order of their names.
@@ -1717,14 +1728,17 @@ func (b *Board) intentOverlaps(c *claim, in Intent, live liveness) []Conflict {
 	return out
 }
 
+// tellIntent tells the claims a declaration overlaps, of those still
+// listening.
 func (b *Board) tellIntent(now time.Time, c *claim, accepted []Intent, overlaps []Conflict) {
 	notified := map[string]bool{}
+	live := b.liveAt(now)
 	for _, cf := range overlaps {
 		if notified[cf.ClaimID] {
 			continue
 		}
 		o := b.claims[cf.ClaimID]
-		if o == nil {
+		if o == nil || !b.listening(live, o) {
 			continue
 		}
 		notified[cf.ClaimID] = true
@@ -1902,7 +1916,10 @@ func (b *Board) Note(now time.Time, r NoteRequest) (NoteResult, error) {
 		return NoteResult{}, ErrRateLimited
 	}
 	self := b.findClaim(r.Member, w)
-	targets, path := b.resolve(w.Repo, to, self)
+	targets, path, byID := b.resolve(w.Repo, to, self)
+	if !byID {
+		targets = b.listeners(b.liveAt(now), targets)
+	}
 	if len(targets) == 0 {
 		return NoteResult{}, fmt.Errorf("%w: %q", ErrNoTarget, to)
 	}
@@ -1933,10 +1950,11 @@ func (b *Board) Note(now time.Time, r NoteRequest) (NoteResult, error) {
 }
 
 // resolve finds a note's recipients: a claim by ID, a member's claims, or the
-// claims that changed or reserved a path, which it also returns.
-func (b *Board) resolve(repo, to string, self *claim) ([]*claim, string) {
+// claims that changed or reserved a path, which it also returns. It reports
+// whether the note named its claim.
+func (b *Board) resolve(repo, to string, self *claim) ([]*claim, string, bool) {
 	if c, ok := b.claims[to]; ok && c.Repo == repo {
-		return []*claim{c}, ""
+		return []*claim{c}, "", true
 	}
 	var out []*claim
 	for c := range b.claimsIn(repo) {
@@ -1948,11 +1966,11 @@ func (b *Board) resolve(repo, to string, self *claim) ([]*claim, string) {
 		}
 	}
 	if len(out) > 0 {
-		return out, ""
+		return out, "", false
 	}
 	p, err := glob.CleanPath(to)
 	if err != nil {
-		return nil, ""
+		return nil, "", false
 	}
 	for c := range b.comparing(repo) {
 		if self != nil && c.ID == self.ID {
@@ -1962,7 +1980,41 @@ func (b *Board) resolve(repo, to string, self *claim) ([]*claim, string) {
 			out = append(out, c)
 		}
 	}
-	return out, p
+	return out, p, false
+}
+
+// listeners keeps, of a note's recipients, the claims still listening. A
+// member none of whose claims among them listens keeps the one they were
+// last active in, ties going by ID, so a note to someone away waits for
+// them once rather than in every worktree they left. A member with many
+// worktrees would otherwise have a note queued in each, every one of which
+// is saved with the board until it expires, for none to read.
+func (b *Board) listeners(live liveness, cs []*claim) []*claim {
+	if len(cs) <= 1 {
+		return cs
+	}
+	keep := make([]bool, len(cs))
+	heard := map[string]bool{} // members with a claim that listens
+	newest := map[string]int{} // each member's most recently active claim
+	for i, c := range cs {
+		if b.listening(live, c) {
+			keep[i], heard[c.Member] = true, true
+		}
+		n, ok := newest[c.Member]
+		if !ok || c.UpdatedAt.After(cs[n].UpdatedAt) || (c.UpdatedAt.Equal(cs[n].UpdatedAt) && c.ID < cs[n].ID) {
+			newest[c.Member] = i
+		}
+	}
+	for m, i := range newest {
+		keep[i] = keep[i] || !heard[m]
+	}
+	out := cs[:0:0]
+	for i, c := range cs {
+		if keep[i] {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // --- maintenance -----------------------------------------------------------

@@ -89,7 +89,12 @@ Actions are configurable per severity on the server: `deny`, `ask` (the person d
 
 Awareness is symmetric. When an agent touches a file another claim has also touched, the other claim gets an inbox
 item, delivered at its agent's next hook. Inbox items (notes and alerts) are delivered once per session through
-`additionalContext` on `SessionStart`, `UserPromptSubmit` and `PostToolUse`.
+`additionalContext` on `SessionStart`, `UserPromptSubmit` and `PostToolUse`. Only claims still listening are queued
+anything: those with a live session, or active within `dormant_for` (a day). A claim quiet for longer counts only as
+nearby work, so nothing is queued for it, nor remembered of what it would have been told; an agent that comes back to
+it hears of teammates' work from its greeting and its checks. A note to a member goes to their claims still listening,
+and to one none of whose claims listens, to the claim they were last active in, rather than to every worktree they
+left.
 
 Every acknowledgement is remembered per session, so an agent hears about a given overlap once, not on every edit.
 
