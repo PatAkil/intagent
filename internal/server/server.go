@@ -248,8 +248,8 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	maintainCtx, stopMaintain := context.WithCancel(context.WithoutCancel(ctx))
 	maintained := make(chan struct{})
 	go func() { defer close(maintained); s.maintain(maintainCtx) }()
-	// The notifier stops last, so its final message carries what the last
-	// requests and sweep recorded.
+	// The notifier stops last, so its final message carries everything
+	// recorded before the requests and the sweeper stopped.
 	notifyCtx, stopNotify := context.WithCancel(context.WithoutCancel(ctx))
 	notified := make(chan struct{})
 	go func() {

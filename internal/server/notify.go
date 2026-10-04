@@ -92,9 +92,10 @@ const (
 // takes everything queued at once and posts it as a single message, no more
 // than one per pace, so a storm of activities costs a few messages.
 type notifier struct {
-	cfg    WebhookConfig
-	client *http.Client
-	log    *slog.Logger
+	cfg       WebhookConfig
+	recovered bool // the webhook wants session.recovered
+	client    *http.Client
+	log       *slog.Logger
 	// now and pace time the sender, which tests drive themselves. They are
 	// transport time: the board's own clock plays no part.
 	now  func() time.Time
@@ -110,10 +111,9 @@ type notifier struct {
 	alerts map[string][]*pendingItem
 	// told remembers the sessions whose stall or gone was delivered, when the
 	// webhook wants session.recovered: only those recoveries are sent.
-	told      toldSet
-	recovered bool // the webhook wants session.recovered
+	told toldSet
 
-	// Only the sender touches these.
+	// Only the sender touches these, nextSend included.
 	notBefore    time.Time // no message starts before this
 	failures     int       // posts in a row that failed and are worth retrying
 	countedTries int       // posts in a row that failed while carrying counted
