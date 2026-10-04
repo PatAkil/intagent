@@ -396,7 +396,7 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	if errors.Is(err, http.ErrServerClosed) {
 		err = nil
 	}
-	if serr := s.save(context.WithoutCancel(ctx)); serr != nil {
+	if serr := s.save(nil); serr != nil {
 		// A clean stop that could not save loses what changed since the
 		// last save: serve must not exit as if it had not.
 		err = errors.Join(err, fmt.Errorf("final snapshot: %w", serr))

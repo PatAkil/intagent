@@ -431,7 +431,7 @@ func TestPersistenceAcrossRestarts(t *testing.T) {
 	dir := t.TempDir()
 	ts := newTestServer(t, func(o *Options) { o.DataDir = dir })
 	ts.do(t, "POST", "/v1/hook", "alice", hookEv(board.KindPostEdit, "alice", "a1", "x/y.go"), nil)
-	if err := ts.save(context.Background()); err != nil {
+	if err := ts.save(nil); err != nil {
 		t.Fatal(err)
 	}
 	if fi, err := os.Stat(filepath.Join(dir, "board.json")); err != nil || fi.Mode().Perm() != 0o600 {

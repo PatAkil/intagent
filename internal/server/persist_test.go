@@ -88,7 +88,7 @@ func TestSavesArePacedByTheirCost(t *testing.T) {
 		end := clock.read().Add(time.Minute)
 		for n := 0; clock.read().Before(end); n++ {
 			ts.change(t, n)
-			clock.add(ts.saveIfDue(context.Background()))
+			clock.add(ts.saveIfDue(nil))
 		}
 		if saves < c.min || saves > c.max {
 			t.Errorf("saves taking %s: %d in a minute, want %d to %d", c.took, saves, c.min, c.max)
@@ -106,7 +106,7 @@ func TestUnchangedBoardIsNotSaved(t *testing.T) {
 	}
 	ts.change(t, 0)
 	for range 10 {
-		clock.add(ts.saveIfDue(context.Background()))
+		clock.add(ts.saveIfDue(nil))
 	}
 	if saves != 1 {
 		t.Fatalf("%d saves of a board changed once", saves)
@@ -140,7 +140,7 @@ func TestFailingSavesAreVisible(t *testing.T) {
 	start := clock.read()
 	for n := 0; clock.read().Before(start.Add(5 * time.Minute)); n++ {
 		ts.change(t, n)
-		clock.add(ts.saveIfDue(context.Background()))
+		clock.add(ts.saveIfDue(nil))
 	}
 	var gaps []time.Duration
 	for i := 1; i < len(attempts); i++ {
@@ -165,7 +165,7 @@ func TestFailingSavesAreVisible(t *testing.T) {
 	}
 	failing = false
 	clock.add(30 * time.Second)
-	ts.saveIfDue(context.Background())
+	ts.saveIfDue(nil)
 	if code, h := health("?strict=1"); code != http.StatusOK || !h.Snapshot.OK || h.Snapshot.Attempts != 0 || !h.Snapshot.SavedAt.Equal(clock.read()) {
 		t.Fatalf("saved again: %d %+v", code, h.Snapshot)
 	}
@@ -294,7 +294,7 @@ func TestServeAbandonsASaveInFlight(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if len(results) != 2 || !errors.Is(results[0], context.Canceled) || results[1] != nil {
+	if len(results) != 2 || !errors.Is(results[0], errAbandoned) || results[1] != nil {
 		t.Fatalf("saves: %v, want one abandoned and the final one", results)
 	}
 	restored := board.New(board.DefaultConfig())
@@ -348,7 +348,7 @@ func TestSlowSaveIsLogged(t *testing.T) {
 		return fsutil.WriteFileFunc(path, perm, fill)
 	}
 	ts.change(t, 0)
-	if err := ts.save(context.Background()); err != nil {
+	if err := ts.save(nil); err != nil {
 		t.Fatal(err)
 	}
 	if n := len(logs.lines("a snapshot of the board has been saving")); n != 1 {
@@ -363,7 +363,7 @@ func TestSaveKeepsThePreviousSnapshot(t *testing.T) {
 	for n := range 3 {
 		ts.change(t, n)
 		clock.add(time.Minute)
-		if err := ts.save(context.Background()); err != nil {
+		if err := ts.save(nil); err != nil {
 			t.Fatal(err)
 		}
 		data, err := os.ReadFile(ts.snapshotPath())
@@ -385,12 +385,12 @@ func TestDamagedSnapshotIsSetAside(t *testing.T) {
 	ts, clock, _ := persistServer(t)
 	dir := ts.dataDir
 	ts.change(t, 0)
-	if err := ts.save(context.Background()); err != nil {
+	if err := ts.save(nil); err != nil {
 		t.Fatal(err)
 	}
 	ts.change(t, 1)
 	clock.add(time.Minute)
-	if err := ts.save(context.Background()); err != nil {
+	if err := ts.save(nil); err != nil {
 		t.Fatal(err)
 	}
 	prev, err := os.ReadFile(ts.previousPath())
@@ -487,7 +487,7 @@ func (r *recorder) WriteHeader(int)             {}
 func TestStartRemovesStaleTemporaryFiles(t *testing.T) {
 	ts, _, _ := persistServer(t)
 	ts.change(t, 0)
-	if err := ts.save(context.Background()); err != nil {
+	if err := ts.save(nil); err != nil {
 		t.Fatal(err)
 	}
 	dir := ts.dataDir

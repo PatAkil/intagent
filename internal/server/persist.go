@@ -215,9 +215,9 @@ func (s *Server) removeTemps() {
 // save writes a snapshot if the board changed since the last one, and
 // records how it went. The snapshot is streamed to a temporary file beside
 // the last, which it then replaces (fsutil.WriteFileFunc); the one it
-// replaces is kept as board.json.prev. Once ctx ends, the save is abandoned
-// at its next write.
-func (s *Server) save(ctx context.Context) error {
+// replaces is kept as board.json.prev. Once stop is closed, the save is
+// abandoned at its next write; a nil stop never is.
+func (s *Server) save(stop <-chan struct{}) error {
 	if s.dataDir == "" || s.board.Version() == s.saves.saved() {
 		return nil
 	}
@@ -225,17 +225,17 @@ func (s *Server) save(ctx context.Context) error {
 	slow := time.AfterFunc(s.slowSave, func() {
 		s.log.Warn("a snapshot of the board has been saving for a long time: the disk may be slow or stuck", "for", s.slowSave)
 	})
-	version, err := s.writeSnapshot(ctx)
+	version, err := s.writeSnapshot(stop)
 	slow.Stop()
-	if err != nil && ctx.Err() != nil {
-		s.log.Debug("snapshot abandoned: the server is stopping, and saves once more", "err", err)
+	if errors.Is(err, errAbandoned) {
+		s.log.Debug("snapshot abandoned: the server is stopping, and saves once more")
 		return err
 	}
 	s.saves.finished(start, s.clock(), version, err, s.log)
 	return err
 }
 
-func (s *Server) writeSnapshot(ctx context.Context) (uint64, error) {
+func (s *Server) writeSnapshot(stop <-chan struct{}) (uint64, error) {
 	if err := os.MkdirAll(s.dataDir, 0o700); err != nil {
 		return 0, err
 	}
@@ -245,23 +245,28 @@ func (s *Server) writeSnapshot(ctx context.Context) (uint64, error) {
 	var version uint64
 	err := s.saveFile(s.snapshotPath(), 0o600, func(w io.Writer) error {
 		var err error
-		version, err = s.board.WriteSnapshot(abandonable{ctx: ctx, w: w}, s.now())
+		version, err = s.board.WriteSnapshot(abandonable{stop: stop, w: w}, s.now())
 		return err
 	})
 	return version, err
 }
 
-// abandonable fails every write once ctx ends.
+// errAbandoned ends a save the server gave up for its final one.
+var errAbandoned = errors.New("snapshot abandoned: the server is stopping")
+
+// abandonable fails every write once stop is closed.
 type abandonable struct {
-	ctx context.Context
-	w   io.Writer
+	stop <-chan struct{}
+	w    io.Writer
 }
 
 func (a abandonable) Write(p []byte) (int, error) {
-	if err := a.ctx.Err(); err != nil {
-		return 0, err
+	select {
+	case <-a.stop:
+		return 0, errAbandoned
+	default:
+		return a.w.Write(p)
 	}
-	return a.w.Write(p)
 }
 
 // persist saves the board while the server runs, as saves are due. Once
@@ -271,37 +276,31 @@ func (s *Server) persist(ctx context.Context) {
 	if s.dataDir == "" {
 		return
 	}
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	go func() {
-		select {
-		case <-s.closing:
-			cancel()
-		case <-ctx.Done():
-		}
-	}()
 	t := time.NewTimer(minSaveEvery)
 	defer t.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-s.closing:
+			return
 		case <-t.C:
-			t.Reset(s.saveIfDue(ctx))
+			t.Reset(s.saveIfDue(s.closing))
 		}
 	}
 }
 
 // saveIfDue saves the board if it changed and a save is due, and returns
-// how long until it should look again.
-func (s *Server) saveIfDue(ctx context.Context) time.Duration {
+// how long until it should look again. The save is abandoned once stop is
+// closed.
+func (s *Server) saveIfDue(stop <-chan struct{}) time.Duration {
 	if wait := s.saves.wait(s.clock()); wait > 0 {
 		return wait
 	}
 	if s.board.Version() == s.saves.saved() {
 		return minSaveEvery
 	}
-	_ = s.save(ctx) // logged and recorded
+	_ = s.save(stop) // logged and recorded
 	return max(minSaveEvery, s.saves.wait(s.clock()))
 }
 
