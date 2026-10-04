@@ -177,11 +177,11 @@ func rankedFirst(a, b rankedClaim) int {
 	return strings.Compare(a.c.ID, b.c.ID)
 }
 
-// insertTop adds x to top, which holds at most k items in cmp's order: the
-// first k of many items, without sorting them all. cmp must order every two
-// distinct items.
-func insertTop[T any](top []T, x T, k int, cmp func(a, b T) int) []T {
-	i, _ := slices.BinarySearchFunc(top, x, cmp)
+// insertTop adds x to top, which holds at most k items sorted by order: the
+// first k of many items, without sorting them all. order must not tie two
+// distinct items, or which of them top keeps depends on the order they come.
+func insertTop[T any](top []T, x T, k int, order func(a, b T) int) []T {
+	i, _ := slices.BinarySearchFunc(top, x, order)
 	if i == k {
 		return top
 	}
