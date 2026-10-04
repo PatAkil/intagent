@@ -64,7 +64,10 @@ func (b *Board) unansweredEdit(now time.Time, c *claim, s *session, ev HookEvent
 		}
 		s.refused = slices.Delete(s.refused, i, i+1)
 	}
-	told := b.wouldTell(now, c, s, ev.Paths)
+	// Judged as its pre_edit would have been, on the first maxCheckPaths
+	// paths: a post_edit keeps up to MaxFootprint, and each path judged costs
+	// a pass over the repository's claims under the lock.
+	told := b.wouldTell(now, c, s, ev.Paths[:min(len(ev.Paths), maxCheckPaths)])
 	if len(told) == 0 {
 		return
 	}

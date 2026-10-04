@@ -115,6 +115,26 @@ func TestEditCostIsBounded(t *testing.T) {
 	}
 }
 
+// An edit its agent made without hearing a check is judged when its
+// post_edit comes as its pre_edit would have been: on its first
+// maxCheckPaths paths, though the claim keeps up to MaxFootprint of them.
+func TestEditCheckedAfterwardsCostIsBounded(t *testing.T) {
+	b, now, paths := reservedBoard(t, 2000, 0)
+	trace = &workTrace{}
+	t.Cleanup(func() { trace = nil })
+	res, err := b.Hook(now, HookEvent{Kind: KindPostEdit, Member: "bob", Agent: AgentCodex, SessionID: "b", Where: bob, Tool: "apply_patch",
+		ToolUseID: "call-1", Paths: paths})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.CheckedAfter || !strings.Contains(res.Context, "svc/pay/retry.go was not checked") {
+		t.Fatalf("the edit was not checked afterwards: %+v", res)
+	}
+	if trace.conflictsFor != maxCheckPaths {
+		t.Fatalf("a post_edit of 2000 paths, checked afterwards, judged %d of them, want %d", trace.conflictsFor, maxCheckPaths)
+	}
+}
+
 // An activity lists at most maxShownPaths paths, and counts the rest; the
 // claim keeps them all.
 func TestActivitiesListSomePathsAndCountTheRest(t *testing.T) {
