@@ -2,6 +2,7 @@ package board
 
 import (
 	"fmt"
+	"runtime"
 	"slices"
 	"testing"
 	"time"
@@ -90,18 +91,31 @@ func TestFeedKeepsTheLastActivities(t *testing.T) {
 	}
 }
 
-// Recording an activity into a full feed does not copy the feed: across many
-// records, the array is replaced about once per KeepActivities of them.
+// Recording an activity into a full feed does not copy the feed: append
+// moves it to a new array about once per KeepActivities records, so a record
+// averages well under 0.05 allocations and 1 KB. The old record copied all
+// 300 activities, 74 KB, every time. Counted over many records, since
+// testing.AllocsPerRun rounds down and would pass a record that copied the
+// feed every other time.
 func TestRecordDoesNotCopyTheFeed(t *testing.T) {
 	b := New(DefaultConfig())
 	a := Activity{Kind: ActivityFileChanged, Repo: repo, Paths: []string{"a.go"}}
 	for range b.cfg.KeepActivities {
 		b.record(a)
 	}
-	// AllocsPerRun rounds down: under one allocation per record is 0. The old
-	// record allocated a new array for every one.
-	if allocs := testing.AllocsPerRun(1000, func() { b.record(a); b.pending = b.pending[:0] }); allocs != 0 {
-		t.Fatalf("recording into a full feed of %d made %.0f allocations per activity", b.cfg.KeepActivities, allocs)
+	const records = 20_000
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	for range records {
+		b.record(a)
+		b.pending = b.pending[:0]
+	}
+	runtime.ReadMemStats(&after)
+	allocs := float64(after.Mallocs-before.Mallocs) / records
+	bytes := float64(after.TotalAlloc-before.TotalAlloc) / records
+	if allocs >= 0.05 || bytes >= 1024 {
+		t.Fatalf("recording into a full feed of %d made %.3f allocations and %.0f bytes per activity",
+			b.cfg.KeepActivities, allocs, bytes)
 	}
 }
 
