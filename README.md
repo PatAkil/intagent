@@ -150,8 +150,9 @@ Actions: `deny` (refuse every time), `ask` (the person decides; headless agents 
 (refuse once with an explanation, allow the retry), `warn` (allow, with context), `off`.
 
 Changes made through the shell cannot be checked before they happen. When git later shows one inside an active
-teammate's exclusive intent, the agent is told and the change is recorded as a breach, which the webhook sends; under
-`block: warn` it is a warning instead, and under `block: off` nothing. A teammate's change inside your reservation
+teammate's exclusive intent, every live agent session in that worktree is told (the scan that finds it may follow
+another session's command) and the change is recorded as a breach, which the webhook sends; under `block: warn` it is
+a warning instead, and under `block: off` nothing. A teammate's change inside your reservation
 that intagent learned of after you declared it (a hook reports a change as it is made, git when it first sees it)
 does not bump your own agent: it is warned instead.
 

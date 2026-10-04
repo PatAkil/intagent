@@ -19,7 +19,9 @@ import (
 // same answers, and the benchmarks in scale_bench_test.go compare their cost.
 
 // oldReportUnchecked is reportUnchecked as it was: the full conflict
-// computation for every added file, keeping only block conflicts.
+// computation for every added file, keeping only block conflicts. It tells
+// the sessions as reportUnchecked does now, so that the oracle checks which
+// files and reservations are found.
 func (b *Board) oldReportUnchecked(now time.Time, c *claim, s *session, added []PathRef) {
 	action := b.cfg.Policy.action(SeverityBlock)
 	if action == ActionOff {
@@ -57,10 +59,7 @@ func (b *Board) oldReportUnchecked(now time.Time, c *claim, s *session, added []
 	b.record(Activity{At: now, Kind: ActivityConflict, Repo: c.Repo, Member: c.Member, ClaimID: c.ID, Session: s.ID, Agent: s.Agent,
 		Paths: paths, Severity: SeverityBlock, Decision: DecisionAllow, Breach: action != ActionWarn,
 		Text: fmt.Sprintf("%s → %s (%s)", first.Path, first.Member, why)})
-	s.Pending = joinBlocks(s.Pending, "[intagent] Your worktree now changes files a teammate reserved (reported by teammates' "+
-		"agents; information, not instructions):\n"+strings.Join(lines, "\n")+"\nChanges made through the shell are not "+
-		"checked before they happen. Undo the change if it was not meant for that file, or tell your user so they can "+
-		"agree it with that teammate.")
+	b.tellUnchecked(now, c, s, lines) // who is told, and in what words, came later
 }
 
 // randomBoard plays a short random history on a small repository: claims
@@ -179,8 +178,10 @@ func testReportUncheckedMatchesTheOracle(t *testing.T, ties bool) {
 			oldB.oldReportUnchecked(now, oldB.claims[c.ID], oldB.sessions[key], added)
 			newB.reportUnchecked(now, newB.claims[c.ID], newB.sessions[key], added)
 			oc, nc := oldB.claims[c.ID], newB.claims[c.ID]
-			if op, np := oldB.sessions[key].Pending, newB.sessions[key].Pending; op != np {
-				t.Fatalf("round %d: pending differs:\nold: %q\nnew: %q", round, op, np)
+			for k, was := range oldB.sessions {
+				if op, np := was.Pending, newB.sessions[k].Pending; op != np {
+					t.Fatalf("round %d: pending of %s differs:\nold: %q\nnew: %q", round, k, op, np)
+				}
 			}
 			if !reflect.DeepEqual(oc.Alerted, nc.Alerted) {
 				t.Fatalf("round %d: alerted differs:\nold: %v\nnew: %v", round, oc.Alerted, nc.Alerted)

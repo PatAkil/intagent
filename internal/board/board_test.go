@@ -1327,6 +1327,45 @@ func TestOwnReservationDoesNotOverrideThePolicy(t *testing.T) {
 	}
 }
 
+// A client scans a worktree once for all of its sessions, after whichever's
+// shell command comes first, so the session whose hook reports an unchecked
+// change may not be the one that made it. Every live session of the claim is
+// told, once, in words that suit either; one that has ended is not.
+func TestUncheckedChangeIsToldToEverySessionInTheWorktree(t *testing.T) {
+	h := newHarness(t)
+	h.hook(KindPrompt, "alice", "a1")
+	h.declare("alice", ModeExclusive, "Retry rework", "svc/pay/**")
+	h.hook(KindPrompt, "bob", "b1") // its shell command writes the file
+	h.hook(KindPrompt, "bob", "b2") // its hook claims the worktree's scan
+	h.hook(KindSessionStart, "bob", "b3")
+	h.hook(KindSessionEnd, "bob", "b3")
+	scan := func(session string) string {
+		t.Helper()
+		res, err := h.b.Hook(h.now, HookEvent{Kind: KindToolEnd, Member: "bob", Agent: AgentClaudeCode, SessionID: session,
+			Where: whereOf("bob"), Tool: "Bash", Footprint: &Footprint{Files: refs("svc/pay/retry.go")}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res.Context
+	}
+	notice := []string{"Your worktree now changes files a teammate reserved",
+		"svc/pay/retry.go, which alice's agent holds exclusively", `"Retry rework"`,
+		"may have come from another session in this worktree", "If this session made it", "tell your user"}
+
+	mustContain(t, scan("b2"), notice...)
+	mustContain(t, h.hook(KindPrompt, "bob", "b1").Context, notice...)
+	if acts := h.activities("conflict"); len(acts) != 1 || acts[0].Session != "b2" {
+		t.Fatalf("one breach, reported by b2's scan: %+v", acts)
+	}
+	if got := h.b.sessions[sessionKey("bob", AgentClaudeCode, "b3")]; got == nil || got.Pending != "" {
+		t.Fatalf("the ended session holds a notice no hook will read: %+v", got)
+	}
+	// Told once: neither session hears it again, whichever scans next.
+	if got := scan("b1") + scan("b2") + h.hook(KindPrompt, "bob", "b1").Context; strings.Contains(got, "reserved") {
+		t.Fatalf("told twice: %q", got)
+	}
+}
+
 // A reservation that only warns, or is switched off, makes unchecked changes
 // inside it a warning, or nothing; and each file is reported once, however
 // often it leaves the worktree's changes and comes back.

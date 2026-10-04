@@ -124,8 +124,9 @@ goes in path order, and the client sends them in that order, since the server ke
 directory added whole whose files do not all fit goes in `dirs`, one entry for the files it leaves out.
 
 The server replaces the claim's git-derived footprint with this list. Hook-recorded touches newer than the
-reconciliation stay. Once a branch is merged and the worktree is clean, the footprint is empty and the claim releases
-itself.
+reconciliation stay. A new file in the list that falls inside a teammate's exclusive intent is reported to every live
+session of the claim, not only the one whose hook sent the scan, since that scan may follow another session's command.
+Once a branch is merged and the worktree is clean, the footprint is empty and the claim releases itself.
 
 ## Identity
 

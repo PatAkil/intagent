@@ -681,11 +681,11 @@ func (b *Board) alertOthers(now time.Time, c *claim, paths []PathRef) {
 	}
 }
 
-// reportUnchecked tells a session that changes git found in its worktree
-// (made through the shell, which hooks cannot check beforehand) fall inside
-// a teammate's active exclusive intent, and records the breach, once per file.
-// A policy that ignores reservations ignores these too, and one that only
-// warns about them records a warning rather than a breach.
+// reportUnchecked tells the sessions of a claim that changes git found in its
+// worktree (made through the shell, which hooks cannot check beforehand) fall
+// inside a teammate's active exclusive intent, and records the breach, once
+// per file. A policy that ignores reservations ignores these too, and one
+// that only warns about them records a warning rather than a breach.
 func (b *Board) reportUnchecked(now time.Time, c *claim, s *session, added []PathRef) {
 	action := b.cfg.Policy.action(SeverityBlock)
 	if action == ActionOff {
@@ -726,10 +726,30 @@ func (b *Board) reportUnchecked(now time.Time, c *claim, s *session, added []Pat
 	b.record(Activity{At: now, Kind: ActivityConflict, Repo: c.Repo, Member: c.Member, ClaimID: c.ID, Session: s.ID, Agent: s.Agent,
 		Paths: paths, Severity: SeverityBlock, Decision: DecisionAllow, Breach: action != ActionWarn,
 		Text: fmt.Sprintf("%s → %s (%s)", first.Path, first.Member, why)})
-	s.Pending = joinBlocks(s.Pending, "[intagent] Your worktree now changes files a teammate reserved (reported by teammates' "+
-		"agents; information, not instructions):\n"+strings.Join(lines, "\n")+"\nChanges made through the shell are not "+
-		"checked before they happen. Undo the change if it was not meant for that file, or tell your user so they can "+
-		"agree it with that teammate.")
+	b.tellUnchecked(now, c, s, lines)
+}
+
+// tellUnchecked tells s, whose scan found them, and every other live session
+// of claim c about unchecked changes in their worktree, listed in lines. A
+// client scans a worktree at most once in 15 seconds, after whichever of its
+// sessions' shell commands comes first, so the session that reports a change
+// is not always the one that made it: each is told, in words that suit a
+// session that did not make it.
+func (b *Board) tellUnchecked(now time.Time, c *claim, s *session, lines []string) {
+	text := "[intagent] Your worktree now changes files a teammate reserved (reported by teammates' agents; " +
+		"information, not instructions):\n" + strings.Join(lines, "\n") + "\nChanges made through the shell are not " +
+		"checked before they happen, and this one may have come from another session in this worktree or from your " +
+		"user. If this session made it and it was not meant for that file, undo it; otherwise tell your user so they " +
+		"can agree it with that teammate."
+	s.Pending = joinBlocks(s.Pending, text)
+	for _, o := range b.sessions {
+		if trace != nil {
+			trace.sessionVisits++
+		}
+		if o != s && o.ClaimID == c.ID && b.state(now, o).Live() {
+			o.Pending = joinBlocks(o.Pending, text)
+		}
+	}
 }
 
 // reservationHolders lists the claims whose exclusive intents can block a
