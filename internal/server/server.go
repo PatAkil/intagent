@@ -425,6 +425,9 @@ func bearer(r *http.Request) string {
 // and meters large bodies.
 func (s *Server) write(h http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Pattern == hookRoute {
+			r = s.arrived(r)
+		}
 		who, ok := s.authenticate(bearer(r))
 		if !ok {
 			writeError(w, http.StatusUnauthorized, "missing or unknown token")
@@ -513,7 +516,7 @@ func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleHook(w http.ResponseWriter, r *http.Request) {
-	caller := s.waiterFor(r, s.clock())
+	caller := s.hookWaiter(r)
 	var ev board.HookEvent
 	if !decode(w, r, &ev) {
 		return

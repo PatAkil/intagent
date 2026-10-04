@@ -44,6 +44,26 @@ func (s *Server) waiterFor(r *http.Request, arrived time.Time) *waiter {
 	return &waiter{ctx: r.Context(), clock: s.clock, arrived: arrived, budget: budgetOf(r.Header.Get(timeoutHeader))}
 }
 
+// arrivedKey holds when a hook request arrived.
+type arrivedKey struct{}
+
+// arrived notes in r that its request arrives now. write() does so for a
+// hook before it reads and admits the body: its client has waited since it
+// sent the request, however long the body takes to arrive and to find one
+// of the slots for large bodies.
+func (s *Server) arrived(r *http.Request) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), arrivedKey{}, s.clock()))
+}
+
+// hookWaiter describes the client of a hook request, from when it arrived.
+func (s *Server) hookWaiter(r *http.Request) *waiter {
+	at, ok := r.Context().Value(arrivedKey{}).(time.Time)
+	if !ok {
+		at = s.clock()
+	}
+	return s.waiterFor(r, at)
+}
+
 // budgetOf is how long the server may take to answer a client that waits
 // the header's milliseconds: 0 if the header is missing or invalid.
 func budgetOf(header string) time.Duration {

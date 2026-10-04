@@ -122,7 +122,7 @@ func (s *Server) admitBody(w http.ResponseWriter, r *http.Request, member string
 	edit = r.Pattern == hookRoute && startsPreEdit(r)
 	if !s.admit.takeBytes(member, n, s.now(), edit) {
 		if edit {
-			s.uncheckedEdit(w, member, "its member's budget for large edits is spent")
+			s.uncheckedEdit(w, r, member, "its member's budget for large edits is spent")
 			return nil, edit, false
 		}
 		w.Header().Set("Retry-After", "1")
@@ -144,12 +144,18 @@ func (s *Server) admitBody(w http.ResponseWriter, r *http.Request, member string
 		return func() { <-s.admit.large }, edit, true
 	case <-t.C:
 		if edit {
-			s.uncheckedEdit(w, member, "every large-body slot stayed busy")
+			s.uncheckedEdit(w, r, member, "every large-body slot stayed busy")
 			return nil, edit, false
 		}
 		w.Header().Set("Retry-After", "1")
 		writeError(w, http.StatusServiceUnavailable, "the server is busy with other large requests; try again in a second")
 	case <-r.Context().Done():
+		if edit {
+			// Its client went ahead, or refused the edit, without an answer.
+			c := s.hookWaiter(r)
+			s.answers.preEdits.add(c.arrived)
+			s.gaveUp(c)
+		}
 	}
 	return nil, edit, false
 }
@@ -173,7 +179,12 @@ func startsPreEdit(r *http.Request) bool {
 
 // uncheckedEdit answers a pre_edit the server is too busy to check: the edit
 // goes ahead, as it would if the hook had timed out, but its agent hears why.
-func (s *Server) uncheckedEdit(w http.ResponseWriter, member, why string) {
+// It counts as a pre_edit that went ahead unchecked, as one answered too late
+// does, towards the server's being degraded.
+func (s *Server) uncheckedEdit(w http.ResponseWriter, r *http.Request, member, why string) {
+	c := s.hookWaiter(r)
+	s.answers.preEdits.add(c.arrived)
+	s.uncheckedCall(c)
 	s.log.Warn("pre_edit let through unchecked", "member", member, "why", why)
 	writeJSON(w, http.StatusOK, board.HookResult{Decision: board.DecisionAllow, Context: uncheckedEditNote})
 }

@@ -138,19 +138,22 @@ func (l *answers) few(now time.Time, n int) bool {
 
 // watchCall counts a pre_edit, and counts it unchecked if its client gives
 // up before the answer is written; the returned func ends the watch.
-// Contexts that end sooner than a client gives up are not believed, as in
-// waiter.late.
 func (s *Server) watchCall(c *waiter) (stop func() bool) {
 	s.answers.preEdits.add(c.arrived)
+	return context.AfterFunc(c.ctx, func() { s.gaveUp(c) })
+}
+
+// gaveUp counts a pre_edit unchecked once its request's context has ended.
+// Contexts that end sooner than a client gives up are not believed, as in
+// waiter.late.
+func (s *Server) gaveUp(c *waiter) {
 	guard := lateGuard
 	if c.budget > 0 {
 		guard = min(guard, c.budget)
 	}
-	return context.AfterFunc(c.ctx, func() {
-		if c.waited() >= guard {
-			s.uncheckedCall(c)
-		}
-	})
+	if c.waited() >= guard {
+		s.uncheckedCall(c)
+	}
 }
 
 // uncheckedCall counts, once, a pre_edit that went ahead unchecked.

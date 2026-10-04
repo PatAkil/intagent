@@ -204,9 +204,10 @@ All endpoints take and return JSON and require `Authorization: Bearer <token>`, 
 
 A hook client waits a short time and then lets the agent go ahead, so under load the server can get to an event
 after its agent has stopped waiting. Every request carries `X-Intagent-Timeout`, how long the client waits in
-milliseconds. The server notes when a hook arrived and, once it holds the board's lock, asks whether the request has
-waited longer than that, less min(300 ms, a quarter), or whether its connection has closed after at least a second
-(a proxy that half-closes a connection closes the request's context while it still waits). Then:
+milliseconds. The server notes when a hook arrived, before reading its body (a large one may wait for a slot, below),
+and, once it holds the board's lock, asks whether the request has waited longer than that, less min(300 ms, a
+quarter), or whether its connection has closed after at least a second (a proxy that half-closes a connection closes
+the request's context while it still waits). Then:
 
 - a late `pre_edit`, which only asks whether an edit may go ahead, changes nothing: nothing is acknowledged,
   counted, recorded or announced, and the answer is an allow marked `unchecked`, which a client still waiting treats
@@ -222,11 +223,12 @@ as a breach. The hook keeps its own ledger of the edits that went ahead without 
 and tells them at the session's next answer the agent reads, less the edit a `checked_after` answer reports.
 
 The server counts, per second over the last minute, the `pre_edit`s that arrive and those whose agent went ahead
-unchecked. It is degraded once more than 5% of the last 10 seconds' (and at least 3) went unchecked, and recovers
-once it has been degraded for 30 seconds and fewer than 1% of the last 30 seconds', and of the last 10 seconds', did:
-traffic falls in a stall, as agents wait out their timeouts, and a share over a longer window alone would let the
-state flip every second. It says so in `/healthz`, on the dashboard (a `status` event on the stream, and `server` in
-`/v1/board` while degraded), in its log and, if asked, by webhook.
+unchecked, including those it let through unchecked when it was too busy with large requests to check them. It is
+degraded once more than 5% of the last 10 seconds' (and at least 3) went unchecked, and recovers once it has been
+degraded for 30 seconds and fewer than 1% of the last 30 seconds', and of the last 10 seconds', did: traffic falls
+in a stall, as agents wait out their timeouts, and a share over a longer window alone would let the state flip every
+second. It says so in `/healthz`, on the dashboard (a `status` event on the stream, and `server` in `/v1/board`
+while degraded), in its log and, if asked, by webhook.
 
 ## Security model
 
