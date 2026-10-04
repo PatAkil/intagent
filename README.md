@@ -197,7 +197,8 @@ An endpoint that answers 429 is left alone for as long as its `Retry-After` asks
 cannot be reached is tried again after 1, 2, 4 … 32 seconds, and an activity is dropped, with a log line, after six
 tries. Each post carries an `Idempotency-Key` header, so an endpoint can drop a post it has already received. A stall
 or gone still waiting to be sent when its agent reports again is not sent at all; `session.recovered`, if listed, is
-sent only for an agent whose stall or gone was.
+sent only for an agent whose stall or gone was. When the server stops, a post under way is let finish and what still
+waits goes out in one last message, within two seconds.
 
 ## Commands
 

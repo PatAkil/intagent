@@ -235,8 +235,8 @@ func (s *Server) Handler() http.Handler {
 	return s.logRequests(mux)
 }
 
-// Serve runs the server on ln until ctx is cancelled, then shuts down cleanly
-// and writes a final snapshot.
+// Serve runs the server on ln until ctx is cancelled, then shuts down cleanly,
+// writes a final snapshot and sends the webhook what is still waiting.
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	srv := &http.Server{
 		Handler:           s.Handler(),
@@ -248,9 +248,16 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	maintainCtx, stopMaintain := context.WithCancel(context.WithoutCancel(ctx))
 	maintained := make(chan struct{})
 	go func() { defer close(maintained); s.maintain(maintainCtx) }()
-	if s.notifier != nil {
-		go s.notifier.run(maintainCtx)
-	}
+	// The notifier stops last, so its final message carries what the last
+	// requests and sweep recorded.
+	notifyCtx, stopNotify := context.WithCancel(context.WithoutCancel(ctx))
+	notified := make(chan struct{})
+	go func() {
+		defer close(notified)
+		if s.notifier != nil {
+			s.notifier.run(notifyCtx)
+		}
+	}()
 
 	errc := make(chan error, 1)
 	go func() { errc <- srv.Serve(ln) }()
@@ -265,6 +272,8 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	}
 	stopMaintain()
 	<-maintained
+	stopNotify()
+	<-notified
 	if errors.Is(err, http.ErrServerClosed) {
 		err = nil
 	}

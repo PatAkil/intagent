@@ -83,6 +83,8 @@ const (
 	// maxTold bounds the sessions remembered as announced quiet, for pairing
 	// their recoveries; the oldest are forgotten first.
 	maxTold = 4096
+	// finalFlushTime bounds the last message, sent as the server stops.
+	finalFlushTime = 2 * time.Second
 )
 
 // notifier posts the activities a webhook wants. The board hands them over
@@ -253,10 +255,30 @@ func (n *notifier) settle(items []*pendingItem, delivered bool) {
 	}
 }
 
-// run sends what is queued until ctx ends.
+// run sends what is queued until ctx ends, then sends what is left once. A
+// post under way when ctx ends is not cut short; the client's timeout bounds
+// it.
 func (n *notifier) run(ctx context.Context) {
+	send := context.WithoutCancel(ctx)
 	for n.waitForTurn(ctx) {
-		n.flush(ctx)
+		n.flush(send)
+	}
+	n.finalFlush()
+}
+
+// finalFlush posts what is still queued in one last message, within
+// finalFlushTime and whatever the pace or a backoff would say. What it cannot
+// deliver is lost with the process, and logged.
+func (n *notifier) finalFlush() {
+	items, counted := n.take()
+	if len(items) == 0 && len(counted) == 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), finalFlushTime)
+	defer cancel()
+	m := compose(items, counted)
+	if ans := n.post(ctx, m); ans.err != nil {
+		n.log.Warn("webhook failed as the server stopped; dropping", "dropped", m.count, "err", ans.err)
 	}
 }
 

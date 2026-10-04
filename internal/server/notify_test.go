@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -287,5 +289,110 @@ func TestWebhookReusesItsConnection(t *testing.T) {
 	}
 	if c := conns.Load(); c != 1 {
 		t.Errorf("20 posts opened %d connections", c)
+	}
+}
+
+// serveWithWebhook runs a server whose webhook posts to hook, and returns a
+// stop that cancels Serve and waits for it to return.
+func serveWithWebhook(t *testing.T, hook string, logs *logRecorder) (*testServer, func()) {
+	t.Helper()
+	clock := time.Date(2026, 10, 2, 9, 0, 0, 0, time.UTC)
+	ts := newTestServer(t, func(o *Options) {
+		o.Webhook = WebhookConfig{URL: hook}
+		o.Now = func() time.Time { return clock }
+		o.SweepEvery = time.Hour
+		if logs != nil {
+			o.Logger = slog.New(logs)
+		}
+	})
+	ts.notifier.pace = time.Hour // only the first message goes before the stop
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- ts.Serve(ctx, ln) }()
+	ts.url = "http://" + ln.Addr().String()
+	ts.do(t, http.MethodPost, "/v1/hook", "alice", hookEv(board.KindPrompt, "alice", "a1"), nil)
+	ts.do(t, http.MethodPost, "/v1/intents", "alice", board.DeclareRequest{Where: where("alice"), Summary: "retry", Patterns: []string{"svc/**"}, Mode: board.ModeExclusive}, nil)
+	return ts, func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Fatal("Serve did not return")
+		}
+	}
+}
+
+// What waits for the pace when the server stops goes out in one last message
+// before Serve returns.
+func TestServeSendsTheWebhookWhatWaitsAsItStops(t *testing.T) {
+	var mu sync.Mutex
+	var got []string
+	hook := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		var p webhookPayload
+		_ = json.NewDecoder(r.Body).Decode(&p)
+		mu.Lock()
+		got = append(got, p.Text)
+		mu.Unlock()
+	}))
+	defer hook.Close()
+	ts, stop := serveWithWebhook(t, hook.URL, nil)
+	ts.do(t, http.MethodPost, "/v1/hook", "bob", hookEv(board.KindPreEdit, "bob", "b1", "svc/x.go"), nil) // goes at once
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		mu.Lock()
+		n := len(got)
+		mu.Unlock()
+		if n == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no webhook for the first refusal")
+		}
+	}
+	ts.do(t, http.MethodPost, "/v1/hook", "bob", hookEv(board.KindPreEdit, "bob", "b1", "svc/y.go"), nil) // waits for the pace
+	stop()
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != 2 || !strings.Contains(got[1], "svc/y.go") {
+		t.Fatalf("sent %q, want the second refusal sent as the server stopped", got)
+	}
+}
+
+// A post under way when the server stops is not cut short.
+func TestServeLetsAWebhookPostFinish(t *testing.T) {
+	started, handled := make(chan struct{}, 1), make(chan bool, 1)
+	hook := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body) // so the server notices a client that hangs up
+		started <- struct{}{}
+		select {
+		case <-time.After(300 * time.Millisecond):
+			handled <- true
+		case <-r.Context().Done():
+			handled <- false
+		}
+	}))
+	defer hook.Close()
+	logs := &logRecorder{}
+	ts, stop := serveWithWebhook(t, hook.URL, logs)
+	ts.do(t, http.MethodPost, "/v1/hook", "bob", hookEv(board.KindPreEdit, "bob", "b1", "svc/x.go"), nil)
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no webhook post")
+	}
+	stop()
+	select {
+	case finished := <-handled:
+		if !finished {
+			t.Fatal("the post was cancelled as the server stopped")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the endpoint never finished the post")
+	}
+	if failed := logs.lines("webhook failed"); len(failed) != 0 {
+		t.Errorf("logged %q", failed)
 	}
 }
