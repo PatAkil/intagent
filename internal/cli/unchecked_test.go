@@ -30,11 +30,11 @@ func pathRefs(paths ...string) []board.PathRef {
 func TestUncheckedLedger(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	now := time.Now()
-	noteUnchecked("/w", "s1", now.Add(-time.Minute), pathRefs("a.go"))
-	noteUnchecked("/w", "s1", now, pathRefs("b.go", "c.go"))
-	noteUnchecked("/w", "s2", now, pathRefs("d.go"))
-	noteUnchecked("/other", "s1", now, pathRefs("e.go"))
-	noteUnchecked("/w", "s1", now, nil) // nothing to note
+	noteUnchecked("/w", "s1", "", now.Add(-time.Minute), pathRefs("a.go"))
+	noteUnchecked("/w", "s1", "", now, pathRefs("b.go", "c.go"))
+	noteUnchecked("/w", "s2", "", now, pathRefs("d.go"))
+	noteUnchecked("/other", "s1", "", now, pathRefs("e.go"))
+	noteUnchecked("/w", "s1", "", now, nil) // nothing to note
 
 	got := claimUnchecked("/w", "s1", now)
 	if len(got) != 2 || got[0].Paths[0] != "a.go" || len(got[1].Paths) != 2 {
@@ -48,11 +48,11 @@ func TestUncheckedLedger(t *testing.T) {
 	}
 
 	// An edit from a day ago is no longer news; a session's end forgets its ledger.
-	noteUnchecked("/w", "s3", now.Add(-25*time.Hour), pathRefs("old.go"))
+	noteUnchecked("/w", "s3", "", now.Add(-25*time.Hour), pathRefs("old.go"))
 	if got := claimUnchecked("/w", "s3", now); got != nil {
 		t.Fatalf("a day-old edit told: %+v", got)
 	}
-	noteUnchecked("/w", "s4", now, pathRefs("x.go"))
+	noteUnchecked("/w", "s4", "", now, pathRefs("x.go"))
 	dropUnchecked("/w", "s4")
 	if got := claimUnchecked("/w", "s4", now); got != nil {
 		t.Fatalf("an ended session's ledger told: %+v", got)
@@ -61,7 +61,7 @@ func TestUncheckedLedger(t *testing.T) {
 	// A ledger stops growing at its bound.
 	long := strings.Repeat("p/", 400) + "x.go"
 	for range maxLedger/len(long) + 10 {
-		noteUnchecked("/w", "s5", now, pathRefs(long))
+		noteUnchecked("/w", "s5", "", now, pathRefs(long))
 	}
 	p, _ := ledgerFile("/w", "s5")
 	if fi, err := os.Stat(p); err != nil || fi.Size() > maxLedger+int64(len(long))+64 {
@@ -70,12 +70,12 @@ func TestUncheckedLedger(t *testing.T) {
 
 	// Ledgers of sessions that never ended are removed when a new one starts.
 	orphan, _ := ledgerFile("/w", "gone")
-	noteUnchecked("/w", "gone", now, pathRefs("y.go"))
+	noteUnchecked("/w", "gone", "", now, pathRefs("y.go"))
 	old := now.Add(-8 * 24 * time.Hour)
 	if err := os.Chtimes(orphan, old, old); err != nil {
 		t.Fatal(err)
 	}
-	noteUnchecked("/w", "s6", now, pathRefs("z.go"))
+	noteUnchecked("/w", "s6", "", now, pathRefs("z.go"))
 	if _, err := os.Stat(orphan); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("an orphaned ledger was kept: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestUncheckedLedgerUnderParallelHooks(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for i := range 50 {
-				noteUnchecked("/w", "s", now, pathRefs(fmt.Sprintf("g%d/%d.go", g, i)))
+				noteUnchecked("/w", "s", "", now, pathRefs(fmt.Sprintf("g%d/%d.go", g, i)))
 			}
 		}()
 	}
@@ -277,6 +277,37 @@ func TestLedgerWaitsForAnAnswerTheAgentReads(t *testing.T) {
 	}
 	if out := cursor("beforeSubmitPrompt", map[string]any{"prompt": "next"}); !strings.Contains(out, "made at") || !strings.Contains(out, "README.md") {
 		t.Fatalf("the next answer the agent reads: %s", out)
+	}
+}
+
+// The edit a post_edit reports is left out of the ledger's telling when the
+// server checked it as it was reported, and said what it found; the
+// session's other unchecked edits are told.
+func TestTellUncheckedLeavesOutTheEditTheServerChecked(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	now := time.Now()
+	reported := hook.Event{Kind: board.KindPostEdit, SessionID: "s1", ToolUseID: "t1"}
+	for _, tc := range []struct {
+		name    string
+		checked bool
+		want    string
+	}{
+		{"checked as it was reported", true, "A teammate may be working on b.go, c.go. Check them"},
+		{"not checked by the server", false, "A teammate may be working on a.go, b.go, c.go. Check them"},
+	} {
+		noteUnchecked("/w", "s1", "t1", now, pathRefs("a.go"))
+		noteUnchecked("/w", "s1", "t2", now, pathRefs("b.go"))
+		noteUnchecked("/w", "s1", "", now, pathRefs("c.go"))
+		res := board.HookResult{Context: "[intagent] from the server", CheckedAfter: tc.checked}
+		tellUnchecked("/w", reported, &res, "https://ia.example")
+		if !strings.Contains(res.Context, tc.want) || !strings.HasSuffix(res.Context, "\n\n[intagent] from the server") {
+			t.Errorf("%s: %q", tc.name, res.Context)
+		}
+	}
+	noteUnchecked("/w", "s1", "t1", now, pathRefs("a.go"))
+	res := board.HookResult{CheckedAfter: true}
+	if tellUnchecked("/w", reported, &res, "https://ia.example"); res.Context != "" {
+		t.Errorf("the reported edit alone: %q", res.Context)
 	}
 }
 

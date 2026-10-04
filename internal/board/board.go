@@ -394,11 +394,12 @@ func (b *Board) Hook(now time.Time, ev HookEvent) (HookResult, error) {
 
 	c := b.claimFor(now, ev.Member, w)
 	s := b.sessionFor(now, ev, c)
-	if ev.Kind == KindPostEdit && ev.ToolUseID != "" && !s.Calls[ev.ToolUseID] {
+	checkedAfter := ev.Kind == KindPostEdit && ev.ToolUseID != "" && !s.Calls[ev.ToolUseID]
+	if checkedAfter {
 		b.unansweredEdit(now, c, s, ev)
 	}
 	was := b.state(now, s)
-	res := HookResult{Decision: DecisionAllow, ClaimID: c.ID}
+	res := HookResult{Decision: DecisionAllow, ClaimID: c.ID, CheckedAfter: checkedAfter}
 
 	switch ev.Kind {
 	case KindSessionStart:

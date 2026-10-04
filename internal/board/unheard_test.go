@@ -209,15 +209,22 @@ func TestEditMadeWithoutACheckIsToldAfterwards(t *testing.T) {
 	h.edit("bob", "b1", "svc/pay/retry.go")
 	h.hook(KindPrompt, "alice", "a1")
 
-	// A call checked as usual says nothing more when it ends.
+	// A call checked as usual says nothing more when it ends, nor does one
+	// the board cannot tell from another.
 	h.call(KindPreEdit, "alice", "a1", "t1", "docs/a.md")
-	if res := h.call(KindPostEdit, "alice", "a1", "t1", "docs/a.md"); res.Context != "" {
-		t.Fatalf("checked edit: %q", res.Context)
+	if res := h.call(KindPostEdit, "alice", "a1", "t1", "docs/a.md"); res.Context != "" || res.CheckedAfter {
+		t.Fatalf("checked edit: %+v", res)
+	}
+	if res := h.call(KindPostEdit, "alice", "a1", "", "svc/pay/retry.go"); res.Context != "" || res.CheckedAfter {
+		t.Fatalf("edit without an id: %+v", res)
 	}
 	// One whose pre_edit never arrived is told what its check would have said.
 	res := h.call(KindPostEdit, "alice", "a1", "t2", "svc/pay/retry.go")
 	mustContain(t, res.Context, "Your edit of svc/pay/retry.go was not checked before it ran", dataNotice,
 		"bob's agent", "has unmerged changes to this file", "Keep your change compatible")
+	if !res.CheckedAfter {
+		t.Fatal("the answer does not say the edit was checked after it ran")
+	}
 	if res := h.call(KindPreEdit, "alice", "a1", "t3", "svc/pay/retry.go"); res.Decision != DecisionRefuse {
 		t.Fatalf("next edit of the file: %s, want the bump it has not had", res.Decision)
 	}

@@ -194,8 +194,8 @@ A hook waits `INTAGENT_TIMEOUT` (2 s) for the server and then lets the edit thro
 waits, and the server does not decide anything for an agent that has gone ahead: no refusal is counted or announced
 for it, and a bump it never saw still stops its next edit of the file. What the agent did is recorded all the same,
 and what it has not heard yet waits for its next answer. The agent is then told which of its edits went ahead without
-a check: by the hook, from a ledger it keeps in the user cache directory, and by the server when the edit is
-reported, with what a check would have found. The dashboard counts those edits beside the checked ones.
+a check: by the server when the edit is reported, with what a check finds then, and otherwise by the hook, from a
+ledger it keeps in the user cache directory. The dashboard counts those edits beside the checked ones.
 
 People see it too. While more than 5% of edits go unchecked, the dashboard shows a banner, the server logs a warning
 when it starts and another when it ends, webhooks can send `server.degraded` and `server.recovered`, and `/healthz`

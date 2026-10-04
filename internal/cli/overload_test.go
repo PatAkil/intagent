@@ -190,17 +190,21 @@ func TestOverloadedServerDecidesNothingForAgentsThatLeft(t *testing.T) {
 	late("PreToolUse", "a-2", edit(a, "docs/guide.md"))
 	t.Setenv("INTAGENT_TIMEOUT", "")
 
-	// Answered in time again: the edits' own reports. The hook says which
-	// edits went ahead unchecked, and the server what they ran into.
+	// Answered in time again: the edits' own reports. The server says what
+	// the reported edit ran into, and the hook which other edits went ahead
+	// unchecked: the reported one once, in the server's words.
 	_, _, ctx := decision(t, run("alice", a, "PostToolUse", "a-1", edit(a, "svc/pay/retry.go")))
-	for _, want := range []string{"2 of this session's edits since", "svc/pay/retry.go, docs/guide.md",
+	for _, want := range []string{"An edit this session made at", "may be working on docs/guide.md. Check it",
 		"Your edit of svc/pay/retry.go was not checked before it ran", "bob's agent", "retry.go is mine today"} {
 		if !strings.Contains(ctx, want) {
 			t.Errorf("after the unchecked edit, missing %q in:\n%s", want, ctx)
 		}
 	}
+	if strings.Count(ctx, "svc/pay/retry.go") != 1 {
+		t.Errorf("the reported edit told more than once:\n%s", ctx)
+	}
 	_, _, ctx = decision(t, run("alice", a, "PostToolUse", "a-2", edit(a, "docs/guide.md")))
-	if !strings.Contains(ctx, "docs/guide.md was not checked") || !strings.Contains(ctx, "Undo your change") || strings.Contains(ctx, "edits since") {
+	if !strings.Contains(ctx, "docs/guide.md was not checked") || !strings.Contains(ctx, "Undo your change") || strings.Contains(ctx, "without a check") {
 		t.Errorf("after the edit inside bob's reservation:\n%s", ctx)
 	}
 	if dec, reason, _ := decision(t, run("alice", a, "PreToolUse", "a-3", edit(a, "svc/pay/retry.go"))); dec != "deny" || !strings.Contains(reason, "bob") {

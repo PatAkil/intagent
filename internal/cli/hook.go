@@ -162,7 +162,7 @@ func (a *App) handleHook(ctx context.Context, ad hook.Adapter, ev hook.Event) (h
 			return ad.Render(ev, res), err
 		}
 		if ev.Kind == board.KindPreEdit && unanswered(err) {
-			noteUnchecked(ws.wt.Root, ev.SessionID, time.Now(), refs)
+			noteUnchecked(ws.wt.Root, ev.SessionID, ev.ToolUseID, time.Now(), refs)
 		}
 		return hook.Output{}, err
 	}
@@ -170,11 +170,8 @@ func (a *App) handleHook(ctx context.Context, ad hook.Adapter, ev hook.Event) (h
 	case board.KindSessionEnd:
 		dropUnchecked(ws.wt.Root, ev.SessionID)
 	case board.KindSessionStart, board.KindPrompt, board.KindPostEdit:
-		if !carriesContext(ad, ev) {
-			break
-		}
-		if edits := claimUnchecked(ws.wt.Root, ev.SessionID, time.Now()); len(edits) > 0 {
-			res.Context = strings.TrimSpace(renderUnchecked(edits, ws.settings.URL) + "\n\n" + res.Context)
+		if carriesContext(ad, ev) {
+			tellUnchecked(ws.wt.Root, ev, &res, ws.settings.URL)
 		}
 	}
 	return ad.Render(ev, res), nil

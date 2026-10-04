@@ -48,7 +48,8 @@ var errAnsweredLate = errors.New("the server got to the edit too late to check i
 
 // uncheckedEdit is one line of a ledger.
 type uncheckedEdit struct {
-	At    int64    `json:"at"` // Unix seconds
+	At    int64    `json:"at"`           // Unix seconds
+	ID    string   `json:"id,omitempty"` // the agent's tool_use_id, if it gave one
 	Paths []string `json:"paths"`
 }
 
@@ -73,7 +74,7 @@ func unanswered(err error) bool {
 }
 
 // noteUnchecked adds an edit that went ahead unchecked to its session's ledger.
-func noteUnchecked(root, session string, at time.Time, refs []board.PathRef) {
+func noteUnchecked(root, session, id string, at time.Time, refs []board.PathRef) {
 	p, ok := ledgerFile(root, session)
 	if !ok || len(refs) == 0 {
 		return
@@ -85,7 +86,7 @@ func noteUnchecked(root, session string, at time.Time, refs []board.PathRef) {
 	case err != nil:
 		pruneLedgers(filepath.Dir(p), at)
 	}
-	e := uncheckedEdit{At: at.Unix()}
+	e := uncheckedEdit{At: at.Unix(), ID: id}
 	for _, r := range refs {
 		e.Paths = append(e.Paths, r.Path)
 	}
@@ -138,6 +139,20 @@ func claimUnchecked(root, session string, now time.Time) []uncheckedEdit {
 		}
 	}
 	return out
+}
+
+// tellUnchecked takes a session's ledger for an answer its agent reads, and
+// adds the edits in it to the answer's context. The edit a post_edit reports
+// is left out when the server checked it as it was reported: the answer, or
+// the session's next one, says what that check found.
+func tellUnchecked(root string, ev hook.Event, res *board.HookResult, url string) {
+	edits := claimUnchecked(root, ev.SessionID, time.Now())
+	if res.CheckedAfter && ev.ToolUseID != "" {
+		edits = slices.DeleteFunc(edits, func(e uncheckedEdit) bool { return e.ID == ev.ToolUseID })
+	}
+	if len(edits) > 0 {
+		res.Context = strings.TrimSpace(renderUnchecked(edits, url) + "\n\n" + res.Context)
+	}
 }
 
 // dropUnchecked forgets a session's ledger when the session ends.

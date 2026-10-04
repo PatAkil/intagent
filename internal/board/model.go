@@ -342,6 +342,11 @@ type HookResult struct {
 	// stopped waiting: nothing was checked or recorded, and the decision is
 	// allow. A client that refuses edits it cannot check refuses this one.
 	Unchecked bool `json:"unchecked,omitempty"`
+	// CheckedAfter says the board checked a reported edit after it ran, as
+	// the agent had not heard its pre_edit answered. What the check found is
+	// in Context, or held for the session's next answer: the edit needs no
+	// other telling.
+	CheckedAfter bool `json:"checked_after,omitempty"`
 }
 
 // Conflict is one other claim that matters to a path.
