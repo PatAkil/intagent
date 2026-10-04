@@ -104,6 +104,13 @@ func (b *Board) Restore(data []byte) error {
 	if over := len(b.recent) - b.cfg.KeepActivities; over > 0 {
 		b.recent = b.recent[over:] // the feed is kept shorter now
 	}
+	// What the feed let go of before the snapshot is not known by repository.
+	b.dropped = map[string]uint64{}
+	b.droppedFloor = b.seq
+	if len(b.recent) > 0 {
+		b.droppedFloor = b.recent[0].Seq - 1
+	}
+	b.droppedAll = b.droppedFloor
 	b.stats = s.Stats
 	if b.stats == nil {
 		b.stats = map[string]*Stats{}

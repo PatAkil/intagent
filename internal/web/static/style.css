@@ -934,6 +934,7 @@ main:focus { outline: none; }
 .k-session-stalled .act-ic { color: var(--warn); }
 .k-session-gone .act-ic { color: var(--crit); }
 .k-session-stalled, .k-session-gone { background: var(--warn-wash); }
+.k-gap .act-text { font-style: italic; }
 
 .k-conflict { border-left: 3px solid var(--warn-mark); padding-left: 4px; }
 .k-conflict .act-ic { color: var(--warn); }

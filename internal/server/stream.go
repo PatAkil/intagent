@@ -57,6 +57,9 @@ func newStreamWriter(w http.ResponseWriter, repo string) *streamWriter {
 // raw adds text as it is: fields and comments that are not events.
 func (o *streamWriter) raw(text string) { o.buf = append(o.buf, text...) }
 
+// event adds an event without an id. data must be a single line.
+func (o *streamWriter) event(name string, data []byte) { o.buf = appendEvent(o.buf, name, 0, data) }
+
 // frames adds the frames the stream carries and has not sent yet.
 func (o *streamWriter) frames(batch []frame) {
 	for _, f := range batch {

@@ -29,11 +29,11 @@ func oldFrame(a board.Activity) string {
 	return fmt.Sprintf("id: %d\nevent: activity\ndata: %s\n\n", a.Seq, data)
 }
 
-// rawStream opens a stream as member and returns its reader once the server
-// has subscribed it.
+// rawStream opens a stream as member and returns its reader. A test that
+// waits for more than the stream sends fails after 10 s rather than hang.
 func (ts *testServer) rawStream(t *testing.T, member, query string, header http.Header) (*bufio.Reader, func()) {
 	t.Helper()
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.url+"/v1/stream"+query, nil)
 	for k, v := range header {
 		req.Header[k] = v
@@ -471,5 +471,33 @@ func TestShutdownSpreadsReconnects(t *testing.T) {
 	}
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A stream that reconnects after the board let go of some of what it missed
+// is told so before the replay, and only then: the dashboard marks the hole
+// and reloads, rather than show a feed with a silent gap in it.
+func TestStreamSignalsAGapInItsReplay(t *testing.T) {
+	ts := newTestServer(t, func(o *Options) { o.Board.KeepActivities = 4 })
+	for _, p := range []string{"x/y.go", "x/z.go", "x/w.go", "x/v.go"} { // seqs 1-3, then 4, 5 and 6
+		ts.do(t, "POST", "/v1/hook", "alice", hookEv(board.KindPostEdit, "alice", "a1", p), nil)
+	}
+	kept := ts.Board().Since("", 0) // 3 to 6; 1 and 2 were let go of
+	replay := oldFrame(kept[0]) + oldFrame(kept[1]) + oldFrame(kept[2]) + oldFrame(kept[3])
+	prelude := "retry: 3000\n: connected\n\n"
+	for _, c := range []struct {
+		last string
+		want string
+	}{
+		{"1", prelude + "event: gap\ndata: {\"after\":1}\n\n" + replay},
+		{"2", prelude + replay},
+		{"6", prelude},
+	} {
+		r, closeStream := ts.rawStream(t, "bob", "?repo="+repo, http.Header{"Last-Event-Id": {c.last}})
+		got := readBlocks(t, r, strings.Count(c.want, "\n\n"))
+		closeStream()
+		if got != c.want {
+			t.Errorf("after %s:\n%q\nwant\n%q", c.last, got, c.want)
+		}
 	}
 }

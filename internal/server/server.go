@@ -485,7 +485,8 @@ func (s *Server) handleRepos(w http.ResponseWriter, _ *http.Request) {
 }
 
 // handleStream sends activities as server-sent events. A client reconnecting
-// with Last-Event-ID first receives what it missed.
+// with Last-Event-ID first receives what it missed, after a gap event when the
+// board no longer holds all of it.
 func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	if _, ok := w.(http.Flusher); !ok {
 		writeError(w, http.StatusInternalServerError, "streaming unsupported")
@@ -520,7 +521,14 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	out.raw("retry: 3000\n: connected\n\n")
 	if last, _ := strconv.ParseUint(r.Header.Get("Last-Event-ID"), 10, 64); last > 0 {
 		out.last = last
-		for _, a := range s.board.Since(repo, last) {
+		acts, complete := s.board.Replay(repo, last)
+		if !complete {
+			// The board no longer holds all the client missed. A dashboard
+			// marks the hole and reloads the board; older ones listen only for
+			// activities and ignore this.
+			out.event("gap", fmt.Appendf(nil, `{"after":%d}`, last))
+		}
+		for _, a := range acts {
 			if f, ok := activityFrame(a); ok {
 				out.frames([]frame{f})
 			}
