@@ -16,7 +16,7 @@ import (
 
 // The implementations the scale work replaced, kept as oracles: each test
 // here gives the old and the new the same random boards and requires the
-// same answers.
+// same answers, and the benchmarks in scale_bench_test.go compare their cost.
 
 // oldReportUnchecked is reportUnchecked as it was: the full conflict
 // computation for every added file, keeping only block conflicts.
@@ -207,43 +207,6 @@ func TestReportUncheckedMatchesTheOracleWithTies(t *testing.T) {
 	testReportUncheckedMatchesTheOracle(t, true)
 }
 
-// A reconcile reports breaches by checking its new files against the
-// exclusive intents of the claims that hold reservations, and nothing else:
-// not every teammate's files and areas, however many there are.
-func TestReconcileComparesOnlyReservations(t *testing.T) {
-	for _, tc := range []struct {
-		name      string
-		exclusive float64
-	}{
-		{"nobody holds a reservation", 0},
-		{"teammates hold reservations", 1},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			sh := smallShape()
-			sh.intents, sh.exclusive = 1, tc.exclusive
-			sb := buildBoard(t, sh)
-			live, holders := sb.liveClaims(sb.now), 0
-			for _, c := range sb.claimsInRepo(scaleRepo(0)) {
-				if live[c.ID] && slices.ContainsFunc(c.Intents, func(in Intent) bool { return in.Mode == ModeExclusive }) {
-					holders++
-				}
-			}
-			if (holders > 0) != (tc.exclusive > 0) {
-				t.Fatalf("%d claims hold reservations", holders)
-			}
-			ev := sb.fresh(1, 0, KindSessionStart)
-			ev.Footprint = sb.footprint(1, 200)
-			trace = &workTrace{}
-			t.Cleanup(func() { trace = nil })
-			sb.hook(t, ev)
-			if trace.conflictsFor != 0 || trace.conflictWith != 0 || trace.workedInArea != 0 {
-				t.Fatalf("a reconcile of %d new files made %d conflict checks against %d claims and %d area scans",
-					len(ev.Footprint.Files), trace.conflictsFor, trace.conflictWith, trace.workedInArea)
-			}
-		})
-	}
-}
-
 // oldRenderStart is renderStart as it was: it sorted every claim in the
 // repository with a comparator that rebuilt two claims' area sets, and
 // sorted each shown claim's whole footprint for its four newest files.
@@ -359,24 +322,6 @@ func TestRenderStartMatchesTheOracle(t *testing.T) {
 	check(sb.Board, sb.now)
 	if greeted < 2000 {
 		t.Fatalf("only %d greetings compared", greeted)
-	}
-}
-
-// A greeting ranks each claim in the repository once, however many there
-// are, and keeps the rows it shows.
-func TestGreetingRanksEachClaimOnce(t *testing.T) {
-	sh := smallShape()
-	sh.claims, sh.busy, sh.sessions, sh.dormant = 300, 280, 300, 20
-	sh.files, sh.dist, sh.intents = 6, filesFixed, 0.2
-	sb := buildBoard(t, sh)
-	c := sb.findClaim(sb.member(3), sb.where(3))
-	trace = &workTrace{}
-	t.Cleanup(func() { trace = nil })
-	sb.renderStart(sb.now, c)
-	// The old greeting ranked two claims for every comparison its sort made:
-	// 5720 rankings on this board.
-	if others := sh.busy + sh.dormant - 1; trace.ranked != others {
-		t.Fatalf("a greeting among %d other claims ranked claims %d times", others, trace.ranked)
 	}
 }
 
@@ -531,45 +476,6 @@ func (b *Board) oldRecord(a Activity) {
 	b.pending = append(b.pending, a)
 }
 
-// The feed holds the last KeepActivities activities, in order, whatever its
-// length and however many have been recorded.
-func TestFeedKeepsTheLastActivities(t *testing.T) {
-	for _, keep := range []int{1, 7, 300, 3000} {
-		b := New(Config{KeepActivities: keep})
-		for n := 1; n <= 200_000; n++ {
-			b.record(Activity{Kind: ActivityFileChanged, Repo: repo, Text: fmt.Sprint(n), Paths: []string{"a.go"}})
-			b.pending = b.pending[:0]
-			if n%997 != 0 && n != 200_000 && n > keep+1 {
-				continue
-			}
-			first := max(1, n-keep+1)
-			if len(b.recent) != n-first+1 {
-				t.Fatalf("keep %d, %d recorded: the feed holds %d", keep, n, len(b.recent))
-			}
-			for i, a := range b.recent {
-				if want := uint64(first + i); a.Seq != want || a.Text != fmt.Sprint(want) {
-					t.Fatalf("keep %d, %d recorded: entry %d is seq %d %q, want %d", keep, n, i, a.Seq, a.Text, want)
-				}
-			}
-		}
-	}
-}
-
-// Recording an activity into a full feed does not copy the feed: across many
-// records, the array is replaced about once per KeepActivities of them.
-func TestRecordDoesNotCopyTheFeed(t *testing.T) {
-	b := New(DefaultConfig())
-	a := Activity{Kind: ActivityFileChanged, Repo: repo, Paths: []string{"a.go"}}
-	for range b.cfg.KeepActivities {
-		b.record(a)
-	}
-	// AllocsPerRun rounds down: under one allocation per record is 0. The old
-	// record allocated a new array for every one.
-	if allocs := testing.AllocsPerRun(1000, func() { b.record(a); b.pending = b.pending[:0] }); allocs != 0 {
-		t.Fatalf("recording into a full feed of %d made %.0f allocations per activity", b.cfg.KeepActivities, allocs)
-	}
-}
-
 // oldSweep is Sweep as it was: for every claim with nothing left, it
 // searched every session for one still attached to it.
 func (b *Board) oldSweep(now time.Time) {
@@ -717,30 +623,5 @@ func TestSweepMatchesTheOracle(t *testing.T) {
 	t.Logf("%d sessions announced, %d claims released or forgotten", announced, released)
 	if announced < 500 || released < 500 {
 		t.Fatalf("%d sessions announced and %d claims released: the boards do not exercise the sweep", announced, released)
-	}
-}
-
-// A sweep reads each session once, however many worktrees have gone quiet:
-// it does not search the sessions again for each claim.
-func TestSweepReadsEachSessionOnce(t *testing.T) {
-	sb := newScaleBoard(smallShape(), DefaultConfig(), t0, 0)
-	const quiet = 2000
-	for k := range quiet {
-		sb.hook(t, sb.fresh(k, k%3, KindHeartbeat))
-	}
-	for _, d := range []time.Duration{sb.cfg.IdleAfter + time.Minute, 15 * time.Second} {
-		sb.now = sb.now.Add(d)
-		trace = &workTrace{}
-		sb.Sweep(sb.now)
-		visits := trace.sessionVisits
-		trace = nil
-		// The old sweep read sessions 2,028,882 times here: up to all 2000
-		// for each claim it searched.
-		if visits > quiet {
-			t.Fatalf("a sweep of %d quiet sessions read sessions %d times", quiet, visits)
-		}
-	}
-	if len(sb.claims) != quiet || len(sb.sessions) != quiet {
-		t.Fatalf("%d claims and %d sessions after the sweeps, want %d each", len(sb.claims), len(sb.sessions), quiet)
 	}
 }

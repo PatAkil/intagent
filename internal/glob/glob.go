@@ -114,11 +114,12 @@ func covers(dir, name string) bool {
 	return strings.HasPrefix(name, dir) && (len(name) == len(dir) || name[len(dir)] == '/')
 }
 
-// matchSegments matches pattern against name a segment at a time. A segment
-// of pattern other than ** matches exactly one segment of name, so when one
-// fails, letting the latest ** take one more segment of name and trying
-// again from there finds a match if there is one: an earlier ** could only
-// take segments the latest one can take as well. Positions are byte offsets
+// matchSegments matches pattern against name a segment at a time. When a
+// segment fails, it lets the latest ** take one more segment of name and
+// tries again from there. Backtracking to the latest ** alone is enough, as
+// in wildcard matching with *: every other segment matches exactly one
+// segment of name, so taking the first place where the segments between two
+// ** match leaves the most of name for the rest. Positions are byte offsets
 // to the start of a segment, past the end once a string is used up.
 func matchSegments(pattern, name string) bool {
 	pi, ni := 0, 0
