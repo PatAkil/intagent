@@ -217,6 +217,46 @@ func TestServerDownStampTriesOnce(t *testing.T) {
 	}
 }
 
+// The refusals stamp is written whole: a hook that reads it while another
+// writes it finds the old time or the new one. Written in place, it was
+// empty for a moment, and a hook that read it then took the refusals for
+// new and wrote its own time, putting off the down state for every hook.
+// Here each call finds the stamp in its future, as after the clock went
+// back, and writes it again.
+func TestRefusalsStampIsNeverReadTorn(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	stamp := downStamp("http://example.test")
+	start := time.Now()
+	serverDown(stamp, start)
+	done := make(chan struct{})
+	torn := make(chan string, 1)
+	go func() {
+		defer close(torn)
+		for {
+			select {
+			case <-done:
+				return
+			default:
+			}
+			data, err := os.ReadFile(stamp)
+			if err != nil {
+				continue // between a rename's unlink and link, on some systems
+			}
+			if _, err := strconv.ParseInt(string(data), 10, 64); err != nil {
+				torn <- string(data)
+				return
+			}
+		}
+	}()
+	for i := 1; i <= 500; i++ {
+		serverDown(stamp, start.Add(-time.Duration(i)*time.Millisecond))
+	}
+	close(done)
+	if data, ok := <-torn; ok {
+		t.Fatalf("a hook read the stamp as %q while another wrote it", data)
+	}
+}
+
 // The hook command waits for a server that comes back within its time: an
 // edit sent while the port was closed is refused by the server that opens
 // it 300 ms later. Without the retry it went ahead unchecked.
