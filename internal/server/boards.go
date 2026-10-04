@@ -50,6 +50,8 @@ type boardBuild struct {
 	gz       []byte // json compressed with gzip.BestSpeed
 	etag     string // a weak validator; empty when none could be made
 	err      error
+	// load is the server's load status, read after the view, while degraded.
+	load *LoadStatus
 }
 
 // boardEntry paces one repository's builds. Its fields are guarded by
@@ -68,6 +70,8 @@ func (e *boardEntry) gap() time.Duration { return max(boardSpacing, 2*e.took) }
 // boardBuilds coalesces reads of the board, per repository.
 type boardBuilds struct {
 	view func(repo string) board.View
+	// load reports the server's load status for answers to carry.
+	load func() *LoadStatus
 	// clock and sleep pace builds. They are the process's own clock, not the
 	// board's: pacing is about load, not about what the board shows.
 	clock func() time.Time
@@ -85,9 +89,10 @@ type boardBuilds struct {
 	repos map[string]*boardEntry
 }
 
-func newBoardBuilds(view func(repo string) board.View, log *slog.Logger) *boardBuilds {
+func newBoardBuilds(view func(repo string) board.View, load func() *LoadStatus, log *slog.Logger) *boardBuilds {
 	return &boardBuilds{
 		view:   view,
+		load:   load,
 		encode: encodeBoard,
 		clock:  time.Now,
 		sleep:  time.Sleep,
@@ -160,6 +165,7 @@ func (c *boardBuilds) run(repo string, e *boardEntry, b *boardBuild) {
 		c.sleep(wait)
 	}
 	v, requests, read := c.read(repo, e, b)
+	b.load = c.load()
 	start := c.clock()
 	c.encode(b, v)
 	c.log.Debug("board built", "repo", repo, "requests", requests, "read", read.Round(time.Microsecond),
@@ -188,10 +194,10 @@ func (c *boardBuilds) read(repo string, e *boardEntry, b *boardBuild) (board.Vie
 	return v, requests, took
 }
 
-// encodeBoard makes b's answer from v: the JSON writeJSON would write, the
-// same compressed, and a validator.
+// encodeBoard makes b's answer from v and b.load: the JSON writeJSON would
+// write, the same compressed, and a validator.
 func encodeBoard(b *boardBuild, v board.View) {
-	body, err := json.Marshal(v)
+	body, err := json.Marshal(boardAnswer{View: v, Server: b.load})
 	if err != nil {
 		b.err = err
 		return

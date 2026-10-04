@@ -248,6 +248,16 @@ type session struct {
 	// Pending is context from before an edit, held for an agent that only
 	// reads context after a tool has run.
 	Pending string `json:"pending,omitempty"`
+	// refused holds the last few calls refused: a post_edit for one means
+	// the agent ran it without hearing the refusal. It is not saved; a
+	// restart forgets it.
+	refused []refusal
+}
+
+// refusal is a refused tool call, and the one-time answers its check spent.
+type refusal struct {
+	id    string
+	spent []string
 }
 
 func sessionKey(member string, agent Agent, id string) string {
@@ -318,6 +328,12 @@ type HookEvent struct {
 	// the board then holds a pre_edit's warnings until the next event that
 	// can carry them, normally the edit's own post_edit.
 	LateContext bool `json:"late_context,omitempty"`
+	// Late, set by the server, reports whether the agent has stopped waiting
+	// for the answer, or will have by the time it arrives. The board asks
+	// once, when it gets to the event: a late pre_edit is dropped unanswered,
+	// and any other late event is recorded without delivering anything,
+	// which then waits for the session's next answer.
+	Late func() bool `json:"-"`
 }
 
 // HookResult is the server's answer to a hook event.
@@ -327,6 +343,15 @@ type HookResult struct {
 	Context   string     `json:"context,omitempty"`
 	ClaimID   string     `json:"claim_id,omitempty"`
 	Conflicts []Conflict `json:"conflicts,omitempty"`
+	// Unchecked says the board did not get to the event before its agent
+	// stopped waiting: nothing was checked or recorded, and the decision is
+	// allow. A client that refuses edits it cannot check refuses this one.
+	Unchecked bool `json:"unchecked,omitempty"`
+	// CheckedAfter says the board checked a reported edit after it ran, as
+	// the agent had not heard its pre_edit answered. What the check found is
+	// in Context, or held for the session's next answer: the edit needs no
+	// other telling.
+	CheckedAfter bool `json:"checked_after,omitempty"`
 }
 
 // Conflict is one other claim that matters to a path.
@@ -365,12 +390,18 @@ const (
 	ActivityIntentDeclared      ActivityKind = "intent.declared"
 	ActivityIntentReleased      ActivityKind = "intent.released"
 	ActivityNoteSent            ActivityKind = "note.sent"
+	// ActivityServerDegraded and ActivityServerRecovered are the server's own
+	// news, for webhooks that ask for it: agents' edits going ahead unchecked
+	// because it does not answer them in time, and its answering in time again.
+	ActivityServerDegraded  ActivityKind = "server.degraded"
+	ActivityServerRecovered ActivityKind = "server.recovered"
 )
 
 var activityKinds = []ActivityKind{
 	ActivityClaimOpened, ActivityClaimReleased, ActivityClaimForgotten, ActivitySessionStarted, ActivitySessionEnded, ActivitySessionRecovered,
 	ActivitySessionStalled, ActivitySessionGone, ActivityFileChanged, ActivityFootprintReconciled,
 	ActivityConflict, ActivityIntentDeclared, ActivityIntentReleased, ActivityNoteSent,
+	ActivityServerDegraded, ActivityServerRecovered,
 }
 
 // ParseActivityKind validates an activity kind's name.

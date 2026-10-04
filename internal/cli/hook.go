@@ -167,6 +167,9 @@ func (a *App) handleHook(ctx context.Context, ad hook.Adapter, ev hook.Event) (h
 	if err == nil && hev.Footprint != nil {
 		footprintSent(ws.wt.Root, began)
 	}
+	if err == nil && res.Unchecked && ev.Kind == board.KindPreEdit {
+		err = errAnsweredLate
+	}
 	switch {
 	case client.IsUnauthorized(err):
 		return offBoard(ad, ev, ws, ws.settings.URL+" rejected this computer's token (it may have been rotated)",
@@ -178,7 +181,18 @@ func (a *App) handleHook(ctx context.Context, ad hook.Adapter, ev hook.Event) (h
 				"Tell your user. (%v)", ws.settings.URL, err)}
 			return ad.Render(ev, res), err
 		}
+		if ev.Kind == board.KindPreEdit && unanswered(err) {
+			noteUnchecked(ws.wt.Root, ev.SessionID, ev.ToolUseID, time.Now(), refs)
+		}
 		return hook.Output{}, err
+	}
+	switch ev.Kind {
+	case board.KindSessionEnd:
+		dropUnchecked(ws.wt.Root, ev.SessionID)
+	case board.KindSessionStart, board.KindPrompt, board.KindPostEdit:
+		if carriesContext(ad, ev) {
+			tellUnchecked(ws.wt.Root, ev, &res, ws.settings.URL)
+		}
 	}
 	return ad.Render(ev, res), nil
 }

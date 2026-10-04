@@ -188,7 +188,9 @@ sent). A session that had finished its turn and was left waiting for its person 
 is not stuck, so the dashboard shows it but the webhook does not, unless the webhook sets `"idle": true`. Any other
 activity on the dashboard's feed can be listed too: `claim.opened`, `claim.released`, `claim.forgotten`,
 `session.started`, `session.ended`, `session.recovered`, `file.changed`, `footprint.reconciled`, `intent.declared`,
-`intent.released` and `note.sent`. A misspelt one stops the server from starting.
+`intent.released` and `note.sent`, and the server's own `server.degraded` and `server.recovered` (below). A misspelt
+one stops the server from starting, as does one an older server does not know: list `server.*` only once no older
+server reads the file.
 
 Messages go out at most one a second, and a storm becomes a few of them. Whatever waits is sent together: refused
 edits first, then stalled agents, then the rest. Up to five of one kind in one repository are told one line each;
@@ -203,6 +205,21 @@ sent only for an agent whose stall or gone was. Past 5,000 waiting, activities a
 says how many of each kind came; a stall or gone only counted cannot be withdrawn, so that message says some of those
 agents may be back. When the server stops, a post under way is let finish and what still waits goes out in one last
 message, within two seconds.
+
+## When the server falls behind
+
+A hook waits `INTAGENT_TIMEOUT` (2 s) for the server and then lets the edit through. It tells the server how long it
+waits, and the server does not decide anything for an agent that has gone ahead: no refusal is counted or announced
+for it, and a bump it never saw still stops its next edit of the file. What the agent did is recorded all the same,
+and what it has not heard yet waits for its next answer. The agent is then told which of its edits went ahead without
+a check: by the server when the edit is reported, with what a check finds then, and otherwise by the hook, from a
+ledger it keeps in the user cache directory. The dashboard counts those edits beside the checked ones.
+
+People see it too. While more than 5% of edits go unchecked, the dashboard shows a banner, the server logs a warning
+when it starts and another when it ends, webhooks can send `server.degraded` and `server.recovered`, and `/healthz`
+reports `"degraded": true` with the last minute's `pre_edits_60s` and `unchecked_60s`. `/healthz` still answers 200,
+so a restart probe never turns a slow server into an absent one; `/healthz?strict=1` answers 503 while degraded, for
+monitors that alert.
 
 ## Commands
 

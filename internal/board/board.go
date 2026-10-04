@@ -24,6 +24,9 @@ var (
 	ErrInvalid     = errors.New("invalid request")
 	ErrRateLimited = errors.New("too many notes; try again in a minute")
 	ErrNoTarget    = errors.New("nobody by that name, claim or path has work in this repository right now")
+	// ErrAbandoned reports a hook the board did not answer because its agent
+	// had stopped waiting (HookEvent.Late); the agent went ahead unchecked.
+	ErrAbandoned = errors.New("the agent stopped waiting for the answer")
 )
 
 // Config holds the board's timings and policy. A zero or negative field, and
@@ -130,6 +133,9 @@ type Board struct {
 	pending  []Activity
 	notify   func([]Activity)
 	newID    func(prefix string) string
+	// unheard is set while Hook records an event whose answer nobody will
+	// read: nothing is delivered in it.
+	unheard bool
 }
 
 // Option configures a Board.
@@ -373,6 +379,10 @@ func (b *Board) liveSessions(now time.Time) map[string]bool {
 
 // Hook applies one lifecycle event and returns what the agent should be told.
 // It never refuses on error: callers should allow the agent to continue.
+//
+// An event whose agent has stopped waiting (ev.Late) is not answered: an
+// edit about to be made returns ErrAbandoned having changed nothing, and any
+// other event is recorded without delivering anything.
 func (b *Board) Hook(now time.Time, ev HookEvent) (HookResult, error) {
 	allow := HookResult{Decision: DecisionAllow}
 	ev, err := ev.clean()
@@ -383,12 +393,24 @@ func (b *Board) Hook(now time.Time, ev HookEvent) (HookResult, error) {
 
 	b.lock()
 	defer b.unlock()
+	// Asked once the lock is held: a hook queued behind other work can reach
+	// the board after its agent went ahead without the answer.
+	late := ev.Late != nil && ev.Late()
+	if late && ev.Kind == KindPreEdit {
+		return b.abandon(now, ev), ErrAbandoned
+	}
 	b.changed()
+	b.unheard = late
+	defer func() { b.unheard = false }()
 
 	c := b.claimFor(now, ev.Member, w)
 	s := b.sessionFor(now, ev, c)
+	checkedAfter := ev.Kind == KindPostEdit && ev.ToolUseID != "" && !s.Calls[ev.ToolUseID]
+	if checkedAfter {
+		b.unansweredEdit(now, c, s, ev)
+	}
 	was := b.state(now, s)
-	res := HookResult{Decision: DecisionAllow, ClaimID: c.ID}
+	res := HookResult{Decision: DecisionAllow, ClaimID: c.ID, CheckedAfter: checkedAfter}
 
 	switch ev.Kind {
 	case KindSessionStart:
@@ -407,12 +429,13 @@ func (b *Board) Hook(now time.Time, ev HookEvent) (HookResult, error) {
 		startTool(now, s, ev.Tool, ev.ToolUseID)
 	case KindPreEdit:
 		startTool(now, s, ev.Tool, ev.ToolUseID)
-		res = b.decide(now, c, s, ev.Paths, ev.NoAsk)
+		var spent []string
+		res, spent = b.decide(now, c, s, ev.Paths, ev.NoAsk)
 		res.ClaimID = c.ID
 		if res.Decision == DecisionRefuse || (res.Decision == DecisionAsk && ev.NoAsk) {
 			// The edit does not run, so no tool end will follow it. (An ask that
 			// the person answers runs, or not, and the agent reports either.)
-			endTool(s, ev.ToolUseID)
+			refuseTool(s, ev.ToolUseID, spent)
 		} else if ev.LateContext && res.Context != "" {
 			s.Pending, res.Context = joinBlocks(s.Pending, res.Context), ""
 		}
@@ -1022,8 +1045,9 @@ func toldKey(cf Conflict) string { return "told|" + ackKey(cf) }
 type verdict struct {
 	all, refused, asked, warned []Conflict
 	// askKeys and warnKeys are acknowledged only if the answer shows them: a
-	// refusal of the same edit hides questions and warnings.
-	askKeys, warnKeys []string
+	// refusal of the same edit hides questions and warnings. bumpKeys are
+	// the bumps the check acknowledged.
+	askKeys, warnKeys, bumpKeys []string
 }
 
 // acted is what the agent is told about: refusals, else questions, else warnings.
@@ -1038,13 +1062,20 @@ func (v verdict) acted() []Conflict {
 }
 
 // decide answers an agent about to write, and counts and announces the edit
-// if it runs into a collision this session has not been told about.
-func (b *Board) decide(now time.Time, c *claim, s *session, paths []PathRef, noAsk bool) HookResult {
+// if it runs into a collision this session has not been told about. It also
+// returns the one-time answers the check spent, the bumps it showed and the
+// questions an agent that cannot ask is told to put, which a refusal the
+// agent never hears gives back.
+func (b *Board) decide(now time.Time, c *claim, s *session, paths []PathRef, noAsk bool) (HookResult, []string) {
 	if s.Acked == nil {
 		s.Acked = map[string]bool{}
 	}
 	v := b.judge(now, c, s, paths, noAsk)
 	res := b.answer(now, s, v)
+	spent := v.bumpKeys
+	if res.Decision == DecisionAsk {
+		spent = append(spent, v.askKeys...)
+	}
 	// A retry that meets the same conflicts again is checked, but it is not
 	// a new collision: counting it, or announcing it, would inflate both.
 	var fresh []Conflict
@@ -1058,7 +1089,7 @@ func (b *Board) decide(now time.Time, c *claim, s *session, paths []PathRef, noA
 	if len(fresh) > 0 {
 		b.announce(now, c, s, paths, res.Decision, v.acted(), fresh)
 	}
-	return res
+	return res, spent
 }
 
 // announce records a collision under the conflict that decided the answer,
@@ -1107,6 +1138,7 @@ func (b *Board) judge(now time.Time, c *claim, s *session, paths []PathRef, noAs
 			case action == ActionBump && !s.Acked[key]:
 				s.Acked[key] = true
 				v.refused = append(v.refused, cf)
+				v.bumpKeys = append(v.bumpKeys, key)
 			case action == ActionWarn && !s.Acked[key]:
 				v.warned = append(v.warned, cf)
 				v.warnKeys = append(v.warnKeys, key)
@@ -1203,8 +1235,12 @@ func (b *Board) enqueue(now time.Time, c *claim, it InboxItem) {
 }
 
 // deliver renders what this session has not been told yet: context held back
-// from before an edit, then the inbox items it has not seen.
+// from before an edit, then the inbox items it has not seen. In an answer
+// nobody will read, it delivers nothing: all of it waits for the next one.
 func (b *Board) deliver(now time.Time, c *claim, s *session) string {
+	if b.unheard {
+		return ""
+	}
 	pending := s.Pending
 	s.Pending = ""
 	return joinBlocks(pending, b.deliverInbox(now, c, s))

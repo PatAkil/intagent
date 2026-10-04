@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -29,6 +30,12 @@ type testServer struct {
 	tokens map[string]string
 	mu     sync.Mutex
 	clock  time.Time
+	// The server's request clock reads the same, step after its first
+	// reading since wait, however often it is read: a request that arrives
+	// then has waited step whenever it asks. With wall set, it is the real
+	// clock.
+	step, reads atomic.Int64
+	wall        atomic.Bool
 }
 
 func newTestServer(t *testing.T, mutate ...func(*Options)) *testServer {
@@ -52,6 +59,7 @@ func newTestServer(t *testing.T, mutate ...func(*Options)) *testServer {
 		t.Fatal(err)
 	}
 	ts.Server = s
+	s.clock = ts.requestClock
 	hs := httptest.NewServer(s.Handler())
 	t.Cleanup(hs.Close)
 	ts.url = hs.URL
@@ -62,6 +70,21 @@ func (ts *testServer) now() time.Time {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
 	return ts.clock
+}
+
+func (ts *testServer) requestClock() time.Time {
+	if ts.wall.Load() {
+		return time.Now()
+	}
+	after := min(ts.reads.Add(1)-1, 1) // 0 for the first reading, 1 for every later one
+	return time.Unix(1_790_000_000, 0).Add(time.Duration(after * ts.step.Load()))
+}
+
+// wait makes the next request to read the request clock wait d: it arrives
+// at the clock's base, and every later reading is d on.
+func (ts *testServer) wait(d time.Duration) {
+	ts.step.Store(int64(d))
+	ts.reads.Store(0)
 }
 
 func (ts *testServer) do(t *testing.T, method, path, member string, body any, out any) int {

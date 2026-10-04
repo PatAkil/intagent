@@ -22,6 +22,9 @@ type Stats struct {
 	// Notes counts notes delivered; Intents counts intents declared.
 	Notes   int `json:"notes"`
 	Intents int `json:"intents"`
+	// Unheard counts edits the board did not check because their agent had
+	// stopped waiting for the answer, and gone ahead, before it got to them.
+	Unheard int `json:"unheard,omitempty"`
 }
 
 func (b *Board) statsOf(repo string, now time.Time) *Stats {

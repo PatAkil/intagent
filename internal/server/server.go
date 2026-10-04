@@ -80,6 +80,11 @@ type Server struct {
 	epoch string
 	// boards shares board answers among the requests that ask at once.
 	boards *boardBuilds
+	// clock measures how long requests wait. It is not the board's time,
+	// which Options.Now may replace; tests replace this one too.
+	clock func() time.Time
+	// answers follows whether agents get their answers in time.
+	answers *answers
 }
 
 type memberHash struct {
@@ -99,6 +104,8 @@ func New(o Options) (*Server, error) {
 		hub:        newHub(),
 		log:        o.Logger,
 		now:        o.Now,
+		clock:      time.Now,
+		answers:    newAnswers(),
 		dataDir:    o.DataDir,
 		publicRead: o.PublicRead,
 		demo:       o.Demo,
@@ -136,7 +143,7 @@ func New(o Options) (*Server, error) {
 		return nil, err
 	}
 	s.epoch = hex.EncodeToString(epoch[:8])
-	s.boards = newBoardBuilds(s.boardView, s.log)
+	s.boards = newBoardBuilds(s.boardView, s.boardLoad, s.log)
 	key, err := loadUIKey(s.dataDir)
 	if err != nil {
 		return nil, err
@@ -253,14 +260,18 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 		Handler:           s.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       2 * time.Minute,
-		BaseContext:       func(net.Listener) context.Context { return ctx },
+		// Requests keep their context while the server stops: Shutdown waits
+		// for them, and a hook whose context ended would be taken for one
+		// whose agent had stopped waiting.
+		BaseContext: func(net.Listener) context.Context { return context.WithoutCancel(ctx) },
 	}
 	srv.RegisterOnShutdown(func() { s.closeOnce.Do(func() { close(s.closing) }) })
 	maintainCtx, stopMaintain := context.WithCancel(context.WithoutCancel(ctx))
-	maintained := make(chan struct{})
+	maintained, watched := make(chan struct{}), make(chan struct{})
 	go func() { defer close(maintained); s.maintain(maintainCtx) }()
+	go func() { defer close(watched); s.watchLoad(maintainCtx) }()
 	// The notifier stops last, so its final message carries everything
-	// recorded before the requests and the sweeper stopped.
+	// recorded before the requests, the sweeper and the load watcher stopped.
 	notifyCtx, stopNotify := context.WithCancel(context.WithoutCancel(ctx))
 	notified := make(chan struct{})
 	go func() {
@@ -283,6 +294,7 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	}
 	stopMaintain()
 	<-maintained
+	<-watched
 	stopNotify()
 	<-notified
 	if errors.Is(err, http.ErrServerClosed) {
@@ -383,8 +395,23 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 
 // --- handlers ---------------------------------------------------------------
 
-func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "version": s.version})
+// health is what /healthz reports. It answers 200 while the server runs,
+// degraded or not: a probe that restarted it then would turn a slow server
+// into one that answers nothing. With ?strict=1 a degraded server answers
+// 503, for monitors.
+type health struct {
+	OK      bool   `json:"ok"`
+	Version string `json:"version"`
+	LoadStatus
+}
+
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	h := health{OK: true, Version: s.version, LoadStatus: s.answers.status(s.clock())}
+	status := http.StatusOK
+	if h.Degraded && r.URL.Query().Get("strict") == "1" {
+		h.OK, status = false, http.StatusServiceUnavailable
+	}
+	writeJSON(w, status, h)
 }
 
 func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
@@ -392,13 +419,27 @@ func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleHook(w http.ResponseWriter, r *http.Request) {
+	caller := s.waiterFor(r, s.clock())
 	var ev board.HookEvent
 	if !decode(w, r, &ev) {
 		return
 	}
 	ev.Member = memberFrom(r)
+	ev.Late = caller.late
+	if ev.Kind == board.KindPreEdit {
+		stop := s.watchCall(caller)
+		defer stop()
+	}
 	res, err := s.board.Hook(s.now(), ev)
-	if err != nil {
+	switch {
+	case errors.Is(err, board.ErrAbandoned):
+		// Its agent went ahead without the answer, which can only be the
+		// allow it acted on; a client still waiting learns it was unchecked.
+		if ev.Kind == board.KindPreEdit {
+			s.uncheckedCall(caller)
+		}
+		s.log.Debug("hook not answered: its agent stopped waiting", "member", ev.Member, "kind", ev.Kind, "waited", caller.waited())
+	case err != nil:
 		s.log.Warn("hook rejected", "member", ev.Member, "kind", ev.Kind, "err", err)
 		writeBoardError(w, err)
 		return
@@ -498,6 +539,24 @@ func (s *Server) boardView(repo string) board.View {
 	v := s.board.View(s.now(), repo)
 	v.Epoch = s.epoch
 	return v
+}
+
+// boardAnswer is a repository's view as /v1/board sends it. While agents'
+// edits go ahead unchecked, Server says so, for the dashboard's banner; it is
+// left out otherwise, since a healthy server's counts change with every edit
+// in any repository and would make every answer differ from the one a
+// dashboard holds (ETag).
+type boardAnswer struct {
+	board.View
+	Server *LoadStatus `json:"server,omitempty"`
+}
+
+// boardLoad is the load status a board answer carries: only while degraded.
+func (s *Server) boardLoad() *LoadStatus {
+	if st := s.answers.status(s.clock()); st.Degraded {
+		return &st
+	}
+	return nil
 }
 
 // writeBoard sends a shared board answer, compressed when the client takes
@@ -600,6 +659,7 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	repo := board.RepoID(r.URL.Query().Get("repo"))
 	sub := s.hub.subscribe(repo)
 	defer s.hub.unsubscribe(sub)
+	status, statusChanged := s.answers.watch(s.clock())
 
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream")
@@ -608,6 +668,9 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 
 	fmt.Fprint(w, "retry: 3000\n: connected\n\n")
+	if status.Degraded && !sendStatus(w, status) {
+		return
+	}
 	last, _ := strconv.ParseUint(r.Header.Get("Last-Event-ID"), 10, 64)
 	if last > 0 {
 		for _, a := range s.board.Since(repo, last) {
@@ -631,6 +694,12 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 			return
 		case <-keep.C:
 			if _, err := fmt.Fprint(w, ": keep-alive\n\n"); err != nil {
+				return
+			}
+			flusher.Flush()
+		case <-statusChanged:
+			status, statusChanged = s.answers.watch(s.clock())
+			if !sendStatus(w, status) {
 				return
 			}
 			flusher.Flush()
@@ -766,7 +835,7 @@ func (s *Server) logRequests(next http.Handler) http.Handler {
 		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(sw, r)
 		lvl := slog.LevelDebug
-		if sw.status >= 500 {
+		if sw.status >= 500 && r.URL.Path != "/healthz" { // a strict probe of a degraded server
 			lvl = slog.LevelError
 		}
 		s.log.Log(r.Context(), lvl, "request", "method", r.Method, "path", r.URL.Path, "status", sw.status, "took", time.Since(start).Round(time.Microsecond))

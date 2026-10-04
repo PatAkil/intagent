@@ -59,6 +59,7 @@
     skew: 0,
     epoch: '', // the server process the board came from
     boardError: '',
+    serverNote: '',
     timers: [],
   };
 
@@ -521,6 +522,14 @@
       setConn('live');
       if (recovering) scheduleRefresh();
     };
+    // The server says when agents' edits go ahead unchecked because it cannot
+    // answer them in time, and when it can again.
+    es.addEventListener('status', (ev) => {
+      if (S.es !== es) return;
+      let st;
+      try { st = JSON.parse(ev.data); } catch (_) { return; }
+      setServerStatus(st);
+    });
     es.addEventListener('activity', (ev) => {
       if (S.es !== es) return;
       let a;
@@ -663,6 +672,7 @@
       }
       const v = got.view;
       S.etag = got.etag;
+      setServerStatus(v && v.server);
       const at = tsOf(v.at);
       if (Number.isFinite(at)) S.skew = at - Date.now();
       S.view = normalise(v);
@@ -753,6 +763,19 @@
   function lostContact(e) {
     const as = S.lastOk ? ' Showing the board as of ' + new Date(S.lastOk).toLocaleTimeString() + '.' : '';
     setBoardError('Cannot reach the intagent server (' + e.message + ').' + as + ' Retrying every 15 s.');
+  }
+
+  function setServerStatus(st) {
+    let msg = '';
+    if (st && typeof st === 'object' && st.degraded === true) {
+      msg = 'The intagent server is not answering agents in time, so their edits go ahead without a check' +
+        (n(st.pre_edits_60s) ? ': ' + fmtNum(st.unchecked_60s) + ' of ' + fmtNum(st.pre_edits_60s) + ' in the last minute.' : '.');
+    }
+    if (S.serverNote === msg) return;
+    S.serverNote = msg;
+    const b = $('server-banner');
+    b.hidden = !msg;
+    b.replaceChildren(msg ? icon('warn') : '', msg);
   }
 
   function setBoardError(msg) {
@@ -935,7 +958,9 @@
       meter,
       el('p', { class: 'hero-foot' }, checks
         ? [fmtNum(caught), ' of ', fmtNum(checks), ' checked edits (', (share * 100).toFixed(share && share < 0.1 ? 1 : 0), '%)']
-        : 'No edits checked yet'));
+        : 'No edits checked yet',
+        n(st.unheard) ? el('span', { class: 'hero-unheard', title: 'Edits whose agent went ahead before the server could answer' },
+          ' · ' + fmtNum(st.unheard) + ' went ahead unchecked') : null));
 
     const tile = (label, value, hint) => el('div', { class: 'tile' },
       el('dt', null, label), el('dd', null, known ? fmtNum(value) : '–'), el('dd', { class: 'tile-hint' }, hint));

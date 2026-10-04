@@ -940,6 +940,10 @@ func describeActivity(a board.Activity) string {
 			text += "; also " + strings.Join(a.Also, "; ")
 		}
 		return fmt.Sprintf("intagent: %s %s in %s: %s.", who, verb, a.Repo, text)
+	case board.ActivityServerDegraded:
+		return fmt.Sprintf("intagent: the team server is not answering agents in time: %s. They go ahead without a check until it does.", a.Text)
+	case board.ActivityServerRecovered:
+		return fmt.Sprintf("intagent: the team server answers agents in time again, %s.", a.Text)
 	}
 	return fmt.Sprintf("intagent: %s in %s: %s %s", who, a.Repo, a.Kind, a.Text)
 }

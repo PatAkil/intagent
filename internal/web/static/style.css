@@ -428,6 +428,7 @@ main:focus { outline: none; }
 }
 .meter-fill { display: block; height: 100%; min-width: 0; background: var(--accent-mark); border-radius: 3px; }
 .hero-foot { margin-top: 6px; font-size: 12px; color: var(--ink-3); }
+.hero-unheard { color: var(--warn); }
 
 .tiles {
   grid-area: tiles;
