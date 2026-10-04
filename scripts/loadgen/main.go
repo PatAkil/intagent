@@ -615,8 +615,12 @@ func (s *stream) run(ctx context.Context) {
 			err = statusError(resp.StatusCode)
 		}
 		if cctx.Err() != nil && ctx.Err() == nil {
+			// A reset closed the stream as it opened: open the next one.
+			if err == nil {
+				_ = resp.Body.Close()
+			}
 			cancel()
-			continue // a reset closed it before it opened
+			continue
 		}
 		s.rec.add("GET /v1/stream (connect)", start, 0, err)
 		if err != nil {
