@@ -153,3 +153,52 @@ func TestStreamOutlivesReadTimeout(t *testing.T) {
 		t.Fatalf("events: %+v", evs)
 	}
 }
+
+// A connection that has sent nothing does not hold up a stop: Serve closes
+// it and returns at once, with no error. It waited five seconds for it, and
+// then returned one.
+func TestShutdownClosesUnusedConnections(t *testing.T) {
+	ts := newTestServer(t)
+	stop := serveTest(t, ts)
+	idle, err := net.Dial("tcp", strings.TrimPrefix(ts.url, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = idle.Close() }()
+	// A request on another connection: by its answer the server has
+	// accepted the idle one too, as it accepts in order.
+	if code := ts.do(t, http.MethodGet, "/healthz", "", nil, nil); code != http.StatusOK {
+		t.Fatalf("healthz: %d", code)
+	}
+	http.DefaultClient.CloseIdleConnections()
+	start := time.Now()
+	if err := stop(); err != nil {
+		t.Fatalf("Serve: %v", err)
+	}
+	if took := time.Since(start); took > time.Second {
+		t.Fatalf("stopping took %s with one unused connection", took)
+	}
+	_ = idle.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, err := idle.Read(make([]byte, 1)); err == nil {
+		t.Fatal("the unused connection is still open")
+	}
+}
+
+// A connection that arrives once the unused ones are closed is closed as it
+// arrives.
+func TestFreshConnsCloseLateArrivals(t *testing.T) {
+	f := &freshConns{conns: map[net.Conn]struct{}{}}
+	early, earlyPeer := net.Pipe()
+	defer func() { _ = earlyPeer.Close() }()
+	f.track(early, http.StateNew)
+	f.closeAll()
+	late, latePeer := net.Pipe()
+	defer func() { _ = latePeer.Close() }()
+	f.track(late, http.StateNew)
+	for name, c := range map[string]net.Conn{"early": early, "late": late} {
+		_ = c.SetWriteDeadline(time.Now().Add(time.Second)) // an open pipe waits for its reader
+		if _, err := c.Write([]byte("x")); !errors.Is(err, io.ErrClosedPipe) {
+			t.Errorf("the %s connection is still open: %v", name, err)
+		}
+	}
+}

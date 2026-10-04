@@ -355,6 +355,9 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 		ln = &tlsListener{Listener: ln, config: s.tls, timeout: s.handshakeTimeout}
 	}
 	srv.RegisterOnShutdown(func() { s.closeOnce.Do(func() { close(s.closing) }) })
+	fresh := &freshConns{conns: map[net.Conn]struct{}{}}
+	srv.ConnState = fresh.track
+	srv.RegisterOnShutdown(fresh.closeAll)
 	// The sweeper and the persister stop as the server starts to stop: no
 	// sweep runs while it does, and a save in flight is abandoned for the
 	// final one, made once the requests are done.

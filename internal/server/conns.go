@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"log/slog"
 	"net"
+	"net/http"
 	"sync"
 	"time"
 )
@@ -111,4 +112,43 @@ func (l *tlsListener) Accept() (net.Conn, error) {
 		_ = tc.HandshakeContext(ctx)
 	}()
 	return tc, nil
+}
+
+// freshConns follows the connections that have not sent a request yet. As
+// it stops, http.Server waits for them as for busy ones, up to Serve's
+// five seconds, and then fails: one browser's preconnect, or a client's
+// spare connection, held every restart up that long while hooks went
+// unchecked. Their clients have sent nothing, so they are closed instead.
+type freshConns struct {
+	mu    sync.Mutex
+	conns map[net.Conn]struct{}
+	// done is set once they are closed: one that turns up after that, as
+	// the listener closes, is closed as it arrives.
+	done bool
+}
+
+// track is http.Server's ConnState.
+func (f *freshConns) track(c net.Conn, st http.ConnState) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	switch {
+	case st == http.StateNew && f.done:
+		_ = c.Close()
+	case st == http.StateNew:
+		f.conns[c] = struct{}{}
+	default:
+		delete(f.conns, c)
+	}
+}
+
+// closeAll closes the connections that have sent nothing, when the server
+// starts to stop.
+func (f *freshConns) closeAll() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.done = true
+	for c := range f.conns {
+		_ = c.Close()
+	}
+	clear(f.conns)
 }
