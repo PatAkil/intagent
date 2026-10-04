@@ -981,3 +981,13 @@ func (c *claim) oldClone() *claim {
 	d.areaAt, d.sortedPaths, d.removed = nil, nil, false
 	return &d
 }
+
+// oldSnapshot is Snapshot before it was streamed, with its claims and
+// sessions in order: the copy marshalled whole.
+func (b *Board) oldSnapshot(now time.Time) ([]byte, uint64, error) {
+	s, version := b.oldSnapshotCopy(now)
+	slices.SortFunc(s.Claims, func(x, y *claim) int { return strings.Compare(x.ID, y.ID) })
+	slices.SortFunc(s.Sessions, func(x, y *session) int { return strings.Compare(x.Key, y.Key) })
+	data, err := json.Marshal(s)
+	return data, version, err
+}

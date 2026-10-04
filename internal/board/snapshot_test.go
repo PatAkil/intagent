@@ -2,9 +2,12 @@ package board
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -133,4 +136,108 @@ func TestSnapshotCopyDoesNotGrowWithFootprints(t *testing.T) {
 	if one, many := allocs(1), allocs(500); many > one {
 		t.Fatalf("a snapshot's copy allocates %.0f times with 500 files a claim, %.0f with one", many, one)
 	}
+}
+
+// A snapshot written a claim and a session at a time is, byte for byte,
+// the old snapshot marshalled whole, on an empty board, a kit board with
+// intents, inboxes, alerts and dormant claims, and a board whose feed
+// dropped activities; and a board restored from it writes it again.
+func TestWriteSnapshotMatchesMarshal(t *testing.T) {
+	small := New(DefaultConfig(), withIDs(func(prefix string) string { return prefix + "1" }))
+	kit := buildBoard(t, smallShape())
+	dropped := newHarness(t, func(c *Config) { c.KeepActivities = 3 })
+	for i := range 8 {
+		dropped.hook(KindPostEdit, "alice", "a1", fmt.Sprintf("x/%d.go", i))
+	}
+	for name, b := range map[string]*Board{"empty": small, "kit": kit.Board, "dropped": dropped.b} {
+		want, wantVersion, err := b.oldSnapshot(t0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, version, err := b.Snapshot(t0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got, want) || version != wantVersion {
+			t.Fatalf("%s: the snapshot differs (version %d, want %d):\n got %.600s\nwant %.600s", name, version, wantVersion, got, want)
+		}
+		restored := New(DefaultConfig())
+		if err := restored.Restore(got); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		again, _, err := restored.Snapshot(t0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(again, got) {
+			t.Fatalf("%s: a restored board writes another snapshot:\n got %.600s\nwant %.600s", name, again, got)
+		}
+	}
+}
+
+// A write that fails ends the snapshot with its error.
+func TestWriteSnapshotReportsWriteErrors(t *testing.T) {
+	b := buildBoard(t, smallShape())
+	broken := errors.New("disk full")
+	if _, err := b.WriteSnapshot(failingWriter{after: snapshotBuffer, err: broken}, t0); !errors.Is(err, broken) {
+		t.Fatalf("WriteSnapshot = %v, want the write's error", err)
+	}
+}
+
+type failingWriter struct {
+	after int
+	err   error
+}
+
+func (f failingWriter) Write(p []byte) (int, error) { return 0, f.err }
+
+// Writing a snapshot holds a small part of it in memory at once: one claim
+// or session is encoded at a time, into a buffer that is written out when
+// full. Marshalled whole, all of it was held, and several times its size
+// allocated. What is held is measured at each write, after a collection.
+func TestWriteSnapshotHoldsLittleOfIt(t *testing.T) {
+	sh := smallShape()
+	sh.files, sh.dist = 1000, filesFixed
+	b := buildBoard(t, sh)
+	held := func(write func(w io.Writer)) (size int, extra uint64) {
+		var lw liveWriter
+		lw.collect()
+		base := lw.m.HeapAlloc
+		write(&lw)
+		return lw.n, lw.peak - min(base, lw.peak)
+	}
+	size, streamed := held(func(w io.Writer) { _, _ = b.WriteSnapshot(w, t0) })
+	_, whole := held(func(w io.Writer) {
+		data, _, _ := b.oldSnapshot(t0)
+		_, _ = w.Write(data)
+	})
+	runtime.KeepAlive(b) // the board is live throughout, in both
+	t.Logf("a snapshot of %d bytes: %d bytes held at once streamed, %d marshalled whole", size, streamed, whole)
+	if 4*streamed > uint64(size) || 2*whole < uint64(size) {
+		t.Fatalf("writing a snapshot of %d bytes held %d at once (%d marshalled whole)", size, streamed, whole)
+	}
+}
+
+// liveWriter discards what it is written, and notes the most heap in use
+// that a write finds, after a collection.
+type liveWriter struct {
+	m    runtime.MemStats
+	n    int
+	peak uint64
+}
+
+func (l *liveWriter) Write(p []byte) (int, error) {
+	l.collect()
+	l.n += len(p)
+	l.peak = max(l.peak, l.m.HeapAlloc)
+	runtime.KeepAlive(p) // held by the writer's caller, as by a file's
+	return len(p), nil
+}
+
+// collect reads the heap in use after a collection, twice over so that what
+// sync.Pool keeps for one more is gone too.
+func (l *liveWriter) collect() {
+	runtime.GC()
+	runtime.GC()
+	runtime.ReadMemStats(&l.m)
 }

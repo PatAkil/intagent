@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -32,19 +33,23 @@ func (s *Server) load() error {
 	return nil
 }
 
-// save writes a snapshot if the board changed since the last one.
+// save writes a snapshot if the board changed since the last one. The
+// snapshot is streamed to a temporary file beside the last, which it then
+// replaces (fsutil.WriteFileFunc).
 func (s *Server) save() error {
 	if s.dataDir == "" || s.board.Version() == s.saved {
 		return nil
 	}
-	data, version, err := s.board.Snapshot(s.now())
-	if err != nil {
-		return err
-	}
 	if err := os.MkdirAll(s.dataDir, 0o700); err != nil {
 		return err
 	}
-	if err := fsutil.WriteFile(s.snapshotPath(), data, 0o600); err != nil {
+	var version uint64
+	err := fsutil.WriteFileFunc(s.snapshotPath(), 0o600, func(w io.Writer) error {
+		var err error
+		version, err = s.board.WriteSnapshot(w, s.now())
+		return err
+	})
+	if err != nil {
 		return err
 	}
 	s.saved = version

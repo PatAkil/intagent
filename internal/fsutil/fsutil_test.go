@@ -2,6 +2,7 @@ package fsutil
 
 import (
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -28,6 +29,43 @@ func TestWriteFileReplacesAtomically(t *testing.T) {
 		if fi, _ := os.Stat(p); fi.Mode().Perm() != 0o600 {
 			t.Fatalf("mode = %v", fi.Mode())
 		}
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 1 {
+		t.Fatalf("temporary files left behind: %v", entries)
+	}
+}
+
+// WriteFileFunc writes what fill writes, piece by piece; when fill fails,
+// the file is left as it was, with no temporary file beside it.
+func TestWriteFileFuncFillsOrLeavesTheFile(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "board.json")
+	if err := WriteFile(p, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteFileFunc(p, 0o600, func(w io.Writer) error {
+		for _, s := range []string{"n", "e", "w"} {
+			if _, err := io.WriteString(w, s); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(p); string(got) != "new" {
+		t.Fatalf("contents = %q", got)
+	}
+	broken := errors.New("abandoned")
+	err := WriteFileFunc(p, 0o600, func(w io.Writer) error {
+		_, _ = io.WriteString(w, "half")
+		return broken
+	})
+	if !errors.Is(err, broken) {
+		t.Fatalf("WriteFileFunc = %v, want fill's error", err)
+	}
+	if got, _ := os.ReadFile(p); string(got) != "new" {
+		t.Fatalf("a failed fill left %q", got)
 	}
 	if entries, _ := os.ReadDir(dir); len(entries) != 1 {
 		t.Fatalf("temporary files left behind: %v", entries)

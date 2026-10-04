@@ -1,10 +1,14 @@
 package board
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"maps"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/patakil/intagent/internal/glob"
@@ -32,15 +36,110 @@ type droppedMarks struct {
 	Floor uint64            `json:"floor,omitempty"`
 }
 
-// Snapshot serialises the board for persistence. The state is copied under
-// the lock and encoded outside it, so a large board does not hold up hooks
-// while it is written. The copy shares each claim's footprint with the
-// board, so the time the lock is held grows with the claims and sessions,
-// not with the files they changed.
+// Snapshot is WriteSnapshot into memory.
 func (b *Board) Snapshot(now time.Time) ([]byte, uint64, error) {
+	var buf bytes.Buffer
+	version, err := b.WriteSnapshot(&buf, now)
+	return buf.Bytes(), version, err
+}
+
+// snapshotBuffer is how much of a snapshot WriteSnapshot holds before it
+// writes it out.
+const snapshotBuffer = 256 << 10
+
+// WriteSnapshot serialises the board to w for persistence, and returns the
+// board's version it holds. The state is copied under the lock and encoded
+// outside it, so a large board does not hold up hooks while it is written.
+// The copy shares each claim's footprint and alerts with the board, so the
+// time the lock is held grows with the claims and sessions, not with the
+// files they changed. The claims, in order of ID, and the sessions, in order
+// of key, are encoded one at a time, so the encoding takes as much memory
+// as the largest of them, not as the board: the bytes are those json.Marshal
+// gives the snapshot.
+func (b *Board) WriteSnapshot(w io.Writer, now time.Time) (uint64, error) {
 	s, version := b.snapshotCopy(now)
-	data, err := json.Marshal(s)
-	return data, version, err
+	slices.SortFunc(s.Claims, func(x, y *claim) int { return strings.Compare(x.ID, y.ID) })
+	slices.SortFunc(s.Sessions, func(x, y *session) int { return strings.Compare(x.Key, y.Key) })
+	bw := bufio.NewWriterSize(w, snapshotBuffer)
+	sw := &snapshotWriter{w: bw, enc: json.NewEncoder(oneLine{bw})}
+	// The fields of snapshot, in its order, as json.Marshal writes them.
+	sw.raw(`{"format":`)
+	sw.value(s.Format)
+	sw.raw(`,"saved":`)
+	sw.value(s.Saved)
+	sw.raw(`,"seq":`)
+	sw.value(s.Seq)
+	sw.raw(`,"claims":`)
+	writeArray(sw, s.Claims)
+	sw.raw(`,"sessions":`)
+	writeArray(sw, s.Sessions)
+	sw.raw(`,"recent":`)
+	sw.value(s.Recent)
+	if len(s.Stats) > 0 {
+		sw.raw(`,"stats":`)
+		sw.value(s.Stats)
+	}
+	if s.Dropped != nil {
+		sw.raw(`,"dropped":`)
+		sw.value(s.Dropped)
+	}
+	sw.raw("}")
+	if sw.err != nil {
+		return version, sw.err
+	}
+	return version, bw.Flush()
+}
+
+// snapshotWriter writes a snapshot piece by piece, and keeps the first
+// error.
+type snapshotWriter struct {
+	w   *bufio.Writer
+	enc *json.Encoder
+	err error
+}
+
+func (sw *snapshotWriter) raw(s string) {
+	if sw.err == nil {
+		_, sw.err = sw.w.WriteString(s)
+	}
+}
+
+func (sw *snapshotWriter) value(v any) {
+	if sw.err == nil {
+		sw.err = sw.enc.Encode(v)
+	}
+}
+
+// writeArray writes a slice an element at a time, as json.Marshal writes it
+// whole.
+func writeArray[T any](sw *snapshotWriter, list []T) {
+	if list == nil {
+		sw.raw("null")
+		return
+	}
+	sw.raw("[")
+	for i, v := range list {
+		if i > 0 {
+			sw.raw(",")
+		}
+		sw.value(v)
+	}
+	sw.raw("]")
+}
+
+// oneLine drops the newline json.Encoder ends each value with. Compact JSON
+// holds no other: a newline in a string is escaped.
+type oneLine struct{ w io.Writer }
+
+func (o oneLine) Write(p []byte) (int, error) {
+	n := len(p)
+	if n > 0 && p[n-1] == '\n' {
+		p = p[:n-1]
+	}
+	if _, err := o.w.Write(p); err != nil {
+		return 0, err
+	}
+	return n, nil
 }
 
 // snapshotCopy copies what a snapshot holds, under the lock.
@@ -53,11 +152,15 @@ func (b *Board) snapshotCopy(now time.Time) (snapshot, uint64) {
 		c := *st
 		s.Stats[repo] = &c
 	}
-	s.Claims = make([]*claim, 0, len(b.claims))
+	if len(b.claims) > 0 { // an empty board's are null, as they always were
+		s.Claims = make([]*claim, 0, len(b.claims))
+	}
 	for _, c := range b.claims {
 		s.Claims = append(s.Claims, c.shareFootprint())
 	}
-	s.Sessions = make([]*session, 0, len(b.sessions))
+	if len(b.sessions) > 0 {
+		s.Sessions = make([]*session, 0, len(b.sessions))
+	}
 	for _, x := range b.sessions {
 		s.Sessions = append(s.Sessions, x.clone())
 	}

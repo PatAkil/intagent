@@ -2,10 +2,17 @@ package board
 
 import (
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"runtime"
+	"runtime/metrics"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/patakil/intagent/internal/fsutil"
 	"github.com/patakil/intagent/internal/glob"
 )
 
@@ -371,4 +378,93 @@ func BenchmarkScaleSnapshotLock(b *testing.B) {
 			})
 		}
 	}
+}
+
+// A whole save to a file: the old one marshalled the snapshot whole, in
+// oracle_test.go; WriteSnapshot streams it. peak-MB is the most heap in use
+// above the board's while it saves, sampled every millisecond. "dormant" is
+// a week of per-task worktrees: 1000 live claims and 10,000 dormant ones of
+// 50 files, 550k in all.
+func BenchmarkScaleSnapshotWrite(b *testing.B) {
+	dormant := targetShape(filesFixed, 50)
+	dormant.dormant = 10_000
+	for _, tc := range []struct {
+		name string
+		sh   shape
+	}{
+		{"mixed", targetShape(filesMixed, 50)},
+		{"dormant", dormant},
+		{"cap", cappedShape()},
+	} {
+		sb := boardOf(b, tc.sh)
+		path := filepath.Join(b.TempDir(), "board.json")
+		for _, v := range []struct {
+			name string
+			save func() error
+		}{
+			{"old", func() error {
+				data, _, err := sb.oldSnapshot(sb.now)
+				if err != nil {
+					return err
+				}
+				return fsutil.WriteFile(path, data, 0o600)
+			}},
+			{"new", func() error {
+				return fsutil.WriteFileFunc(path, 0o600, func(w io.Writer) error {
+					_, err := sb.WriteSnapshot(w, sb.now)
+					return err
+				})
+			}},
+		} {
+			b.Run(tc.name+"/"+v.name, func(b *testing.B) {
+				b.ReportAllocs()
+				var peak uint64
+				for range b.N {
+					runtime.GC()
+					p, err := peakHeap(v.save)
+					if err != nil {
+						b.Fatal(err)
+					}
+					peak = max(peak, p)
+				}
+				b.ReportMetric(float64(peak)/(1<<20), "peak-MB")
+				if fi, err := os.Stat(path); err == nil {
+					b.ReportMetric(float64(fi.Size())/(1<<20), "file-MB")
+				}
+			})
+		}
+	}
+}
+
+// peakHeap runs f and returns the most heap in use above what was in use
+// when it started, sampled every millisecond.
+func peakHeap(f func() error) (uint64, error) {
+	read := func() uint64 {
+		s := []metrics.Sample{{Name: "/memory/classes/heap/objects:bytes"}, {Name: "/memory/classes/heap/unused:bytes"}}
+		metrics.Read(s)
+		return s[0].Value.Uint64() + s[1].Value.Uint64()
+	}
+	base := read()
+	var peak atomic.Uint64
+	done := make(chan struct{})
+	sampled := make(chan struct{})
+	go func() {
+		defer close(sampled)
+		t := time.NewTicker(time.Millisecond)
+		defer t.Stop()
+		for {
+			if h := read(); h > base && h-base > peak.Load() {
+				peak.Store(h - base)
+			}
+			select {
+			case <-done:
+				return
+			case <-t.C:
+			}
+		}
+	}()
+	err := f()
+	close(done)
+	<-sampled
+	return peak.Load(), err
 }

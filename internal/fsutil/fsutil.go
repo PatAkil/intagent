@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -21,6 +22,16 @@ import (
 // perm, and keeps its owner where the process may give it back. The
 // directory must exist.
 func WriteFile(path string, data []byte, perm fs.FileMode) error {
+	return WriteFileFunc(path, perm, func(w io.Writer) error {
+		_, err := w.Write(data)
+		return err
+	})
+}
+
+// WriteFileFunc is WriteFile for contents that fill writes, which need not
+// be in memory at once. When fill fails, path is left as it was and fill's
+// error is returned.
+func WriteFileFunc(path string, perm fs.FileMode, fill func(io.Writer) error) error {
 	target, err := linkTarget(path)
 	if err != nil {
 		return err
@@ -45,7 +56,7 @@ func WriteFile(path string, data []byte, perm fs.FileMode) error {
 		}
 		keepOwner(f, old)
 	}
-	if err := write(f, data); err != nil {
+	if err := write(f, fill); err != nil {
 		return err
 	}
 	if err := os.Rename(tmp, path); err != nil {
@@ -102,8 +113,8 @@ func createTemp(dir, name string, perm fs.FileMode) (*os.File, error) {
 	}
 }
 
-func write(f *os.File, data []byte) error {
-	_, err := f.Write(data)
+func write(f *os.File, fill func(io.Writer) error) error {
+	err := fill(f)
 	if err == nil {
 		err = f.Sync()
 	}
