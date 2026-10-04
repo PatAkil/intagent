@@ -29,6 +29,16 @@ type App struct {
 	// Listening, if set, is told the address serve and demo listen on, so a
 	// test can give them port 0.
 	Listening func(addr string)
+	// Now, if set, replaces the clock that paces hooks' footprint scans.
+	Now func() time.Time
+}
+
+// now reads the App's clock.
+func (a *App) now() time.Time {
+	if a.Now != nil {
+		return a.Now()
+	}
+	return time.Now()
 }
 
 const usage = `intagent: intent for agents. Every coding agent on your team sees what the

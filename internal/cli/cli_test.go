@@ -40,6 +40,8 @@ type team struct {
 	tokens map[string]string
 	// hookBudget, when set, replaces the hooks' time budget.
 	hookBudget time.Duration
+	// now, when set, replaces the clock that paces footprint scans.
+	now func() time.Time
 }
 
 func gitRun(t *testing.T, dir string, args ...string) string {
@@ -129,7 +131,7 @@ func (tm *team) as(member, dir, stdin string, args ...string) (string, string, i
 	tm.t.Setenv("INTAGENT_CONFIG", filepath.Join(tm.dir, member+".json"))
 	tm.t.Setenv("INTAGENT_HOST", member+"-laptop")
 	var out, errb bytes.Buffer
-	app := &App{In: strings.NewReader(stdin), Out: &out, Err: &errb, Version: "test", Dir: dir, HookBudget: tm.hookBudget}
+	app := &App{In: strings.NewReader(stdin), Out: &out, Err: &errb, Version: "test", Dir: dir, HookBudget: tm.hookBudget, Now: tm.now}
 	code := app.Run(context.Background(), args)
 	return out.String(), errb.String(), code
 }

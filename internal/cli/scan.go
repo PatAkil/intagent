@@ -21,13 +21,21 @@ const footprintEvery = 15 * time.Second
 // scanDue reports whether a hook of kind should scan the worktree at root
 // for its footprint at now. A shell command scans at most once per
 // footprintEvery window of the worktree, whichever of its sessions ran it:
-// the footprint is the worktree's. A session's end does not scan when the
-// worktree's footprint reached the server within footprintEvery: the Stop
-// before it has just sent one, and at a session's end git has little time.
+// the footprint is the worktree's. A session's end does not scan when a
+// footprint of the worktree reached the server from a scan that began
+// within footprintEvery, and after the last shell command that did not
+// scan: the Stop before it has just sent one, and at a session's end git
+// has little time.
 func scanDue(root string, kind board.Kind, now time.Time) bool {
 	switch kind {
 	case board.KindToolEnd:
-		return footprintDue(root, now)
+		if footprintDue(root, now) {
+			return true
+		}
+		// The scan of this window may have run before this command changed
+		// anything, so a session's end must not rely on it.
+		stamp(root, "unscanned-", now)
+		return false
 	case board.KindSessionEnd:
 		return !sentRecently(root, now)
 	}
@@ -81,7 +89,7 @@ func footprintDue(root string, now time.Time) bool {
 
 // pruneStamps removes the scan stamps of windows before window, those of
 // earlier versions of intagent, which were named by worktree and session,
-// and sent stamps footprintEvery old.
+// and sent and unscanned stamps footprintEvery old.
 func pruneStamps(dir string, window int64, now time.Time) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -95,7 +103,7 @@ func pruneStamps(dir string, window int64, now time.Time) {
 			_, w, ok := strings.Cut(strings.TrimPrefix(name, "scan-"), "-")
 			n, err := strconv.ParseInt(w, 10, 64)
 			stale = !ok || err != nil || n < window
-		case strings.HasPrefix(name, "sent-"):
+		case strings.HasPrefix(name, "sent-"), strings.HasPrefix(name, "unscanned-"):
 			fi, err := e.Info()
 			stale = err == nil && now.Sub(fi.ModTime()) >= footprintEvery
 		}
@@ -105,27 +113,37 @@ func pruneStamps(dir string, window int64, now time.Time) {
 	}
 }
 
-// footprintSent records that the worktree's footprint reached the server.
-func footprintSent(root string, now time.Time) {
+// footprintSent records that a footprint of the worktree whose scan began
+// at began reached the server.
+func footprintSent(root string, began time.Time) {
+	stamp(root, "sent-", began)
+}
+
+// stamp sets the worktree's stamp named by prefix to at.
+func stamp(root, prefix string, at time.Time) {
 	if dir := cacheDir(); dir != "" {
-		p := filepath.Join(dir, "sent-"+worktreeKey(root))
+		p := filepath.Join(dir, prefix+worktreeKey(root))
 		if os.WriteFile(p, nil, 0o600) == nil {
-			_ = os.Chtimes(p, now, now) // the write's own time is near enough
+			_ = os.Chtimes(p, at, at) // the write's own time is near enough
 		}
 	}
 }
 
-// sentRecently reports whether the worktree's footprint reached the server
-// less than footprintEvery before now.
+// sentRecently reports whether a footprint of the worktree reached the
+// server whose scan began less than footprintEvery before now and after the
+// last shell command that did not scan.
 func sentRecently(root string, now time.Time) bool {
 	dir := cacheDir()
 	if dir == "" {
 		return false
 	}
-	fi, err := os.Stat(filepath.Join(dir, "sent-"+worktreeKey(root)))
+	sent, err := os.Stat(filepath.Join(dir, "sent-"+worktreeKey(root)))
 	if err != nil {
 		return false
 	}
-	age := now.Sub(fi.ModTime())
-	return age >= 0 && age < footprintEvery
+	if age := now.Sub(sent.ModTime()); age < 0 || age >= footprintEvery {
+		return false
+	}
+	unscanned, err := os.Stat(filepath.Join(dir, "unscanned-"+worktreeKey(root)))
+	return err != nil || unscanned.ModTime().Before(sent.ModTime())
 }

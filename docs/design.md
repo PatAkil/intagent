@@ -99,8 +99,9 @@ off (`intagent login --share-prompts off`). An explicit `declare_intent` summary
 ## Footprint from git
 
 At session start, after shell commands (at most once in each 15-second window per worktree, whichever of its sessions
-ran them), at `Stop` and at `SessionEnd` (unless the worktree's footprint reached the server in the last 15 seconds,
-as it does at the `Stop` just before) the hook computes the worktree's real footprint:
+ran them), at `Stop` and at `SessionEnd` (unless a footprint of the worktree reached the server whose scan began in the
+last 15 seconds, after every shell command that did not scan, as the `Stop` just before sends one) the hook computes
+the worktree's real footprint:
 
 - the default branch from `refs/remotes/origin/HEAD` (falling back to `origin/main`, `origin/master`, `main`, `master`);
 - `git merge-base HEAD <default>`;

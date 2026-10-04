@@ -148,7 +148,8 @@ func (a *App) handleHook(ctx context.Context, ad hook.Adapter, ev hook.Event) (h
 	if ws.settings.SharePrompts {
 		hev.Prompt = ev.Prompt
 	}
-	if ev.Footprint && scanDue(ws.wt.Root, ev.Kind, time.Now()) {
+	began := a.now()
+	if ev.Footprint && scanDue(ws.wt.Root, ev.Kind, began) {
 		// Git gets what the server request leaves of the hook's time, and at
 		// least half of it, so a slow git cannot keep the event from the server.
 		fctx, fcancel := context.WithTimeout(ctx, gitTime(ctx, ws.settings.Timeout))
@@ -164,7 +165,7 @@ func (a *App) handleHook(ctx context.Context, ad hook.Adapter, ev hook.Event) (h
 	defer cancel()
 	res, err := ws.client.Hook(ctx, hev)
 	if err == nil && hev.Footprint != nil {
-		footprintSent(ws.wt.Root, time.Now())
+		footprintSent(ws.wt.Root, began)
 	}
 	switch {
 	case client.IsUnauthorized(err):
