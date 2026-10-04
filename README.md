@@ -136,8 +136,8 @@ for a teammate who has not installed intagent. `--areas 'services/*,libs/*'` def
 
 A worktree reports at most 2000 changed files, ignored ones left out first. Past that it keeps one file of each changed
 area, then what the branch has not committed, then the branch's commits, then the files of new directories of more than
-500 files (a `.venv` nobody ignored). A new directory whose files do not all fit is named in their place; the server
-does not judge such directories yet, so teammates are not told about the files they stand for.
+500 files (a `.venv` nobody ignored). A new directory whose files do not all fit is named in their place, and a
+teammate's agent editing a file under it is warned of it as nearby work.
 
 **Each member, in each clone:**
 

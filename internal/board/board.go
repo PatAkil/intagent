@@ -782,6 +782,7 @@ func (b *Board) reconcile(now time.Time, c *claim, s *session, fp *Footprint) {
 		b.setFootprint(c, next, paths)
 	}
 	c.FootprintTruncated = fp.Truncated || cut
+	c.Dirs = addedDirs(now, c.Dirs, fp.Dirs)
 	if len(added) > 0 || removed > 0 {
 		b.record(Activity{At: now, Kind: ActivityFootprintReconciled, Repo: c.Repo, Member: c.Member, ClaimID: c.ID, Session: s.ID, Agent: s.Agent,
 			Text: fmt.Sprintf("%d changed files (+%d, -%d)", len(next), len(added), removed)})
@@ -795,6 +796,38 @@ func (b *Board) reconcile(now time.Time, c *claim, s *session, fp *Footprint) {
 		b.alertOthers(now, c, added)
 		b.tellShort(s)
 	}
+}
+
+// addedDirs is the directories a scan says its worktree added whole, each
+// with when the board first heard of it (in had), in a new map: a snapshot
+// may share the one before.
+func addedDirs(now time.Time, had map[string]*touch, dirs []PathRef) map[string]*touch {
+	if len(dirs) == 0 {
+		return nil
+	}
+	out := make(map[string]*touch, len(dirs))
+	for _, d := range dirs {
+		t := had[d.Path]
+		if t == nil || t.Area != d.Area {
+			t = &touch{Area: d.Area, At: now, FromGit: true}
+		}
+		out[d.Path] = t
+	}
+	return out
+}
+
+// dirAbove is the directory claim c's worktree added whole that holds path,
+// and when the board first heard of it, if there is one.
+func (c *claim) dirAbove(path string) (string, time.Time, bool) {
+	if len(c.Dirs) == 0 {
+		return "", time.Time{}, false
+	}
+	for i := strings.LastIndexByte(path, '/'); i > 0; i = strings.LastIndexByte(path[:i], '/') {
+		if t, ok := c.Dirs[path[:i]]; ok {
+			return path[:i], t.At, true
+		}
+	}
+	return "", time.Time{}, false
 }
 
 // maxScanAge bounds how long before its event a scan may have begun, as
@@ -1315,9 +1348,13 @@ func (b *Board) conflictWith(live liveness, o *claim, p PathRef) (Conflict, bool
 	}
 	t, changed := o.Footprint[p.Path]
 	var near time.Time
+	var dir string // a directory o's worktree added whole that holds p
 	nearby := false
 	if planned < 0 && !changed && p.Area != "" {
 		near, nearby = b.workedInArea(o, p.Area)
+	}
+	if planned < 0 && !changed && !nearby {
+		dir, near, nearby = o.dirAbove(p.Path)
 	}
 	if planned < 0 && !changed && !nearby {
 		return Conflict{}, false
@@ -1336,6 +1373,12 @@ func (b *Board) conflictWith(live liveness, o *claim, p PathRef) (Conflict, bool
 		cf.Why = "had unmerged changes to this file (claim dormant for " + ago(live.now, o.UpdatedAt) + ")"
 	case changed:
 		cf.Severity, cf.Why, cf.Since = SeverityOverlap, "has unmerged changes to this file", t.At
+	case dir != "":
+		// It is warned of once per directory, as nearby work is once per area.
+		cf.Severity, cf.Why, cf.Since = SeverityNearby, "added the directory "+dir+" whole, without listing its files", near
+		if cf.Area == "" {
+			cf.Area = dir
+		}
 	default:
 		cf.Severity, cf.Why, cf.Since = SeverityNearby, "is working in the same area "+p.Area, near
 	}

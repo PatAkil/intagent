@@ -162,8 +162,8 @@ included, then the branch's commits (`git diff --name-only <merge-base> HEAD`), 
 worktree added whole with more than 500 files (a `.venv`, build output nobody ignored), the smallest first. Each group
 goes in path order, and the client sends them in that order, since the server keeps the first files it can. A
 directory added whole whose files do not all fit goes in `dirs`, one entry for the files it leaves out. The server
-keeps the valid, distinct ones among the first 200 and does not judge them yet, so teammates are not told about the
-files they stand for.
+keeps the valid, distinct ones among the first 200, until a scan no longer names them, and a teammate's edit of a file
+under one is nearby work ("added the directory ... whole"), warned of once per directory, when nothing closer is.
 
 The server replaces the claim's git-derived footprint with this list, but never loses for it, or for its bounds, a
 change a hook reported: a footprint says how long before its event was sent its scan began (`age_ms`, read up to 8

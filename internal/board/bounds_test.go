@@ -277,3 +277,48 @@ func TestScanKeepsChangesNewerThanItself(t *testing.T) {
 		}
 	}
 }
+
+// A directory a worktree added whole, which its footprint names in place
+// of the files under it it leaves out, counts as nearby work for a
+// teammate's edit of a file under it, warned of once per directory, until a
+// scan no longer names it.
+func TestDirectoriesAddedWholeAreNearbyWork(t *testing.T) {
+	h := newHarness(t)
+	if _, err := h.b.Hook(h.now, HookEvent{Kind: KindHeartbeat, Member: "alice", Agent: AgentClaudeCode, SessionID: "a1", Where: whereOf("alice"),
+		Footprint: &Footprint{Files: refs("web/app.ts"), Truncated: true,
+			Dirs: []PathRef{{Path: ".venv"}, {Path: "web/new", Area: "web/new"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	h.advance(time.Minute)
+	for _, tc := range []struct {
+		path, why string
+	}{
+		{"web/new/src/app.ts", "added the directory web/new whole"},
+		{".venv/lib/site.py", "added the directory .venv whole"},
+		{"lib/new/x.go", ""},
+		{".venv2/x.py", ""},
+	} {
+		res := h.hook(KindPreEdit, "bob", "b1", tc.path)
+		if tc.why == "" {
+			if len(res.Conflicts) != 0 || res.Context != "" {
+				t.Errorf("%s: %+v", tc.path, res)
+			}
+			continue
+		}
+		if res.Decision != DecisionAllow || len(res.Conflicts) != 1 || res.Conflicts[0].Severity != SeverityNearby ||
+			!strings.Contains(res.Context, tc.why) {
+			t.Errorf("%s: %s, %q, %+v; want a nearby warning that alice %s", tc.path, res.Decision, res.Context, res.Conflicts, tc.why)
+		}
+	}
+	if res := h.hook(KindPreEdit, "bob", "b1", ".venv/lib/other.py"); res.Context != "" {
+		t.Errorf("warned again of .venv: %q", res.Context)
+	}
+	// A scan that names no directory leaves none.
+	if _, err := h.b.Hook(h.now, HookEvent{Kind: KindHeartbeat, Member: "alice", Agent: AgentClaudeCode, SessionID: "a1", Where: whereOf("alice"),
+		Footprint: &Footprint{Files: refs("web/app.ts")}}); err != nil {
+		t.Fatal(err)
+	}
+	if res := h.hook(KindPreEdit, "carol", "c1", "web/new/src/app.ts"); len(res.Conflicts) != 0 {
+		t.Errorf("after a scan with no directories: %+v", res.Conflicts)
+	}
+}

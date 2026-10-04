@@ -213,8 +213,12 @@ type claim struct {
 	Intents   []Intent          `json:"intents,omitempty"`
 	Footprint map[string]*touch `json:"footprint,omitempty"`
 	// FootprintTruncated is set when git reported more files than intagent keeps.
-	FootprintTruncated bool        `json:"footprint_truncated,omitempty"`
-	Inbox              []InboxItem `json:"inbox,omitempty"`
+	FootprintTruncated bool `json:"footprint_truncated,omitempty"`
+	// Dirs are the directories the worktree added whole that its last scan
+	// named in place of the files it left out (Footprint.Dirs), each with
+	// when the board first heard of it. A reconcile replaces the map.
+	Dirs  map[string]*touch `json:"dirs,omitempty"`
+	Inbox []InboxItem       `json:"inbox,omitempty"`
 	// Alerted remembers which symmetric alerts this claim already received.
 	// Only alert adds to it.
 	Alerted map[string]bool `json:"alerted,omitempty"`
@@ -304,7 +308,8 @@ type Footprint struct {
 	// added whole, each in place of every file under it that Files leaves
 	// out: a .venv or build output not ignored, say. Its Area is that of the
 	// files directly inside. The board keeps the valid, distinct ones among
-	// the first 200, as it keeps Files, and does not judge them yet.
+	// the first 200, as it keeps Files, and counts a teammate's edit of a
+	// file under one as nearby work.
 	Dirs []PathRef `json:"dirs,omitempty"`
 	// AgeMS is how long before the event was sent the scan began, in
 	// milliseconds: a change a hook reports in that time may have come after
