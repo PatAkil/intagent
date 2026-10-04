@@ -36,6 +36,8 @@ type testServer struct {
 	// clock.
 	step, reads atomic.Int64
 	wall        atomic.Bool
+	// later moves the request clock's base on (passes).
+	later atomic.Int64
 }
 
 func newTestServer(t *testing.T, mutate ...func(*Options)) *testServer {
@@ -77,8 +79,11 @@ func (ts *testServer) requestClock() time.Time {
 		return time.Now()
 	}
 	after := min(ts.reads.Add(1)-1, 1) // 0 for the first reading, 1 for every later one
-	return time.Unix(1_790_000_000, 0).Add(time.Duration(after * ts.step.Load()))
+	return time.Unix(1_790_000_000, 0).Add(time.Duration(ts.later.Load() + after*ts.step.Load()))
 }
+
+// passes moves the request clock on by d, as time passing does for pacing.
+func (ts *testServer) passes(d time.Duration) { ts.later.Add(int64(d)) }
 
 // wait makes the next request to read the request clock wait d: it arrives
 // at the clock's base, and every later reading is d on.

@@ -46,7 +46,8 @@ const (
 	callBurst = 20
 )
 
-// bucket is a token bucket that refills with the server's clock.
+// bucket is a token bucket that refills with the server's request clock
+// (Server.clock), as other pacing does, not with the board's time.
 type bucket struct {
 	tokens float64
 	at     time.Time
@@ -126,7 +127,7 @@ func (s *Server) admitBody(w http.ResponseWriter, r *http.Request, member string
 		n = maxBody
 	}
 	edit = r.Pattern == hookRoute && startsPreEdit(r)
-	if !s.admit.takeBytes(member, n, s.now(), edit) {
+	if !s.admit.takeBytes(member, n, s.clock(), edit) {
 		if edit {
 			s.uncheckedEdit(w, r, member, "its member's budget for large edits is spent")
 			return nil, edit, false
@@ -248,7 +249,7 @@ func (a *admission) prune(now time.Time) {
 func (s *Server) admitCall(w http.ResponseWriter, member string, where board.Where) (release func(), ok bool) {
 	// Cleaned as the board cleans them, so the key names the claim's worktree.
 	key := member + "\x00" + board.Clean(where.Host, 100) + "\x00" + board.Clean(where.Worktree, 500)
-	release, why := s.admit.call(key, s.now())
+	release, why := s.admit.call(key, s.clock())
 	if why != "" {
 		w.Header().Set("Retry-After", "1")
 		writeError(w, http.StatusTooManyRequests, why)

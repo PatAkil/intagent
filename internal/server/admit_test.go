@@ -59,9 +59,7 @@ func TestLargeBodiesAreMetered(t *testing.T) {
 	if code, _ := ts.post(t, "/v1/hook", "bob", heartbeat("bob", 40<<10)); code != http.StatusOK {
 		t.Fatalf("another member's large body: %d", code)
 	}
-	ts.mu.Lock()
-	ts.clock = ts.clock.Add(time.Second)
-	ts.mu.Unlock()
+	ts.passes(time.Second)
 	if code, _ := ts.post(t, "/v1/hook", "alice", big); code != http.StatusOK {
 		t.Fatalf("large body after a second: %d", code)
 	}
@@ -128,9 +126,7 @@ func TestLargeEditsAreNeverRefusedForLoad(t *testing.T) {
 		checked(fmt.Sprintf("edit %d of %d within the budget for edits", i+1, fits))
 	}
 	unchecked("an edit over the budget for edits")
-	ts.mu.Lock()
-	ts.clock = ts.clock.Add(time.Second)
-	ts.mu.Unlock()
+	ts.passes(time.Second)
 	checked("an edit a second later")
 
 	ts.admit.largeWait = 50 * time.Millisecond
@@ -391,9 +387,14 @@ func TestChecksArePacedPerWorktree(t *testing.T) {
 	if code, _ := ts.post(t, "/v1/hook", "alice", pre); code != http.StatusOK {
 		t.Fatalf("a hook from the paced worktree: %d", code)
 	}
+	// The board's time is not the pacing's: an hour of it refills nothing.
 	ts.mu.Lock()
-	ts.clock = ts.clock.Add(time.Second)
+	ts.clock = ts.clock.Add(time.Hour)
 	ts.mu.Unlock()
+	if code, _ := ts.post(t, "/v1/check", "alice", checkReq("alice", "/w/a", 1)); code != http.StatusTooManyRequests {
+		t.Fatalf("check after the board's clock moved on: %d", code)
+	}
+	ts.passes(time.Second)
 	for i := range callRate {
 		if code, _ := ts.post(t, "/v1/check", "alice", checkReq("alice", "/w/a", 1)); code != http.StatusOK {
 			t.Fatalf("check %d a second later: %d", i, code)
