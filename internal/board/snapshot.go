@@ -6,6 +6,8 @@ import (
 	"maps"
 	"slices"
 	"time"
+
+	"github.com/patakil/intagent/internal/glob"
 )
 
 const snapshotFormat = 1
@@ -84,7 +86,8 @@ func (s *session) clone() *session {
 }
 
 // Restore replaces the board's contents with a snapshot, and rebuilds what
-// is derived from them.
+// is derived from them. It drops the intents whose patterns the board no
+// longer accepts (glob.CleanPattern), and logs each.
 func (b *Board) Restore(data []byte) error {
 	var s snapshot
 	if err := json.Unmarshal(data, &s); err != nil {
@@ -104,6 +107,7 @@ func (b *Board) Restore(data []byte) error {
 		if c == nil || c.ID == "" {
 			continue
 		}
+		c.Intents = b.validIntents(c)
 		b.addClaim(c)
 	}
 	for _, x := range s.Sessions {
@@ -139,4 +143,24 @@ func (b *Board) Restore(data []byte) error {
 	b.notes = map[string][]time.Time{}
 	b.pending = nil
 	return nil
+}
+
+// validIntents is c's intents whose patterns the board accepts, cleaned. A
+// snapshot from an older server can hold patterns it no longer accepts, such
+// as ones too costly to match.
+func (b *Board) validIntents(c *claim) []Intent {
+	keep := c.Intents[:0]
+	for _, in := range c.Intents {
+		p, err := glob.CleanPattern(in.Pattern)
+		if err != nil {
+			b.log.Warn("dropping an intent from the snapshot", "claim", c.ID, "member", c.Member, "err", err)
+			continue
+		}
+		if slices.ContainsFunc(keep, func(k Intent) bool { return k.Pattern == p }) {
+			continue
+		}
+		in.Pattern = p
+		keep = append(keep, in)
+	}
+	return keep
 }

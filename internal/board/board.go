@@ -10,6 +10,7 @@ import (
 	"encoding/base32"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"sort"
 	"strings"
@@ -159,6 +160,9 @@ type Board struct {
 	// unheard is set while Hook records an event whose answer nobody will
 	// read: nothing is delivered in it.
 	unheard bool
+	// work is the matching left to the call that holds the lock (lock).
+	work glob.Work
+	log  *slog.Logger
 
 	// dropped is, by repository, the seq of the newest activity the feed has
 	// let go of, and droppedAll the newest of all; droppedFloor covers what a
@@ -177,6 +181,15 @@ type Option func(*Board)
 // must not block or call back into the board.
 func WithNotify(fn func([]Activity)) Option { return func(b *Board) { b.notify = fn } }
 
+// WithLogger has the board log what it drops from a snapshot it restores.
+func WithLogger(l *slog.Logger) Option {
+	return func(b *Board) {
+		if l != nil {
+			b.log = l
+		}
+	}
+}
+
 // withIDs replaces the random ID generator, for tests.
 func withIDs(fn func(prefix string) string) Option { return func(b *Board) { b.newID = fn } }
 
@@ -193,6 +206,7 @@ func New(cfg Config, opts ...Option) *Board {
 		stats:         map[string]*Stats{},
 		dropped:       map[string]uint64{},
 		newID:         randomID,
+		log:           slog.New(slog.DiscardHandler),
 	}
 	for _, o := range opts {
 		o(b)
@@ -222,7 +236,29 @@ func (b *Board) Version() uint64 {
 	return b.version
 }
 
-func (b *Board) lock() { b.mu.Lock() }
+// maxGlobWork bounds the matching of paths and patterns one call may do
+// under the board's lock, in glob.Work's units. On the target board an edit
+// of 200 files uses about a seventh of it, and a worktree arriving with 2000
+// changed files about half; the costliest patterns glob.CleanPattern accepts
+// use it up in 50 to 85 ms. A teammate's pattern is matched against every
+// path an agent edits or checks; past the bound, the call stops matching,
+// lets through what it did not check, and says so (partialNote).
+const maxGlobWork = 2_000_000
+
+// lock takes the board's lock for a call that may match paths and patterns,
+// with its own bound on that work.
+func (b *Board) lock() {
+	b.mu.Lock()
+	b.work = glob.NewWork(maxGlobWork)
+}
+
+// countPartial counts, in repo's stats, a call that stopped matching for
+// want of work.
+func (b *Board) countPartial(now time.Time, repo string) {
+	if b.work.Short() {
+		b.statsOf(repo, now).Partial++
+	}
+}
 
 // unlock releases the lock and then hands pending activities to the notifier.
 // The notifier's own lock is taken before the board's is released, so two
@@ -428,6 +464,7 @@ func (b *Board) Hook(now time.Time, ev HookEvent) (HookResult, error) {
 	b.changed()
 	b.unheard = late
 	defer func() { b.unheard = false }()
+	defer b.countPartial(now, w.Repo)
 
 	c := b.claimFor(now, ev.Member, w)
 	s := b.sessionFor(now, ev, c)
@@ -462,6 +499,10 @@ func (b *Board) Hook(now time.Time, ev HookEvent) (HookResult, error) {
 			res.Context = joinBlocks(res.Context, fmt.Sprintf("[intagent] This edit names %d files; intagent checked only "+
 				"the first %d against teammates' work. Check the others with the intagent check_paths tool, %d at a time, "+
 				"or tell your user.", named, min(len(ev.Paths), maxCheckPaths), maxCheckPaths))
+		}
+		if b.work.Short() {
+			res.Partial = true
+			res.Context = joinBlocks(res.Context, prefix+" "+partialNote+" Tell your user if this edit may touch a teammate's work.")
 		}
 		if res.Decision == DecisionRefuse || (res.Decision == DecisionAsk && ev.NoAsk) {
 			// The edit does not run, so no tool end will follow it. (An ask that
@@ -741,7 +782,7 @@ func (b *Board) alertOthers(now time.Time, c *claim, paths []PathRef) {
 		}
 		var hit []string
 		for _, p := range paths {
-			if _, ok := o.Footprint[p.Path]; !ok && !coveredByIntent(o, p.Path) {
+			if _, ok := o.Footprint[p.Path]; !ok && !b.coveredByIntent(o, p.Path) {
 				continue
 			}
 			k := "touch|" + c.ID + "|" + p.Path
@@ -785,7 +826,7 @@ func (b *Board) reportUnchecked(now time.Time, c *claim, s *session, added []Pat
 	var lines, paths []string
 	var first Conflict
 	for _, p := range added {
-		cf, ok := blockerOf(p, holders)
+		cf, ok := b.blockerOf(p, holders)
 		if !ok {
 			continue
 		}
@@ -856,13 +897,13 @@ func (b *Board) reservationHolders(now time.Time, c *claim) []*claim {
 // blockerOf is the block conflict conflictsFor lists first for p, given the
 // claims that hold reservations: of each holder's first exclusive intent that
 // covers p, the first in the order conflicts are sorted.
-func blockerOf(p PathRef, holders []*claim) (Conflict, bool) {
+func (b *Board) blockerOf(p PathRef, holders []*claim) (Conflict, bool) {
 	var best Conflict
 	var by *Intent
 	for _, o := range holders {
 		for i := range o.Intents {
 			in := &o.Intents[i]
-			if in.Mode != ModeExclusive || !match(in.Pattern, p.Path) {
+			if in.Mode != ModeExclusive || !b.match(in.Pattern, p.Path) {
 				continue
 			}
 			cf := Conflict{Path: p.Path, Area: p.Area, Severity: SeverityBlock, ClaimID: o.ID, Member: o.Member, Branch: o.Branch,
@@ -905,16 +946,16 @@ func (b *Board) breachedReservation(c *claim, cf Conflict) bool {
 		return false // a plan, not a change
 	}
 	for _, in := range c.Intents {
-		if in.Mode == ModeExclusive && match(in.Pattern, cf.Path) && !t.At.Before(in.DeclaredAt) {
+		if in.Mode == ModeExclusive && b.match(in.Pattern, cf.Path) && !t.At.Before(in.DeclaredAt) {
 			return true
 		}
 	}
 	return false
 }
 
-func coveredByIntent(c *claim, path string) bool {
+func (b *Board) coveredByIntent(c *claim, path string) bool {
 	for _, in := range c.Intents {
-		if match(in.Pattern, path) {
+		if b.match(in.Pattern, path) {
 			return true
 		}
 	}
@@ -971,7 +1012,7 @@ func (b *Board) conflictWith(live liveness, o *claim, p PathRef) (Conflict, bool
 	}
 	planned, reserved := -1, -1 // the first intent that covers p, and the first exclusive one
 	for i := range o.Intents {
-		if !match(o.Intents[i].Pattern, p.Path) {
+		if !b.match(o.Intents[i].Pattern, p.Path) {
 			continue
 		}
 		if planned < 0 {
@@ -986,7 +1027,7 @@ func (b *Board) conflictWith(live liveness, o *claim, p PathRef) (Conflict, bool
 	var near time.Time
 	nearby := false
 	if planned < 0 && !changed && p.Area != "" {
-		near, nearby = workedInArea(o, p.Area)
+		near, nearby = b.workedInArea(o, p.Area)
 	}
 	if planned < 0 && !changed && !nearby {
 		return Conflict{}, false
@@ -1022,7 +1063,7 @@ func intentWhy(in Intent) string {
 
 // workedInArea reports whether a claim changed or declared anything in area,
 // and when last.
-func workedInArea(c *claim, area string) (time.Time, bool) {
+func (b *Board) workedInArea(c *claim, area string) (time.Time, bool) {
 	if trace != nil {
 		trace.workedInArea++
 	}
@@ -1035,7 +1076,7 @@ func workedInArea(c *claim, area string) (time.Time, bool) {
 		if dir == "" {
 			continue
 		}
-		if match(area, dir) || match(dir, area) {
+		if b.match(area, dir) || b.match(dir, area) {
 			if in.DeclaredAt.After(latest) {
 				latest = in.DeclaredAt
 			}
@@ -1372,6 +1413,10 @@ type DeclareResult struct {
 	Rejected []Rejection `json:"rejected,omitempty"`
 	Overlaps []Conflict  `json:"overlaps,omitempty"`
 	Text     string      `json:"text"`
+	// Partial says the board stopped comparing the intents with teammates'
+	// patterns and files before it had compared them all (Text says so too):
+	// Rejected and Overlaps may miss some.
+	Partial bool `json:"partial,omitempty"`
 }
 
 // Declare records intents. An exclusive intent that overlaps another active
@@ -1400,6 +1445,7 @@ func (b *Board) Declare(now time.Time, r DeclareRequest) (DeclareResult, error) 
 
 	b.lock()
 	defer b.unlock()
+	defer b.countPartial(now, w.Repo)
 	b.changed()
 	c := b.claimFor(now, r.Member, w)
 	live := b.liveAt(now)
@@ -1436,6 +1482,7 @@ func (b *Board) Declare(now time.Time, r DeclareRequest) (DeclareResult, error) 
 		b.record(Activity{At: now, Kind: ActivityIntentDeclared, Repo: c.Repo, Member: c.Member, ClaimID: c.ID,
 			Paths: intentPatterns(res.Accepted), Text: fmt.Sprintf("%s: %s", mode, summary)})
 	}
+	res.Partial = b.work.Short()
 	res.Text = renderDeclare(now, res, b.cfg.Policy)
 	return res, nil
 }
@@ -1446,7 +1493,7 @@ func (b *Board) exclusiveClash(self *claim, pattern string, live liveness) (Conf
 			continue
 		}
 		for _, in := range o.Intents {
-			if in.Mode == ModeExclusive && overlap(in.Pattern, pattern) {
+			if in.Mode == ModeExclusive && b.overlap(in.Pattern, pattern) {
 				return Conflict{Path: pattern, Severity: SeverityBlock, ClaimID: o.ID, Member: o.Member, Branch: o.Branch, Task: o.Task,
 					Why: "holds exclusive intent " + in.Pattern, Pattern: in.Pattern, Since: in.DeclaredAt, Active: true}, true
 			}
@@ -1483,7 +1530,7 @@ func (b *Board) intentOverlaps(c *claim, in Intent, live liveness) []Conflict {
 		}
 		cf := Conflict{Path: in.Pattern, ClaimID: o.ID, Member: o.Member, Branch: o.Branch, Task: o.Task}
 		for _, oi := range o.Intents {
-			if overlap(oi.Pattern, in.Pattern) {
+			if b.overlap(oi.Pattern, in.Pattern) {
 				sev := SeverityOverlap
 				if oi.Mode == ModeExclusive && live.claim(o.ID) {
 					sev = SeverityBlock
@@ -1498,7 +1545,7 @@ func (b *Board) intentOverlaps(c *claim, in Intent, live liveness) []Conflict {
 			var hit []string
 			var since time.Time
 			see := func(p string) {
-				if match(in.Pattern, p) {
+				if b.match(in.Pattern, p) {
 					hit = append(hit, p)
 					if t := o.Footprint[p]; t.At.After(since) {
 						since = t.At
@@ -1611,6 +1658,9 @@ type CheckResult struct {
 	// Unchecked counts the paths past the first maxCheckPaths, which were not
 	// checked; Text says so too.
 	Unchecked int `json:"unchecked,omitempty"`
+	// Partial says the board stopped comparing the paths with teammates'
+	// patterns before it had compared them all; Text says so too.
+	Partial bool `json:"partial,omitempty"`
 }
 
 // ReleaseResult is the answer to POST /v1/intents/release.
@@ -1642,17 +1692,21 @@ func (b *Board) Check(now time.Time, r CheckRequest) (CheckResult, error) {
 	if err != nil {
 		return CheckResult{}, err
 	}
-	cs := b.check(now, r.Member, w, paths)
-	res := CheckResult{Conflicts: cs, Text: RenderConflicts(now, cs), Unchecked: max(0, len(r.Paths)-maxCheckPaths)}
+	cs, partial := b.check(now, r.Member, w, paths)
+	res := CheckResult{Conflicts: cs, Text: RenderConflicts(now, cs), Unchecked: max(0, len(r.Paths)-maxCheckPaths), Partial: partial}
 	if res.Unchecked > 0 {
 		res.Text += fmt.Sprintf("\nintagent checked only the first %d of these %d paths. Check the other %d in other "+
 			"checks, %d at a time.", maxCheckPaths, len(r.Paths), res.Unchecked, maxCheckPaths)
 	}
+	if partial {
+		res.Text += "\n" + partialNote
+	}
 	return res, nil
 }
 
-// check lists the conflicts of paths, cleaned, for member's claim in w.
-func (b *Board) check(now time.Time, member string, w Where, paths []PathRef) []Conflict {
+// check lists the conflicts of paths, cleaned, for member's claim in w, and
+// whether it stopped matching for want of work.
+func (b *Board) check(now time.Time, member string, w Where, paths []PathRef) ([]Conflict, bool) {
 	b.lock()
 	defer b.unlock()
 	self := b.findClaim(member, w)
@@ -1664,7 +1718,7 @@ func (b *Board) check(now time.Time, member string, w Where, paths []PathRef) []
 	for _, p := range paths {
 		out = append(out, b.conflictsFor(live, self, "", p)...)
 	}
-	return out
+	return out, b.work.Short()
 }
 
 // NoteRequest sends a short note to another claim's agents.
@@ -1696,6 +1750,7 @@ func (b *Board) Note(now time.Time, r NoteRequest) (NoteResult, error) {
 	}
 	b.lock()
 	defer b.unlock()
+	defer b.countPartial(now, w.Repo)
 	recent := b.notes[r.Member][:0:0]
 	for _, t := range b.notes[r.Member] {
 		if now.Sub(t) < noteWindow {
@@ -1763,7 +1818,7 @@ func (b *Board) resolve(repo, to string, self *claim) ([]*claim, string) {
 		if self != nil && c.ID == self.ID {
 			continue
 		}
-		if _, ok := c.Footprint[p]; ok || coveredByIntent(c, p) {
+		if _, ok := c.Footprint[p]; ok || b.coveredByIntent(c, p) {
 			out = append(out, c)
 		}
 	}

@@ -1,7 +1,5 @@
 package board
 
-import "github.com/patakil/intagent/internal/glob"
-
 // workTrace counts the work the board does, so that tests can assert how
 // much a call visits rather than how long it takes: counts hold on a busy
 // machine, and they show work that grows with the board long before it is
@@ -23,18 +21,19 @@ type workTrace struct {
 // it ends: the parallel tests run the board once the others are done.
 var trace *workTrace
 
-// match is glob.Match, counted.
-func match(pattern, name string) bool {
+// match is glob.Match, counted and charged to the work the call holding
+// the board's lock may do.
+func (b *Board) match(pattern, name string) bool {
 	if trace != nil {
 		trace.globMatch++
 	}
-	return glob.Match(pattern, name)
+	return b.work.Match(pattern, name)
 }
 
-// overlap is glob.Overlap, counted.
-func overlap(a, b string) bool {
+// overlap is glob.Overlap, counted and charged as match is.
+func (b *Board) overlap(x, y string) bool {
 	if trace != nil {
 		trace.globOverlap++
 	}
-	return glob.Overlap(a, b)
+	return b.work.Overlap(x, y)
 }

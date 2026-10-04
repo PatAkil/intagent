@@ -252,7 +252,7 @@ func TestAreaIndexMatchesTheFootprintWalk(t *testing.T) {
 			}
 		}
 		for _, a := range areas {
-			got, ok := workedInArea(c, a)
+			got, ok := b.workedInArea(c, a)
 			want, found := walk[a]
 			for _, in := range c.Intents {
 				if dir := glob.LiteralDir(in.Pattern); dir == a || strings.HasPrefix(a, dir+"/") || strings.HasPrefix(dir, a+"/") {

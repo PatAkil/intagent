@@ -23,6 +23,19 @@ var ErrInvalid = errors.New("invalid path or pattern")
 // MaxLen bounds a path or pattern, in bytes.
 const MaxLen = 1024
 
+// Bounds on the shape of paths and patterns, which keep the work of matching
+// one against the other small: the board matches its teammates' patterns
+// against every path an agent edits, under its lock. Real paths are far
+// within them; the deepest seen are about 23 directories deep, and no file
+// system allows a longer name than 255 bytes.
+const (
+	MaxPathSegments    = 64  // segments of a path
+	MaxPatternSegments = 32  // segments of a pattern
+	MaxDoubleStars     = 4   // ** segments of a pattern
+	MaxSegmentLen      = 255 // bytes of a segment
+	MaxWildSegmentLen  = 64  // bytes of a pattern segment with wildcards
+)
+
 // CleanPath normalises a repo-relative file path: forward slashes, no leading
 // "./", no redundant separators. It rejects empty, absolute, escaping and
 // overlong paths, and paths with control or invisible formatting characters
@@ -51,12 +64,24 @@ func CleanPath(p string) (string, error) {
 	if c == "." || c == ".." || strings.HasPrefix(c, "../") {
 		return "", fmt.Errorf("%w: %q leaves the repository", ErrInvalid, p)
 	}
+	if n := strings.Count(c, "/") + 1; n > MaxPathSegments {
+		return "", fmt.Errorf("%w: %.40q… has %d segments, more than %d", ErrInvalid, c, n, MaxPathSegments)
+	}
+	for rest := c; rest != ""; {
+		var seg string
+		seg, rest, _ = strings.Cut(rest, "/")
+		if len(seg) > MaxSegmentLen {
+			return "", fmt.Errorf("%w: %.40q… has a segment longer than %d bytes", ErrInvalid, c, MaxSegmentLen)
+		}
+	}
 	return c, nil
 }
 
 // CleanPattern normalises a pattern the way CleanPath does and checks its
-// syntax. A trailing slash is dropped, since every pattern covers the
-// directories it matches.
+// syntax and shape: at most MaxPatternSegments segments, MaxDoubleStars of
+// them **, and segments with wildcards of at most MaxWildSegmentLen bytes. A
+// trailing slash is dropped, since every pattern covers the directories it
+// matches.
 func CleanPattern(p string) (string, error) {
 	p = strings.TrimSpace(p)
 	dir := strings.HasSuffix(p, "/")
@@ -72,8 +97,13 @@ func CleanPattern(p string) (string, error) {
 	// "**/**" means "**"; keeping one makes matching cheaper.
 	segs = slices.CompactFunc(segs, func(a, b string) bool { return a == "**" && b == "**" })
 	c = strings.Join(segs, "/")
+	if len(segs) > MaxPatternSegments {
+		return "", fmt.Errorf("%w: %.40q… has %d segments, more than %d", ErrInvalid, c, len(segs), MaxPatternSegments)
+	}
+	stars := 0
 	for _, seg := range segs {
 		if seg == "**" {
+			stars++
 			continue
 		}
 		if strings.Contains(seg, "**") {
@@ -82,6 +112,12 @@ func CleanPattern(p string) (string, error) {
 		if _, err := path.Match(seg, ""); err != nil {
 			return "", fmt.Errorf("%w: %q: %w", ErrInvalid, p, err)
 		}
+		if hasMeta(seg) && len(seg) > MaxWildSegmentLen {
+			return "", fmt.Errorf("%w: %.40q…: a segment with wildcards is longer than %d bytes", ErrInvalid, c, MaxWildSegmentLen)
+		}
+	}
+	if stars > MaxDoubleStars {
+		return "", fmt.Errorf("%w: %.40q… has %d ** segments, more than %d", ErrInvalid, c, stars, MaxDoubleStars)
 	}
 	return c, nil
 }
@@ -97,14 +133,17 @@ func hasDrive(p string) bool {
 // allocates nothing: a literal pattern, or one of the form dir/**, is a
 // prefix comparison, and any other pattern is matched segment by segment in
 // place.
-func Match(pattern, name string) bool {
+func Match(pattern, name string) bool { return match(pattern, name, nil) }
+
+// match is Match, charged to w when w is not nil.
+func match(pattern, name string, w *Work) bool {
 	if !hasMeta(pattern) {
-		return covers(pattern, name)
+		return w.spend(1) && covers(pattern, name)
 	}
 	if dir, ok := strings.CutSuffix(pattern, "/**"); ok && !hasMeta(dir) {
-		return covers(dir, name)
+		return w.spend(1) && covers(dir, name)
 	}
-	return matchSegments(pattern, name)
+	return matchSegments(pattern, name, w)
 }
 
 // covers reports whether dir, a pattern without wildcards, is name or a
@@ -121,7 +160,7 @@ func covers(dir, name string) bool {
 // segment of name, so taking the first place where the segments between two
 // ** match leaves the most of name for the rest. Positions are byte offsets
 // to the start of a segment, past the end once a string is used up.
-func matchSegments(pattern, name string) bool {
+func matchSegments(pattern, name string, w *Work) bool {
 	pi, ni := 0, 0
 	starP, starN := -1, -1 // the pattern after the latest **, and the next segment of name it would take
 	for {
@@ -136,7 +175,11 @@ func matchSegments(pattern, name string) bool {
 			continue
 		}
 		if ni <= len(name) {
-			if ne := segmentEnd(name, ni); segmentMatch(seg, name[ni:ne]) {
+			ne := segmentEnd(name, ni)
+			if w != nil && !w.spend(segmentCost(seg, name[ni:ne], hasMeta(seg))) {
+				return false
+			}
+			if segmentMatch(seg, name[ni:ne]) {
 				pi, ni = pe+1, ne+1
 				continue
 			}
@@ -217,14 +260,17 @@ func starMatch(pattern, name string) bool {
 // overlap too, since a name without wildcards may be a directory
 // (src/Acme.Payments, conf.d). This makes **/*.proto overlap
 // docs/readme.md, an extra warning taken over a missed clash.
-func Overlap(a, b string) bool {
+func Overlap(a, b string) bool { return overlap(a, b, nil) }
+
+// overlap is Overlap, charged to w when w is not nil.
+func overlap(a, b string, w *Work) bool {
 	for {
 		as, ar, aMore := strings.Cut(a, "/")
 		bs, br, bMore := strings.Cut(b, "/")
 		if as == "**" || bs == "**" {
 			return true
 		}
-		if !segmentsOverlap(as, bs) {
+		if w != nil && !w.spend(segmentCost(as, bs, hasMeta(as) || hasMeta(bs))) || !segmentsOverlap(as, bs) {
 			return false
 		}
 		if !aMore || !bMore {
@@ -281,4 +327,57 @@ func LiteralDir(pattern string) string {
 	}
 	// The segment with the first wildcard starts after the slash before it.
 	return pattern[:max(0, strings.LastIndexByte(pattern[:i], '/'))]
+}
+
+// Work bounds the matching a caller may do, so that how long a match takes
+// does not depend on how hostile a pattern is. It is counted in units the
+// same way on every run: a comparison of two segments costs one, and one
+// with wildcards len(p)·len(s)/32 more, about in proportion to its time.
+// Once a comparison would cost more than is left, Match and Overlap answer
+// false without making it, and Short reports that they did.
+//
+// The zero Work is unbounded.
+type Work struct {
+	bounded bool
+	left    int
+	short   bool
+}
+
+// NewWork returns a budget of units.
+func NewWork(units int) Work { return Work{bounded: true, left: units} }
+
+// Short reports whether the budget ran out: an answer since was false for
+// want of work, not because nothing matched.
+func (w *Work) Short() bool { return w.short }
+
+// Left reports the units left.
+func (w *Work) Left() int { return w.left }
+
+// Match is Match, charged to w.
+func (w *Work) Match(pattern, name string) bool { return match(pattern, name, w) }
+
+// Overlap is Overlap, charged to w.
+func (w *Work) Overlap(a, b string) bool { return overlap(a, b, w) }
+
+// spend takes units from w, unless w is nil or unbounded, and reports
+// whether there were enough.
+func (w *Work) spend(units int) bool {
+	if w == nil || !w.bounded {
+		return true
+	}
+	if units > w.left {
+		w.left, w.short = 0, true
+		return false
+	}
+	w.left -= units
+	return true
+}
+
+// segmentCost is what comparing two segments costs, one of them with
+// wildcards or not.
+func segmentCost(a, b string, wild bool) int {
+	if !wild {
+		return 1
+	}
+	return 1 + len(a)*len(b)/32
 }

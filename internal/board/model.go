@@ -365,6 +365,11 @@ type HookResult struct {
 	// in Context, or held for the session's next answer: the edit needs no
 	// other telling.
 	CheckedAfter bool `json:"checked_after,omitempty"`
+	// Partial says the board stopped comparing the edit's paths with
+	// teammates' patterns before it had compared them all, as one call may
+	// match only so much; Context says so. What it did not compare, it let
+	// through.
+	Partial bool `json:"partial,omitempty"`
 }
 
 // Conflict is one other claim that matters to a path.

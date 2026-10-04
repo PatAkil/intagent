@@ -174,7 +174,7 @@ func New(o Options) (*Server, error) {
 			s.notifier.enqueue(acts)
 		}
 	}
-	s.board = board.New(o.Board, board.WithNotify(publish))
+	s.board = board.New(o.Board, board.WithNotify(publish), board.WithLogger(s.log))
 	if err := s.load(); err != nil {
 		return nil, err
 	}

@@ -112,7 +112,10 @@ runs on another machine.
 | `--log-level` | `info` | `debug`, `info`, `warn` or `error`. |
 
 A client has 15 seconds to send a request and 16 KB for its headers, and an answer that makes no progress for 15
-seconds is cut off. A dashboard over its stream cap is answered 429 and tries again later. These are not settings.
+seconds is cut off. A dashboard over its stream cap is answered 429 and tries again later. A path has at most 64
+segments of 255 bytes, and an intent's pattern at most 32 segments, 4 of them `**`, with wildcard segments of at most
+64 bytes. A check or edit may compare its paths with teammates' patterns only so much; one that would take longer is
+let through on what it did not compare, its agent is told, and the dashboard counts it. These are not settings.
 
 **Each repository, once** (one person; then commit the files it writes):
 

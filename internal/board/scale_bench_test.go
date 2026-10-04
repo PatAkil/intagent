@@ -5,6 +5,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/patakil/intagent/internal/glob"
 )
 
 // Benchmarks at the scale intagent is meant for, on boards from the scale
@@ -278,4 +280,63 @@ func BenchmarkScaleViewLock(b *testing.B) {
 			})
 		}
 	}
+}
+
+// One member's 4 worktrees of 50 patterns each at glob.CleanPattern's
+// bounds, and what they cost others with the bound on matching one call may
+// do and without it: a check of 200 paths 63 segments deep against chains of
+// ** and *, and against a ** and 30 literal segments, and a declaration of 50
+// patterns against patterns of 64-byte wildcard segments.
+func BenchmarkScaleCostlyPatterns(b *testing.B) {
+	hostile := func(b *testing.B, patterns func(int) []string) *Board {
+		bd := New(DefaultConfig())
+		for k := range 4 {
+			w := Where{Repo: repo, Host: "h", Worktree: fmt.Sprintf("/work/eve%d", k)}
+			if _, err := bd.Declare(t0, DeclareRequest{Member: "eve", Where: w, Patterns: patterns(k)}); err != nil {
+				b.Fatal(err)
+			}
+		}
+		return bd
+	}
+	bob := Where{Repo: repo, Host: "h", Worktree: "/work/bob"}
+	for _, tc := range []struct {
+		name     string
+		patterns func(int) []string
+		dir      string
+	}{{"chains", chainPatterns, "d"}, {"ladders", ladderPatterns, "a"}} {
+		bd := hostile(b, tc.patterns)
+		paths := refs(deepPaths(maxCheckPaths, tc.dir)...)
+		b.Run("check/"+tc.name+"/bounded", func(b *testing.B) {
+			for range b.N {
+				if _, err := bd.Check(t0, CheckRequest{Member: "bob", Where: bob, Paths: paths}); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+		b.Run("check/"+tc.name+"/unbounded", func(b *testing.B) {
+			for range b.N {
+				unboundedWork(bd, "bob", paths)
+			}
+		})
+	}
+	wide := hostile(b, widePatterns)
+	declare := DeclareRequest{Member: "bob", Where: bob, Patterns: widePatterns(9)}
+	b.Run("declare/bounded", func(b *testing.B) {
+		for range b.N {
+			if _, err := wide.Declare(t0, declare); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("declare/unbounded", func(b *testing.B) {
+		c := wide.findClaim("bob", bob)
+		for range b.N {
+			wide.mu.Lock()
+			wide.work = glob.NewWork(1 << 50)
+			for _, p := range declare.Patterns {
+				wide.intentOverlaps(c, Intent{Pattern: p}, wide.liveAt(t0))
+			}
+			wide.mu.Unlock()
+		}
+	})
 }

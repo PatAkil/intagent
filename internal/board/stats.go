@@ -25,6 +25,11 @@ type Stats struct {
 	// Unheard counts edits the board did not check because their agent had
 	// stopped waiting for the answer, and gone ahead, before it got to them.
 	Unheard int `json:"unheard,omitempty"`
+	// Partial counts hooks, declarations and notes the board stopped
+	// comparing with teammates' patterns before it had compared them all, as
+	// one call may match only so much: what they did not compare went
+	// through unchecked.
+	Partial int `json:"partial,omitempty"`
 }
 
 func (b *Board) statsOf(repo string, now time.Time) *Stats {

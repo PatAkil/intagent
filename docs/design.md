@@ -258,6 +258,18 @@ while degraded), in its log and, if asked, by webhook.
   context. Paths and patterns, which are shown unquoted, are rejected if they hold control, formatting or line
   separator characters or exceed 1024 bytes; branch, agent, tool and repository names are reduced to one token with
   no spaces, quotes or angle brackets.
+- Matching a teammate's pattern against a path is bounded in two ways, since one member's patterns are matched under
+  the board's lock against every path every agent edits. Paths have at most 64 segments of at most 255 bytes, and
+  patterns at most 32 segments, 4 of them `**`, with wildcard segments of at most 64 bytes; a snapshot's intents
+  outside these bounds are dropped when it is restored, with a log line. And each call that holds the lock may match
+  only so much, counted the same way on every run (a unit for each comparison of two segments, and for one with
+  wildcards `len(p)·len(s)/32` more, 2 million in all): an edit of 200 files on a busy repository uses about a
+  seventh of that, and a worktree arriving with 2000 changed files about half. Past it, the call stops matching and
+  lets through what it did not compare: the edit's agent is told intagent could not check all of its teammates' work,
+  a check or a declaration says so in its answer (`partial`), and the repository's stats count it (`partial`).
+  The costliest patterns at the bounds then hold the lock for under a tenth of a second per call: 50 to 85 ms for a
+  check of 200 paths against 200 of them, which without the bound took 0.4 to 1.5 s (and, before the bounds on shape,
+  about a minute).
 - Webhook messages escape `&`, `<` and `>`, which Slack reads as mentions and links.
 - Notes are rate-limited per member.
 - Request bodies are capped at 1 MB. Paths are validated. A body over 16 KB (a footprint, in practice) is charged to
