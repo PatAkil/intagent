@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 
@@ -211,4 +212,123 @@ func TestRestoreDropsPatternsNoLongerAccepted(t *testing.T) {
 		t.Fatalf("logged %d dropped intents, want 1:\n%s", n, log.String())
 	}
 	mustIndex(t, b, "restoring")
+}
+
+// changesOf is a footprint of n files under dir, then the extra ones.
+func changesOf(n int, dir string, extra ...string) *Footprint {
+	files := make([]string, 0, n+len(extra))
+	for i := range n {
+		files = append(files, fmt.Sprintf("%s/pkg%02d/internal/util/file%04d.go", dir, i%40, i))
+	}
+	return &Footprint{Files: refs(append(files, extra...)...)}
+}
+
+// A worktree arriving with many changes, on a repository where teammates
+// declared patterns rooted nowhere, costs more matching than one call may
+// do. Its changes are compared with reservations first, so the one inside
+// alice's is reported whatever the alerts to teammates cost; and the session
+// is told that the call stopped short: at once, or after a stop, whose
+// answer has no context, in its next answer, once.
+func TestBreachesAreFoundBeforeAlertsRunShort(t *testing.T) {
+	h := newHarness(t)
+	h.hook(KindPrompt, "alice", "a1")
+	h.declare("alice", ModeExclusive, "Retry rework", "svc/pay/**")
+	for i := range 60 {
+		m := fmt.Sprintf("m%02d", i)
+		h.hook(KindPrompt, m, m+"s")
+		h.declare(m, ModeShared, "generated code", "**/*_mock.go", "**/*.pb.go", "**/testdata/*.golden")
+	}
+	bob := func(kind Kind, fp *Footprint) HookResult {
+		t.Helper()
+		res, err := h.b.Hook(h.now, HookEvent{Kind: kind, Member: "bob", Agent: AgentCodex, SessionID: "b1", Where: whereOf("bob"),
+			Tool: "Bash", Footprint: fp})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+	bob(KindPrompt, nil)
+	reconcile := func(kind Kind, fp *Footprint) HookResult {
+		t.Helper()
+		res := bob(kind, fp)
+		if !res.Partial {
+			t.Fatalf("a %s with %d new files did not stop short", kind, len(fp.Files))
+		}
+		return res
+	}
+	res := reconcile(KindToolEnd, changesOf(1999, "lib", "svc/pay/retry.go"))
+	acts := h.activities(ActivityConflict)
+	if len(acts) != 1 || !acts[0].Breach || !slices.Equal(acts[0].Paths, []string{"svc/pay/retry.go"}) {
+		t.Fatalf("the change inside alice's reservation was not reported: %+v", acts)
+	}
+	mustContain(t, res.Context, "svc/pay/retry.go, which alice's agent holds exclusively", shortChangesNote)
+
+	// Two stops that run short, then a prompt: told once.
+	if res := reconcile(KindStop, changesOf(2000, "lib2")); res.Context != "" {
+		t.Fatalf("a stop answered %q", res.Context)
+	}
+	reconcile(KindStop, changesOf(2000, "lib3"))
+	next := bob(KindPrompt, nil)
+	if n := strings.Count(next.Context, shortChangesNote); n != 1 {
+		t.Fatalf("after two stops that ran short, the next answer says so %d times:\n%s", n, next.Context)
+	}
+	if st := h.b.View(h.now, repo).Stats; st.Partial != 3 {
+		t.Fatalf("stats count %d calls stopped short, want 3", st.Partial)
+	}
+}
+
+// A worktree arriving with 2000 changed files, on a repository of 300
+// claims with 4 intents each, is compared in full and well inside the bound:
+// each intent is matched against the files under the directory it is rooted
+// in, not against every file. Every teammate whose intent covers a file is
+// alerted, and the change inside a reservation is reported.
+func TestArrivalOnABusyRepositoryIsComparedInFull(t *testing.T) {
+	h := newHarness(t)
+	h.hook(KindPrompt, "alice", "a1")
+	h.declare("alice", ModeExclusive, "Retry rework", "svc/pay/**")
+	for i := range 300 {
+		m := fmt.Sprintf("m%03d", i)
+		h.hook(KindPrompt, m, m+"s")
+		h.declare(m, ModeShared, "work", fmt.Sprintf("svc/a%03d/**", i), fmt.Sprintf("svc/b%03d/**", i), fmt.Sprintf("lib/c%03d/**", i),
+			fmt.Sprintf("docs/d%03d.md", i))
+	}
+	h.hook(KindPrompt, "bob", "b1")
+	files := []string{"svc/pay/retry.go"}
+	for i := range 30 {
+		files = append(files, fmt.Sprintf("lib/c%03d/x.go", 10*i))
+	}
+	for i := len(files); i < 2000; i++ {
+		files = append(files, fmt.Sprintf("web/pkg%02d/file%04d.ts", i%40, i))
+	}
+	res, err := h.b.Hook(h.now, HookEvent{Kind: KindToolEnd, Member: "bob", Agent: AgentCodex, SessionID: "b1", Where: whereOf("bob"),
+		Tool: "Bash", Footprint: &Footprint{Files: refs(files...)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	used := maxGlobWork - h.b.work.Left()
+	t.Logf("an arrival of %d files on 300 claims of 4 intents matched %d units", len(files), used)
+	if res.Partial || used > 4*len(files) {
+		t.Fatalf("the arrival matched %d units (partial %t), more than 4 for each of its %d files", used, res.Partial, len(files))
+	}
+	if acts := h.activities(ActivityConflict); len(acts) != 1 || !acts[0].Breach {
+		t.Fatalf("the change inside alice's reservation was not reported: %+v", acts)
+	}
+	bob := h.b.findClaim("bob", whereOf("bob"))
+	for i := range 300 {
+		m := fmt.Sprintf("m%03d", i)
+		var alerts []string
+		for _, it := range h.b.findClaim(m, whereOf(m)).Inbox {
+			if it.Kind == "overlap" && it.FromClaim == bob.ID {
+				alerts = append(alerts, it.Paths...)
+			}
+		}
+		if want := []string(nil); i%10 == 0 {
+			want = []string{fmt.Sprintf("lib/c%03d/x.go", i)}
+			if !slices.Equal(alerts, want) {
+				t.Fatalf("%s was alerted of %q, want %q", m, alerts, want)
+			}
+		} else if len(alerts) > 0 {
+			t.Fatalf("%s was alerted of %q, which it did not declare", m, alerts)
+		}
+	}
 }

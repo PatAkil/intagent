@@ -420,6 +420,103 @@ func TestReportUncheckedMatchesTheOracleWithTies(t *testing.T) {
 	testReportUncheckedMatchesTheOracle(t, true)
 }
 
+// oldAlertOthers is alertOthers as it was: every new file compared with
+// every intent of every other claim in the repository.
+func (b *Board) oldAlertOthers(now time.Time, c *claim, paths []PathRef) {
+	for _, o := range b.oldClaimsInRepo(c.Repo) {
+		if o.ID == c.ID {
+			continue
+		}
+		var hit []string
+		for _, p := range paths {
+			if _, ok := o.Footprint[p.Path]; !ok && !slices.ContainsFunc(o.Intents, func(in Intent) bool { return glob.Match(in.Pattern, p.Path) }) {
+				continue
+			}
+			k := "touch|" + c.ID + "|" + p.Path
+			if o.Alerted[k] {
+				continue
+			}
+			if o.Alerted == nil {
+				o.Alerted = map[string]bool{}
+			}
+			o.Alerted[k] = true
+			hit = append(hit, p.Path)
+		}
+		if len(hit) == 0 {
+			continue
+		}
+		b.statsOf(c.Repo, now).Alerts++
+		b.enqueue(now, o, InboxItem{Kind: "overlap", FromClaim: c.ID, From: c.Member, Paths: hit,
+			Text: fmt.Sprintf("%s also changed %s%s.", who(c), listPaths(hit, 5), onBranch(c))})
+	}
+}
+
+// edgeFiles are names beside the ones randomBoard's patterns are rooted in:
+// a file named like a directory, and directories that only begin like one.
+var edgeFiles = []string{"svc1", "svc1.go", "svc1-old/pkg1/f1.go", "svc10/pkg1/f1.go", "svc1/pkg1.go", "svc1/pkg10/f1.go", "svc2/pkg0"}
+
+// Alerts on random boards, old and new side by side, twice over so that the
+// second meets the first's marks: each intent is now matched against the
+// files under its directory alone, and must alert the same claims of the
+// same files.
+func TestAlertOthersMatchesTheOracle(t *testing.T) {
+	t.Parallel()
+	rng := rand.New(rand.NewSource(3))
+	alerts := 0
+	for round := range 1500 {
+		oldB, now := randomBoard(t, rng, DefaultConfig(), false)
+		newB := twin(oldB)
+		ids := slices.Sorted(maps.Keys(oldB.claims))
+		if len(ids) == 0 {
+			continue
+		}
+		for range 2 {
+			c := oldB.claims[ids[rng.Intn(len(ids))]]
+			seen := map[string]bool{}
+			var added []PathRef
+			for range 1 + rng.Intn(12) {
+				p := randomFile(rng)
+				if rng.Intn(4) == 0 {
+					p = PathRef{Path: edgeFiles[rng.Intn(len(edgeFiles))]}
+				}
+				if !seen[p.Path] {
+					seen[p.Path] = true
+					added = append(added, p)
+				}
+			}
+			oldB.oldAlertOthers(now, oldB.claims[c.ID], added)
+			newB.alertOthers(now, newB.claims[c.ID], added)
+			for _, id := range ids {
+				oc, nc := oldB.claims[id], newB.claims[id]
+				if !reflect.DeepEqual(oc.Alerted, nc.Alerted) {
+					t.Fatalf("round %d: alerted of %s differs:\nold: %v\nnew: %v", round, id, oc.Alerted, nc.Alerted)
+				}
+				if a, b := inboxOf(oc), inboxOf(nc); a != b {
+					t.Fatalf("round %d: inbox of %s differs:\nold: %s\nnew: %s", round, id, a, b)
+				}
+			}
+			if a, b := oldB.statsOf(repo, now).Alerts, newB.statsOf(repo, now).Alerts; a != b {
+				t.Fatalf("round %d: %d alerts counted by the old, %d by the new", round, a, b)
+			}
+		}
+		alerts += newB.statsOf(repo, now).Alerts
+	}
+	t.Logf("%d alerts", alerts)
+	if alerts < 1000 {
+		t.Fatalf("only %d alerts: the boards do not exercise them", alerts)
+	}
+}
+
+// inboxOf is a claim's inbox without the IDs, which each board draws at
+// random; an empty one is empty however it was copied.
+func inboxOf(c *claim) string {
+	items := append([]InboxItem{}, c.Inbox...)
+	for i := range items {
+		items[i].ID = ""
+	}
+	return jsonOf(items)
+}
+
 // oldRenderStart is renderStart as it was: it sorted every claim in the
 // repository with a comparator that rebuilt two claims' area sets, and
 // sorted each shown claim's whole footprint for its four newest files. Its

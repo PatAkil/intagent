@@ -18,8 +18,13 @@ const (
 	toolsHint    = "Before a change that spans several files, call the intagent declare_intent tool with the paths and a one-line summary. Use check_paths to see who else is working on a file, and send_note to tell another agent's owner something."
 	maxBoardRows = 8
 	// partialNote tells a caller the board stopped matching for want of work.
-	partialNote = "intagent could not check all of your teammates' work: comparing their declared patterns took more " +
-		"than one check may, so it let through what it had not compared."
+	partialNote = "intagent stopped before it had compared everything with teammates' work, because their declared " +
+		"patterns took too long to compare."
+	// shortChangesNote tells a session that the board stopped comparing the
+	// changes its worktree reported with teammates' work.
+	shortChangesNote = prefix + " " + partialNote + " It may not have told teammates of every file changed in this " +
+		"worktree, or told you of every change here inside a teammate's reservation. Tell your user if this work may " +
+		"touch a teammate's."
 )
 
 // actionWords say what a policy action does to a teammate's edit.

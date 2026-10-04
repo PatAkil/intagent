@@ -365,10 +365,11 @@ type HookResult struct {
 	// in Context, or held for the session's next answer: the edit needs no
 	// other telling.
 	CheckedAfter bool `json:"checked_after,omitempty"`
-	// Partial says the board stopped comparing the edit's paths with
-	// teammates' patterns before it had compared them all, as one call may
-	// match only so much; Context says so. What it did not compare, it let
-	// through.
+	// Partial says the board stopped comparing the edit's paths, or the
+	// changes the event reported, with teammates' work before it had compared
+	// them all, as one call may match only so much. What it did not compare,
+	// it let through; Context says so, or for an event whose answer has no
+	// context, the session's next answer.
 	Partial bool `json:"partial,omitempty"`
 }
 

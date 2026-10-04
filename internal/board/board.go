@@ -241,10 +241,10 @@ func (b *Board) Version() uint64 {
 // maxGlobWork bounds the matching of paths and patterns one call may do
 // under the board's lock, in glob.Work's units. On the target board an edit
 // of 200 files uses about a seventh of it, and a worktree arriving with 2000
-// changed files about half; the costliest patterns glob.CleanPattern accepts
-// use it up in 50 to 85 ms. A teammate's pattern is matched against every
-// path an agent edits or checks; past the bound, the call stops matching,
-// lets through what it did not check, and says so (partialNote).
+// changed files or a declaration of 50 patterns about a fortieth; the
+// costliest patterns glob.CleanPattern accepts use it up in 50 to 85 ms.
+// Past the bound, the call stops matching, lets through what it did not
+// compare, and says so (partialNote).
 const maxGlobWork = 2_000_000
 
 // lock takes the board's lock for a call that may match paths and patterns,
@@ -520,8 +520,8 @@ func (b *Board) Hook(now time.Time, ev HookEvent) (HookResult, error) {
 				"or tell your user.", named, min(len(ev.Paths), maxCheckPaths), maxCheckPaths))
 		}
 		if b.work.Short() {
-			res.Partial = true
-			res.Context = joinBlocks(res.Context, prefix+" "+partialNote+" Tell your user if this edit may touch a teammate's work.")
+			res.Context = joinBlocks(res.Context, prefix+" "+partialNote+" It let this edit through on what it had not "+
+				"compared: tell your user if the edit may touch a teammate's work.")
 		}
 		if res.Decision == DecisionRefuse || (res.Decision == DecisionAsk && ev.NoAsk) {
 			// The edit does not run, so no tool end will follow it. (An ask that
@@ -558,6 +558,7 @@ func (b *Board) Hook(now time.Time, ev HookEvent) (HookResult, error) {
 		return allow, fmt.Errorf("%w: unknown event kind %q", ErrInvalid, ev.Kind)
 	}
 
+	res.Partial = b.work.Short()
 	s.LastSeen = now
 	c.UpdatedAt = now
 	if is := b.state(now, s); is != was && (was == StateStalled || was == StateGone) {
@@ -738,8 +739,22 @@ func (b *Board) reconcile(now time.Time, c *claim, s *session, fp *Footprint) {
 			Text: fmt.Sprintf("%d changed files (+%d, -%d)", len(next), len(added), removed)})
 	}
 	if len(added) > 0 {
-		b.alertOthers(now, c, added)
+		// Breaches first: they are what this session must hear, and the
+		// alerts to teammates, which compare the files with every claim in
+		// the repository, must not use up the matching the call may do
+		// before they are found.
 		b.reportUnchecked(now, c, s, added)
+		b.alertOthers(now, c, added)
+		b.tellShort(s)
+	}
+}
+
+// tellShort tells s, with what it hears next, that the call stopped
+// comparing its worktree's changes with teammates' work before it had
+// compared them all; once, however many calls run short before it hears.
+func (b *Board) tellShort(s *session) {
+	if b.work.Short() && !strings.Contains(s.Pending, shortChangesNote) {
+		s.Pending = joinBlocks(s.Pending, shortChangesNote)
 	}
 }
 
@@ -790,18 +805,42 @@ func (b *Board) touch(now time.Time, c *claim, s *session, paths []PathRef) {
 	b.record(Activity{At: now, Kind: ActivityFileChanged, Repo: c.Repo, Member: c.Member, ClaimID: c.ID, Session: s.ID, Agent: s.Agent, Paths: pathsOf(paths)})
 	if len(fresh) > 0 {
 		b.alertOthers(now, c, fresh)
+		b.tellShort(s)
 	}
 }
 
 // alertOthers tells every other claim that changed or claimed the same files.
 func (b *Board) alertOthers(now time.Time, c *claim, paths []PathRef) {
+	byName := orderByName(paths)
+	covered := make([]bool, len(paths)) // by the claim being compared
+	var at map[string]int               // where each path first is in paths, once needed
 	for o := range b.claimsIn(c.Repo) {
 		if o.ID == c.ID {
 			continue
 		}
+		// The claim's changes, from whichever of the two lists is shorter.
+		clear(covered)
+		if len(o.sortedPaths) < len(paths) {
+			if at == nil {
+				at = make(map[string]int, len(paths))
+				for i, p := range slices.Backward(paths) {
+					at[p.Path] = i
+				}
+			}
+			for _, f := range o.sortedPaths {
+				if i, ok := at[f]; ok {
+					covered[i] = true
+				}
+			}
+		} else {
+			for i, p := range paths {
+				_, covered[i] = o.Footprint[p.Path]
+			}
+		}
+		b.coverByIntents(o, paths, byName, covered)
 		var hit []string
-		for _, p := range paths {
-			if _, ok := o.Footprint[p.Path]; !ok && !b.coveredByIntent(o, p.Path) {
+		for i, p := range paths {
+			if !covered[i] {
 				continue
 			}
 			k := "touch|" + c.ID + "|" + p.Path
@@ -825,6 +864,56 @@ func (b *Board) alertOthers(now time.Time, c *claim, paths []PathRef) {
 			Paths:     hit,
 			Text:      fmt.Sprintf("%s also changed %s%s.", who(c), listPaths(hit, 5), onBranch(c)),
 		})
+	}
+}
+
+// orderByName returns the positions of paths in the order of their names.
+func orderByName(paths []PathRef) []int {
+	order := make([]int, len(paths))
+	for i := range order {
+		order[i] = i
+	}
+	slices.SortFunc(order, func(x, y int) int { return strings.Compare(paths[x].Path, paths[y].Path) })
+	return order
+}
+
+// namesUnder returns the run of byName, positions in paths in the order of
+// their names, from dir up to dir+"0": dir, the names below it, as '0'
+// follows '/', and the few that go on from dir with a byte before '0', such
+// as dir.go.
+func namesUnder(byName []int, paths []PathRef, dir string) []int {
+	lo, _ := slices.BinarySearchFunc(byName, dir, func(i int, dir string) int { return strings.Compare(paths[i].Path, dir) })
+	// From lo on, every name is dir or after it, so those before dir+"0"
+	// are the ones that start with it and go on, if at all, below '0'.
+	n, _ := slices.BinarySearchFunc(byName[lo:], dir, func(i int, dir string) int {
+		if name := paths[i].Path; strings.HasPrefix(name, dir) && (len(name) == len(dir) || name[len(dir)] < '0') {
+			return -1
+		}
+		return 1
+	})
+	return byName[lo : lo+n]
+}
+
+// coverByIntents marks, in covered, the paths o's intents cover, given the
+// paths' order by name (orderByName). A pattern rooted in a directory can
+// cover only that directory and the names below it, which are together in
+// that order (namesUnder), so it is matched against those alone: on a busy
+// repository, against few or none of the paths a worktree arrives with. A
+// pattern rooted nowhere, such as **/*.go, is matched against them all.
+func (b *Board) coverByIntents(o *claim, paths []PathRef, byName []int, covered []bool) {
+	for _, in := range o.Intents {
+		some := byName
+		if dir := glob.LiteralDir(in.Pattern); dir != "" {
+			some = namesUnder(byName, paths, dir)
+		}
+		for _, i := range some {
+			if b.work.Short() {
+				return
+			}
+			if !covered[i] && b.match(in.Pattern, paths[i].Path) {
+				covered[i] = true
+			}
+		}
 	}
 }
 
@@ -1718,7 +1807,7 @@ func (b *Board) Check(now time.Time, r CheckRequest) (CheckResult, error) {
 			"checks, %d at a time.", maxCheckPaths, len(r.Paths), res.Unchecked, maxCheckPaths)
 	}
 	if partial {
-		res.Text += "\n" + partialNote
+		res.Text += "\n" + partialNote + " What it had not compared is not listed."
 	}
 	return res, nil
 }
