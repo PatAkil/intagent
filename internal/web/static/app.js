@@ -51,11 +51,11 @@
     debounce: 0,
     inflight: false,
     again: false,
-    lastFetchAt: 0, // when the latest board reload started
+    lastFetchAt: 0, // when the latest board reload started, by tick()
     lastFetchMs: 0, // and how long it took
     etag: '', // the validator of the board in S.view
     feedTimer: 0,
-    feedAt: 0, // when the feed was last drawn
+    feedAt: 0, // when the feed was last drawn, by tick()
     skew: 0,
     epoch: '', // the server process the board came from
     boardError: '',
@@ -175,6 +175,13 @@
   }
 
   const serverNow = () => Date.now() + S.skew;
+
+  // tick is the clock that paces reloads and redraws. It only moves forward:
+  // the wall clock can step either way (a time sync, a clock set by hand),
+  // and a wait measured on it could then last an hour.
+  const tick = typeof performance === 'object' && performance && typeof performance.now === 'function'
+    ? () => performance.now()
+    : () => Date.now();
 
   function span(ms) {
     if (!(ms >= 0)) ms = 0;
@@ -558,11 +565,14 @@
   // second apart and up to half a second more, so tabs on one board drift
   // apart, and twice as far apart as the last one took, drawing included, so
   // neither a slow server nor a slow laptop is asked to go faster than it can.
-  // The feed itself is live.
+  // They are never further apart than the poll's 15 s, though: a reload that
+  // only seemed long, because the laptop slept through it, must not hold the
+  // board still for as long, and the poll reloads within its period. The feed
+  // itself is live.
   function scheduleRefresh() {
     if (S.debounce) return;
-    const gap = Math.max(RELOAD_GAP_MS + Math.random() * RELOAD_JITTER_MS, 2 * S.lastFetchMs);
-    const wait = Math.max(DEBOUNCE_MS, S.lastFetchAt + gap - Date.now());
+    const gap = Math.min(REFRESH_MS, Math.max(RELOAD_GAP_MS + Math.random() * RELOAD_JITTER_MS, 2 * S.lastFetchMs));
+    const wait = Math.min(gap, Math.max(DEBOUNCE_MS, S.lastFetchAt + gap - tick()));
     S.debounce = setTimeout(() => { S.debounce = 0; refreshBoard(); }, wait);
   }
 
@@ -638,7 +648,7 @@
     // Every event seen so far happened before this request, so the board it
     // gets back counts at least this far.
     const seenSeq = S.feed.size ? Math.max(...S.feed.keys()) : 0;
-    const started = Date.now();
+    const started = tick();
     S.lastFetchAt = started;
     try {
       const got = await getBoard(repo, S.view ? S.etag : '');
@@ -674,7 +684,7 @@
       if (e instanceof AuthError) { toLogin(); return; }
       lostContact(e);
     } finally {
-      S.lastFetchMs = Date.now() - started;
+      S.lastFetchMs = tick() - started;
       S.inflight = false;
       if (S.again) { S.again = false; scheduleRefresh(); }
     }
@@ -1300,12 +1310,12 @@
   // the whole list: events arriving close together are drawn together.
   function scheduleFeed() {
     if (S.feedTimer) return;
-    const wait = Math.max(0, S.feedAt + FEED_REDRAW_MS - Date.now());
+    const wait = Math.min(FEED_REDRAW_MS, Math.max(0, S.feedAt + FEED_REDRAW_MS - tick()));
     S.feedTimer = setTimeout(() => { S.feedTimer = 0; renderFeed(); }, wait);
   }
 
   function renderFeed() {
-    S.feedAt = Date.now();
+    S.feedAt = tick();
     const list = $('feed-body');
     const empty = $('feed-empty');
     const items = Array.from(S.feed.values())
