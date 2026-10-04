@@ -17,8 +17,9 @@ type workTrace struct {
 	globOverlap   int // glob.Overlap calls
 }
 
-// trace is nil except while a test counts. A test that sets it must not run
-// the board from several goroutines, and must reset it when it ends.
+// trace is nil except while a test counts. A test that sets it must not be
+// parallel or run the board from several goroutines, and must reset it when
+// it ends: the parallel tests run the board once the others are done.
 var trace *workTrace
 
 // match is glob.Match, counted.

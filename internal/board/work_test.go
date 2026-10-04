@@ -1,9 +1,9 @@
 package board
 
 import (
-	"fmt"
 	"runtime"
 	"slices"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -68,22 +68,29 @@ func TestGreetingRanksEachClaimOnce(t *testing.T) {
 }
 
 // The feed holds the last KeepActivities activities, in order, whatever its
-// length and however many have been recorded.
+// length and however many have been recorded. Every record checks the
+// feed's length and its two ends; the whole feed is compared after the
+// first few records, as it fills, every 997th record and the last.
 func TestFeedKeepsTheLastActivities(t *testing.T) {
+	t.Parallel()
+	const records = 200_000
 	for _, keep := range []int{1, 7, 300, 3000} {
 		b := New(Config{KeepActivities: keep})
-		for n := 1; n <= 200_000; n++ {
-			b.record(Activity{Kind: ActivityFileChanged, Repo: repo, Text: fmt.Sprint(n), Paths: []string{"a.go"}})
+		for n := 1; n <= records; n++ {
+			b.record(Activity{Kind: ActivityFileChanged, Repo: repo, Text: strconv.Itoa(n), Paths: []string{"a.go"}})
 			b.pending = b.pending[:0]
-			if n%997 != 0 && n != 200_000 && n > keep+1 {
-				continue
-			}
 			first := max(1, n-keep+1)
 			if len(b.recent) != n-first+1 {
 				t.Fatalf("keep %d, %d recorded: the feed holds %d", keep, n, len(b.recent))
 			}
+			if lo, hi := b.recent[0].Seq, b.recent[len(b.recent)-1].Seq; lo != uint64(first) || hi != uint64(n) {
+				t.Fatalf("keep %d, %d recorded: the feed runs from seq %d to %d, want %d to %d", keep, n, lo, hi, first, n)
+			}
+			if n > 8 && n != keep && n != keep+1 && n%997 != 0 && n != records {
+				continue
+			}
 			for i, a := range b.recent {
-				if want := uint64(first + i); a.Seq != want || a.Text != fmt.Sprint(want) {
+				if want := first + i; a.Seq != uint64(want) || a.Text != strconv.Itoa(want) {
 					t.Fatalf("keep %d, %d recorded: entry %d is seq %d %q, want %d", keep, n, i, a.Seq, a.Text, want)
 				}
 			}

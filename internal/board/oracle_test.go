@@ -198,12 +198,16 @@ func testReportUncheckedMatchesTheOracle(t *testing.T, ties bool) {
 	}
 }
 
-func TestReportUncheckedMatchesTheOracle(t *testing.T) { testReportUncheckedMatchesTheOracle(t, false) }
+func TestReportUncheckedMatchesTheOracle(t *testing.T) {
+	t.Parallel()
+	testReportUncheckedMatchesTheOracle(t, false)
+}
 
 // Reservations declared at the same instant tie; the old function took the
 // first conflict its sort left in front, which sortConflicts now orders
 // whatever order the claims were found in.
 func TestReportUncheckedMatchesTheOracleWithTies(t *testing.T) {
+	t.Parallel()
 	testReportUncheckedMatchesTheOracle(t, true)
 }
 
@@ -303,6 +307,7 @@ func oldSortedFiles(c *claim) []string {
 // claims often share times, areas and relevance, and on a board from the
 // scale kit with more claims than a greeting shows.
 func TestRenderStartMatchesTheOracle(t *testing.T) {
+	t.Parallel()
 	rng := rand.New(rand.NewSource(2))
 	greeted := 0
 	check := func(b *Board, now time.Time) {
@@ -425,6 +430,7 @@ func tiedBoard(t *testing.T, claims, files int) *scaleBoard {
 // whose files were found at many moments, whose claims are all at the cap,
 // and whose files all share one time.
 func TestViewMatchesTheOracle(t *testing.T) {
+	t.Parallel()
 	mixed := smallShape()
 	capped := smallShape()
 	capped.dist, capped.claims, capped.busy, capped.sessions, capped.dormant = filesAtCap, 8, 6, 8, 2
@@ -588,6 +594,7 @@ func sweptState(b *Board) string {
 // the old Sweep left them, and announce the same, on boards with sessions
 // that went quiet working, waiting, inside tools and after ending.
 func TestSweepMatchesTheOracle(t *testing.T) {
+	t.Parallel()
 	rng := rand.New(rand.NewSource(3))
 	announced, released := 0, 0
 	for range 300 {

@@ -38,6 +38,7 @@ var (
 // an intent at the same instant: what the board answers then does not depend
 // on the order Go happens to iterate its maps.
 func TestBoardTranscript(t *testing.T) {
+	t.Parallel()
 	var digest, full bytes.Buffer
 	for _, sec := range transcriptSections {
 		runTranscript(&digest, &full, sec, false)
@@ -62,6 +63,7 @@ func writeTranscript(t *testing.T, full []byte) {
 // then. It runs the workload three times: an answer that depends on the
 // order Go iterates a map comes out differently between runs.
 func TestBoardTranscriptWithTies(t *testing.T) {
+	t.Parallel()
 	sec := transcriptSection{name: "default policy, a clock that often stands still", seed: 4, steps: 2000, cfg: func(*Config) {}}
 	var first []byte
 	for run := range 3 {
