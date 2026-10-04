@@ -16,12 +16,12 @@ import (
 )
 
 // A server that restarts closes its port for a moment: while it saves its
-// board for the last time, and until the new process opens it again. A hook
-// refused then went ahead unchecked, although its agent would wait seconds
-// more. So a hook whose connection is refused tries again, as long as its
-// time allows. Only a refused connection is tried again: a request that was
-// sent may have been decided, and an answer it spent (a bump) must not be
-// asked for twice.
+// board for the last time, and until the new process has restored the board
+// and opens the port again. A hook refused then went ahead unchecked,
+// although its agent would wait seconds more. So a hook whose connection is
+// refused tries again, as long as its time allows. Only a refused
+// connection is tried again: a request that was sent may have been
+// decided, and an answer it spent (a bump) must not be asked for twice.
 
 // retryWaits are the pauses between tries: then the last, again and again.
 var retryWaits = []time.Duration{100 * time.Millisecond, 200 * time.Millisecond, 400 * time.Millisecond}

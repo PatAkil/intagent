@@ -334,6 +334,10 @@ func (s *Server) Handler() http.Handler {
 // writes a final snapshot and sends the webhook what is still waiting. With
 // Options.TLS, it serves HTTPS on ln. It returns the final snapshot's error,
 // if it could not be written.
+//
+// Open ln just before: a hook that waited in its queue before Serve ran is
+// taken to have arrived when Serve reads it, and may be decided after its
+// client has stopped waiting for the answer.
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	srv := &http.Server{
 		Handler:           s.Handler(),
