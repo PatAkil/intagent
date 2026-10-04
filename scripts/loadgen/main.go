@@ -13,19 +13,27 @@
 // declare shared or exclusive intents and send notes. Agents pause between
 // events for exponential times whose mean makes them send -rate events a
 // second together. Each hook request opens a new connection, as a hook is a
-// new process each time.
+// new process each time, and says how long it waits in X-Intagent-Timeout,
+// as internal/client does (-timeout-header=false models older clients).
 //
 // Dashboards sign in with a member's token, hold /v1/stream open on one
-// repository and reload /v1/board as internal/web/static/app.js does: after an
-// event, at most once per 300 ms and one request at a time; every 15 s, with
-// /v1/repos; and after a reconnect. The other -streams only listen. A reload
-// also runs app.js's check for a restarted server: a view whose epoch differs
-// from the last one's, or, from a server that sends no epoch (or with
-// -epoch=false, for tabs still running the older app.js), a view whose
-// last_seq is below an event the dashboard already has. Either starts the
-// feed over and opens a new stream, which reloads the board once more; the
-// report counts these resets. -throttle, -jitter and -fetch-factor model a
-// slower reload throttle.
+// repository and reload /v1/board as internal/web/static/app.js does: one
+// request at a time, after an event or a gap in the stream, at least 1 s plus
+// up to 0.5 s after the last reload began and twice as long as it took, but
+// never more than 15 s; every 15 s, with /v1/repos; and after a reconnect.
+// A reload sends the last answer's ETag in If-None-Match, so an unchanged
+// board is a 304, and takes gzip, so the report's sizes for /v1/board are
+// what crossed the network. A stream the server ends is reopened after the
+// delay the server's last "retry:" gave, and one refused (the stream caps'
+// 429) after 2, 4, 8, 16 and then 30 s, as the browser and app.js do. The
+// other -streams only listen. A reload also runs app.js's check for a
+// restarted server: a view whose epoch differs from the last one's, or, from
+// a server that sends no epoch (or with -epoch=false), a view whose last_seq
+// is below an event the dashboard already has. Either starts the feed over
+// and opens a new stream, which reloads the board once more; the report
+// counts these resets. Tabs still running the app.js of before the shared
+// reads reloaded 300 ms after an event, without If-None-Match or the epoch:
+// -throttle=300ms -jitter=0 -fetch-factor=0 -etag=false -epoch=false.
 //
 // The first run adds the members to the team file with 'intagent token add'
 // and keeps their tokens in -tokens; serve that team file (a running server
@@ -44,13 +52,17 @@
 //
 // The report gives p50, p95, p99 and max latency per endpoint and hook kind,
 // errors, requests over 2 s (a hook gives up then, and a pre_edit goes
-// unchecked), what pre_edits were told, events per stream and their delivery
-// lag, and the server's RSS and CPU from /proc (-pid or -pidfile).
+// unchecked), what pre_edits were told (an answer marked unchecked, from a
+// server that got to the edit after its agent stopped waiting, counts as
+// none), events per stream and their delivery lag, the gap and status events
+// the streams carried, and the server's RSS and CPU from /proc (-pid or
+// -pidfile).
 package main
 
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -83,10 +95,14 @@ const hookLimit = 2 * time.Second
 // The dashboard's timings, from internal/web/static/app.js, and how often a
 // shell command's end rescans the worktree, from internal/cli/hook.go.
 const (
-	refreshEvery = 15 * time.Second
-	fetchTimeout = 15 * time.Second
-	streamRetry  = 3 * time.Second
-	scanEvery    = 15 * time.Second
+	refreshEvery  = 15 * time.Second
+	fetchTimeout  = 15 * time.Second
+	reloadAfter   = 300 * time.Millisecond // the least wait from an event to a reload
+	streamRetry   = 3 * time.Second        // until the server says otherwise
+	refusedRetry  = 2 * time.Second        // a refused stream's first wait, doubling
+	refusedMax    = 30 * time.Second
+	scanEvery     = 15 * time.Second
+	timeoutHeader = "X-Intagent-Timeout"
 )
 
 var (
@@ -116,9 +132,11 @@ var (
 	streams    = flag.Int("streams", 300, "event streams, the dashboards' included")
 	editP      = flag.Float64("edits", 0.5, "share of tool calls that are edits (pre_edit, post_edit); the rest are shell commands (tool_start, tool_end)")
 	trustEpoch = flag.Bool("epoch", true, "dashboards trust the view's epoch when the server sends one; false models the older app.js")
-	reloadMin  = flag.Duration("throttle", 300*time.Millisecond, "a dashboard's least time from an event to its reload")
-	jitter     = flag.Duration("jitter", 0, "random time added to each reload's throttle")
-	fetchMult  = flag.Float64("fetch-factor", 0, "a reload also waits this many times the last reload's duration")
+	useETag    = flag.Bool("etag", true, "dashboards send If-None-Match with their reloads; false models the older app.js")
+	reloadMin  = flag.Duration("throttle", time.Second, "a dashboard's least time between the starts of its reloads")
+	jitter     = flag.Duration("jitter", 500*time.Millisecond, "random time added to each reload's throttle")
+	fetchMult  = flag.Float64("fetch-factor", 2, "reloads are also this many times the last reload's duration apart")
+	tellWait   = flag.Bool("timeout-header", true, "agents send X-Intagent-Timeout; false models clients older than it")
 	keepAlive  = flag.Bool("keepalive", false, "reuse hook connections, which a real hook cannot")
 	react      = flag.Bool("react", false, "retry a refused edit, and drop it if refused again")
 	timeout    = flag.Duration("timeout", hookLimit, "agents' request timeout")
@@ -211,6 +229,28 @@ func bearer(token string) func(*http.Request) {
 	return func(r *http.Request) { r.Header.Set("Authorization", "Bearer "+token) }
 }
 
+// agentAuth signs an agent's requests and, as internal/client does, says how
+// long the agent waits for each answer, so that the server does not decide
+// an edit for an agent that has gone ahead without the answer.
+func agentAuth(token string) func(*http.Request) {
+	wait := strconv.FormatInt(timeout.Milliseconds(), 10)
+	return func(r *http.Request) {
+		r.Header.Set("Authorization", "Bearer "+token)
+		if *tellWait {
+			r.Header.Set(timeoutHeader, wait)
+		}
+	}
+}
+
+// answer is an answer left to its caller, which reads a few fields of a
+// large one: its body, unzipped, and its ETag. notModified says the server
+// answered 304.
+type answer struct {
+	body        []byte
+	etag        string
+	notModified bool
+}
+
 // call sends a request and decodes the answer into out, if given. It returns
 // the answer's size.
 func call(ctx context.Context, hc *http.Client, method, path string, auth func(*http.Request), in, out any) (int64, error) {
@@ -233,6 +273,9 @@ func call(ctx context.Context, hc *http.Client, method, path string, auth func(*
 		return 0, err
 	}
 	defer func() { _ = resp.Body.Close() }()
+	if a, ok := out.(*answer); ok {
+		return readAnswer(resp, a)
+	}
 	if out == nil || resp.StatusCode != http.StatusOK {
 		n, err := io.Copy(io.Discard, resp.Body)
 		if err == nil && resp.StatusCode != http.StatusOK {
@@ -241,12 +284,38 @@ func call(ctx context.Context, hc *http.Client, method, path string, auth func(*
 		return n, err
 	}
 	data, err := io.ReadAll(resp.Body)
-	if raw, ok := out.(*[]byte); ok && err == nil {
-		*raw = data // left to the caller, which reads a few fields of a large answer
-	} else if err == nil {
+	if err == nil {
 		err = json.Unmarshal(data, out)
 	}
 	return int64(len(data)), err
+}
+
+// readAnswer reads an answer as a browser does: a 304 leaves the page with
+// what it has, and a gzipped body is unzipped. It returns the size of what
+// crossed the network.
+func readAnswer(resp *http.Response, a *answer) (int64, error) {
+	wire, err := io.ReadAll(resp.Body)
+	n := int64(len(wire))
+	switch {
+	case err != nil:
+		return n, err
+	case resp.StatusCode == http.StatusNotModified:
+		a.notModified = true
+		return n, nil
+	case resp.StatusCode != http.StatusOK:
+		return n, statusError(resp.StatusCode)
+	}
+	a.etag, a.body = resp.Header.Get("ETag"), wire
+	if resp.Header.Get("Content-Encoding") == "gzip" {
+		zr, err := gzip.NewReader(bytes.NewReader(wire))
+		if err != nil {
+			return n, err
+		}
+		if a.body, err = io.ReadAll(zr); err != nil {
+			return n, err
+		}
+	}
+	return n, nil
 }
 
 type series struct {
@@ -305,11 +374,30 @@ func (r *recorder) add(key string, start time.Time, n int64, err error) {
 
 // measure sends a request with a time limit and records it.
 func (r *recorder) measure(hc *http.Client, auth func(*http.Request), limit time.Duration, key, method, path string, in, out any) {
+	_, _, _ = r.timed(hc, auth, limit, key, method, path, in, out) // recorded
+}
+
+// timed is measure, and returns when the request started, how long it took
+// and how it ended.
+func (r *recorder) timed(hc *http.Client, auth func(*http.Request), limit time.Duration, key, method, path string,
+	in, out any) (time.Time, time.Duration, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), limit)
 	defer cancel()
 	start := time.Now()
 	n, err := call(ctx, hc, method, path, auth, in, out)
 	r.add(key, start, n, err)
+	return start, time.Since(start), err
+}
+
+// answeredLate counts as unchecked a pre_edit answered in time but marked
+// unchecked: the server got to it after its agent would have stopped waiting,
+// and the agent's hook takes that answer as none.
+func (r *recorder) answeredLate(key string, start time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if s := r.series[key]; s != nil && !start.Before(r.from) {
+		s.unchecked++
+	}
 }
 
 func (r *recorder) count(key string) {
@@ -381,7 +469,7 @@ func newAgent(i int, tokens map[string]string, hc *http.Client, rec *recorder) *
 	rng := rand.New(rand.NewPCG(*seed, uint64(i)+1)) //nolint:gosec // a load model wants repeatable randomness, not secure randomness
 	m := memberName(i / *perMember)
 	a := &agent{
-		id: i, member: m, auth: bearer(tokens[m]), kind: agentKinds[i%len(agentKinds)], rng: rng, hc: hc, rec: rec,
+		id: i, member: m, auth: agentAuth(tokens[m]), kind: agentKinds[i%len(agentKinds)], rng: rng, hc: hc, rec: rec,
 		pause: time.Duration(float64(*members**perMember) / *rate * float64(time.Second)), has: map[string]bool{},
 	}
 	a.repo = 1 + rng.IntN(max(1, *repos-1))
@@ -536,6 +624,8 @@ func told(res board.HookResult) string {
 		worst = max(worst, c.Severity)
 	}
 	switch {
+	case res.Unchecked:
+		return "nothing in time (answered unchecked: the server got to it too late)"
 	case res.Decision == "":
 		return "nothing (an error)"
 	case res.Decision == board.DecisionAllow && res.Context != "":
@@ -558,7 +648,11 @@ func (a *agent) hook(sid string, st step) board.HookResult {
 		ev.Footprint = &board.Footprint{Files: slices.Clone(a.changed)}
 	}
 	var res board.HookResult
-	a.post("hook "+string(st.kind), "/v1/hook", ev, &res)
+	key := "hook " + string(st.kind)
+	start, took, err := a.rec.timed(a.hc, a.auth, *timeout, key, http.MethodPost, "/v1/hook", ev, &res)
+	if err == nil && took <= hookLimit && res.Unchecked {
+		a.rec.answeredLate(key, start)
+	}
 	return res
 }
 
@@ -578,11 +672,14 @@ type stream struct {
 	rng                *rand.Rand
 	events, reconnects int
 	resets             int // feeds started over because a view looked like a restarted server's
+	gaps, statuses     int // gap and status events received
 	lag                []time.Duration
 
 	mu                     sync.Mutex
 	timer, inflight, again bool
+	lastStart              time.Time // when the last reload began
 	lastFetch              time.Duration
+	etag                   string             // the last view's validator
 	maxSeq                 uint64             // the newest event in the dashboard's feed
 	epoch                  string             // the last view's epoch, if the server sends one
 	dropConn               context.CancelFunc // closes the open stream
@@ -593,7 +690,7 @@ func (s *stream) run(ctx context.Context) {
 	if s.dashboard {
 		go s.refreshLoop(ctx)
 	}
-	last, backoff, opened := "", 0, false
+	last, backoff, opened, retry := "", 0, false, streamRetry
 	for ctx.Err() == nil {
 		cctx, cancel := context.WithCancel(ctx)
 		s.mu.Lock()
@@ -623,11 +720,17 @@ func (s *stream) run(ctx context.Context) {
 			continue
 		}
 		s.rec.add("GET /v1/stream (connect)", start, 0, err)
-		if err != nil {
+		var refused statusError
+		if errors.As(err, &refused) {
 			cancel()
-			// The browser gives up on an error status, and app.js tries again later.
-			backoff = min(backoff+1, 4)
-			sleep(ctx, 1*time.Second<<backoff)
+			// The browser gives up on an error status, such as a stream cap's
+			// 429, and app.js tries again later, waiting twice as long each time.
+			sleep(ctx, min(refusedMax, refusedRetry<<min(backoff, 5)))
+			backoff++
+			continue
+		} else if err != nil {
+			cancel()
+			sleep(ctx, retry) // the browser's own reconnection
 			continue
 		}
 		if backoff = 0; opened {
@@ -635,18 +738,20 @@ func (s *stream) run(ctx context.Context) {
 			s.schedule(ctx)
 		}
 		opened = true
-		last = s.read(ctx, resp.Body, last)
+		last, retry = s.read(ctx, resp.Body, last, retry)
 		_ = resp.Body.Close()
 		reset := cctx.Err() != nil
 		cancel()
 		if !reset {
-			sleep(ctx, streamRetry)
+			sleep(ctx, retry)
 		}
 	}
 }
 
-// read takes a stream's events until it ends, and returns the last event's id.
-func (s *stream) read(ctx context.Context, body io.Reader, last string) string {
+// read takes a stream's events until it ends, and returns the last event's
+// id and the reconnection delay the server last gave: it spreads the
+// reconnections of the streams it ends together.
+func (s *stream) read(ctx context.Context, body io.Reader, last string, retry time.Duration) (string, time.Duration) {
 	sc := bufio.NewScanner(body)
 	sc.Buffer(make([]byte, 64<<10), 4<<20)
 	var event, data string
@@ -660,24 +765,46 @@ func (s *stream) read(ctx context.Context, body io.Reader, last string) string {
 			event = line[7:]
 		case strings.HasPrefix(line, "data: "):
 			data = line[6:]
-		case line == "" && event == "activity":
-			var a struct{ At time.Time }
-			if json.Unmarshal([]byte(data), &a) == nil {
-				s.lag = append(s.lag, time.Since(a.At))
+		case strings.HasPrefix(line, "retry: "):
+			if ms, err := strconv.Atoi(line[7:]); err == nil && ms > 0 {
+				retry = time.Duration(ms) * time.Millisecond
 			}
-			s.events++
-			s.mu.Lock()
-			s.maxSeq = max(s.maxSeq, seq)
-			s.mu.Unlock()
-			s.schedule(ctx)
+		case line == "":
+			s.take(ctx, event, data, seq)
 			event, data = "", ""
 		}
 	}
-	return last
+	return last, retry
+}
+
+// take handles one event as app.js does. An activity and a gap, after which
+// the board holds what the feed missed, reload the board; a status sets the
+// dashboard's banner.
+func (s *stream) take(ctx context.Context, event, data string, seq uint64) {
+	switch event {
+	case "activity":
+		var a struct{ At time.Time }
+		if json.Unmarshal([]byte(data), &a) == nil {
+			s.lag = append(s.lag, time.Since(a.At))
+		}
+		s.events++
+		s.mu.Lock()
+		s.maxSeq = max(s.maxSeq, seq)
+		s.mu.Unlock()
+		s.schedule(ctx)
+	case "gap":
+		s.gaps++
+		s.schedule(ctx)
+	case "status":
+		s.statuses++
+	}
 }
 
 // schedule throttles reloads as app.js does: the first event starts a timer,
-// and the events before it fires ride along.
+// and the events before it fires ride along. Reloads start -throttle plus up
+// to -jitter apart, and -fetch-factor times as far apart as the last one
+// took, but never further than the 15 s poll; the first event of a burst
+// waits at least 300 ms.
 func (s *stream) schedule(ctx context.Context) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -685,11 +812,12 @@ func (s *stream) schedule(ctx context.Context) {
 		return
 	}
 	s.timer = true
-	wait := *reloadMin
+	gap := *reloadMin
 	if *jitter > 0 {
-		wait += time.Duration(s.rng.Int64N(int64(*jitter)))
+		gap += time.Duration(s.rng.Int64N(int64(*jitter)))
 	}
-	wait = max(wait, time.Duration(*fetchMult*float64(s.lastFetch)))
+	gap = min(refreshEvery, max(gap, time.Duration(*fetchMult*float64(s.lastFetch))))
+	wait := min(gap, max(reloadAfter, time.Until(s.lastStart.Add(gap))))
 	time.AfterFunc(wait, func() {
 		s.mu.Lock()
 		s.timer = false
@@ -708,8 +836,9 @@ func (s *stream) refresh(ctx context.Context) {
 		return
 	}
 	s.inflight = true
-	s.mu.Unlock()
 	start := time.Now()
+	s.lastStart = start
+	s.mu.Unlock()
 	view := s.getBoard()
 	s.mu.Lock()
 	s.lastFetch = time.Since(start)
@@ -778,16 +907,20 @@ func jsonString(doc []byte, key string) (string, bool) {
 	return v, dec.Decode(&v) == nil
 }
 
+// refreshLoop loads the board when the dashboard opens, and then, as app.js
+// polls, asks every 15 s for a reload through the throttle, and reloads the
+// repositories.
 func (s *stream) refreshLoop(ctx context.Context) {
 	t := time.NewTicker(refreshEvery)
 	defer t.Stop()
+	go s.refresh(ctx)
 	for {
-		go s.refresh(ctx)
 		s.get("GET /v1/repos", "/v1/repos")
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+			s.schedule(ctx)
 		}
 	}
 }
@@ -796,11 +929,31 @@ func (s *stream) get(key, path string) {
 	s.rec.measure(s.hc, s.auth, fetchTimeout, key, http.MethodGet, path, nil, nil)
 }
 
-// getBoard reloads the board and returns the view's JSON, or nil.
+// getBoard reloads the board as app.js does, and returns the view's JSON, or
+// nil when there is none or the board has not changed.
 func (s *stream) getBoard() []byte {
-	var raw []byte
-	s.rec.measure(s.hc, s.auth, fetchTimeout, "GET /v1/board", http.MethodGet, "/v1/board?repo="+url.QueryEscape(s.repo), nil, &raw)
-	return raw
+	s.mu.Lock()
+	etag := s.etag
+	s.mu.Unlock()
+	auth := func(r *http.Request) {
+		s.auth(r)
+		r.Header.Set("Accept-Encoding", "gzip") // set here, so the answer is measured as sent
+		if etag != "" && *useETag {
+			r.Header.Set("If-None-Match", etag)
+		}
+	}
+	var a answer
+	s.rec.measure(s.hc, auth, fetchTimeout, "GET /v1/board", http.MethodGet, "/v1/board?repo="+url.QueryEscape(s.repo), nil, &a)
+	if a.notModified {
+		s.rec.count("GET /v1/board answered 304: unchanged")
+		return nil
+	}
+	if a.body != nil {
+		s.mu.Lock()
+		s.etag = a.etag
+		s.mu.Unlock()
+	}
+	return a.body
 }
 
 // login signs in as the dashboard does and returns the session cookie.
@@ -974,7 +1127,7 @@ func report(rec *recorder, watchers []*stream, agents []*agent, proc *procStats,
 	}
 	_ = tw.Flush()
 	if s := rec.series["hook pre_edit"]; s != nil {
-		fmt.Printf("\npre_edits a real hook let through unchecked (error or over 2 s): %d of %d (%.2f%%)\n\n",
+		fmt.Printf("\npre_edits a real hook let through unchecked (error, over 2 s, or answered unchecked): %d of %d (%.2f%%)\n\n",
 			s.unchecked, len(s.lat), 100*float64(s.unchecked)/float64(max(1, len(s.lat))))
 	}
 	for _, k := range slices.Sorted(maps.Keys(rec.counts)) {
@@ -983,10 +1136,11 @@ func report(rec *recorder, watchers []*stream, agents []*agent, proc *procStats,
 
 	var events []int
 	var lag []time.Duration
-	total, reconnects, resets := 0, 0, 0
+	total, reconnects, resets, gaps, statuses := 0, 0, 0, 0, 0
 	for _, s := range watchers {
 		events, lag = append(events, s.events), append(lag, s.lag...)
 		total, reconnects, resets = total+s.events, reconnects+s.reconnects, resets+s.resets
+		gaps, statuses = gaps+s.gaps, statuses+s.statuses
 	}
 	slices.Sort(events)
 	slices.Sort(lag)
@@ -994,6 +1148,7 @@ func report(rec *recorder, watchers []*stream, agents []*agent, proc *procStats,
 		fmt.Printf("\nstreams: %d, events received %d (per stream min %d, p50 %d, max %d), reconnects %d\n",
 			len(events), total, events[0], events[len(events)/2], events[len(events)-1], reconnects)
 		fmt.Printf("event delivery lag ms: p50 %s, p95 %s, p99 %s, max %s\n", pct(lag, .5), pct(lag, .95), pct(lag, .99), pct(lag, 1))
+		fmt.Printf("gap events (a reconnection missed activities the server no longer keeps): %d; status events: %d\n", gaps, statuses)
 	}
 	if s := rec.series["GET /v1/board"]; s != nil {
 		fmt.Printf("dashboard feeds started over, the view taken for a restarted server's: %d of %d reloads (%.1f%%), epoch trusted %t\n",
