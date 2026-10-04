@@ -254,15 +254,18 @@ while degraded), in its log and, if asked, by webhook.
 - Notes are rate-limited per member.
 - Request bodies are capped at 1 MB. Paths are validated. A body over 16 KB (a footprint, in practice) is charged to
   its member's budget of 4 MB a second, with a burst of 32 MB for a fleet's session starts, from its `Content-Length`
-  before it is read (429 past it), and only as many are decoded and handled at once as the server has CPUs (503
-  after a second's wait). A pre_edit is never answered either way, since under `INTAGENT_FAIL=closed` its hook would
-  refuse the edit. Most are a few hundred bytes and not metered. One over 16 KB (about 200 paths: a codemod's patch)
-  draws on a budget of its own, which footprints do not spend, and when that budget or the wait for a slot runs out
-  the edit goes ahead unchecked and its agent is told so. The server knows a pre_edit by how its body starts,
-  `{"kind":"pre_edit"`, as intagent's clients write it, and refuses a body that starts so and turns out to be
-  another kind. Clients send only a prompt's first line, which is all the board reads. Footprints and prompts are cut
-  to size before the board's lock is taken: a footprint to its first 2000 entries, duplicates and invalid paths
-  included.
+  before it is read (429 past it), and only as many are decoded and handled at once as the server has CPUs (503 after
+  a second's wait). The hook then sends its session start, stop or session end again at once without the footprint:
+  the event is small and never metered, and lost, a stop would leave its session working, to be announced as stalled,
+  and a session's end would leave it live, its reservations refusing teammates' edits, for hours. The footprint is
+  not recorded as sent, so the next scan sends it. A pre_edit is never answered 429 or 503, since under
+  `INTAGENT_FAIL=closed` its hook would refuse the edit. Most are a few hundred bytes and not metered. One over 16 KB
+  (about 200 paths: a codemod's patch) draws on a budget of its own, which footprints do not spend, and when that
+  budget or the wait for a slot runs out the edit goes ahead unchecked and its agent is told so. The server knows a
+  pre_edit by how its body starts, `{"kind":"pre_edit"`, as intagent's clients write it, and refuses a body that
+  starts so and turns out to be another kind. Clients send only a prompt's first line, which is all the board reads.
+  Footprints and prompts are cut to size before the board's lock is taken: a footprint to its first 2000 entries,
+  duplicates and invalid paths included.
 - An edit is checked on the first 200 paths it names, and past that its agent is told how many were not checked; a
   check of more than 200 paths is refused rather than cut short, and `intagent check`, the MCP `check_paths` tool and
   `intagent guard` send more in checks of 200. Each path costs a pass over the repository's claims

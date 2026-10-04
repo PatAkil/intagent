@@ -108,9 +108,10 @@ func (a *admission) takeBytes(member string, n int64, now time.Time, edit bool) 
 // length is charged the most it may be), then read whole, and then decoded
 // and handled once one of the large-body slots is free: a body sent slowly
 // holds a connection, not a slot. When it does not admit the request, it
-// answers it: 429 or 503, and the hook fails open, or for a pre_edit an
-// unchecked allow. It reports whether the body was admitted as a pre_edit's,
-// which the handler must then find it is.
+// answers it: 429 or 503, and the hook sends its event again without the
+// footprint, which is small, or for a pre_edit an unchecked allow. It reports
+// whether the body was admitted as a pre_edit's, which the handler must then
+// find it is.
 func (s *Server) admitBody(w http.ResponseWriter, r *http.Request, member string) (release func(), edit, ok bool) {
 	n := r.ContentLength
 	if n >= 0 && n <= largeBody {

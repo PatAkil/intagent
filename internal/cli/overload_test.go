@@ -3,13 +3,16 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -230,5 +233,109 @@ func TestOverloadedServerDecidesNothingForAgentsThatLeft(t *testing.T) {
 	}
 	if len(sink.texts) != 3 || refusals != 2 || breaches != 1 {
 		t.Errorf("webhook: %q; want the two bumps alice saw and her unchecked edit of bob's reserved file", sink.texts)
+	}
+}
+
+// meterLargeBodies puts a front before the team's server, before anyone logs
+// in, that answers every hook body over 16 KB with status, unread, as the
+// server answers a footprint when its member's budget for large bodies is
+// spent (429) or no slot frees for it (503). The tests that use it send no
+// large pre_edit, which the server never refuses. It counts the bodies it
+// refused.
+func (tm *team) meterLargeBodies(status int) *atomic.Int32 {
+	tm.t.Helper()
+	var refused atomic.Int32
+	h := tm.srv.Handler()
+	front := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/hook" && r.ContentLength > 16<<10 {
+			refused.Add(1)
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(status)
+			_, _ = io.WriteString(w, `{"error":"this member is sending more data than the server takes at once; try again in a second"}`)
+			return
+		}
+		h.ServeHTTP(w, r)
+	}))
+	tm.t.Cleanup(front.Close)
+	tm.url = front.URL
+	return &refused
+}
+
+// A session's start, stop and end whose footprint the server will not take
+// for load still reach the board: the hook sends each again without its
+// footprint. Lost, a stop would leave the session working, to be announced
+// as stalled, and an end would leave it live, its reservation refusing
+// teammates' edits for hours. The footprint is not recorded as sent, so the
+// next scan sends it.
+func TestLifecycleEventsGoThroughWithoutTheFootprintRefusedForLoad(t *testing.T) {
+	for _, status := range []int{http.StatusTooManyRequests, http.StatusServiceUnavailable} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			tm := newTeam(t, "alice", "bob")
+			refused := tm.meterLargeBodies(status)
+			a, b := tm.clone("alice"), tm.clone("bob")
+			tm.enrol(map[string]string{"alice": a, "bob": b})
+			// A codemod's output: a footprint of about 25 KB.
+			for i := range 300 {
+				writeFile(t, filepath.Join(b, fmt.Sprintf("gen/codemod/output/file_%04d.go", i)), "package output\n")
+			}
+			run := func(member, dir, event string, extra map[string]any) string {
+				t.Helper()
+				out, errOut, code := tm.as(member, dir, claudeEvent(member[:1]+"1", dir, event, extra), "hook", "claude-code")
+				if code != 0 {
+					t.Fatalf("%s %s: exit %d %s", member, event, code, errOut)
+				}
+				return out
+			}
+			board1 := tm.srv.Board()
+			state := func() board.State {
+				t.Helper()
+				for _, r := range board1.Repos(time.Now()) {
+					for _, c := range board1.View(time.Now(), r.Repo).Claims {
+						if c.Member == "bob" && len(c.Sessions) == 1 {
+							return c.Sessions[0].State
+						}
+					}
+				}
+				t.Fatal("bob's session is not on the board")
+				return ""
+			}
+
+			if _, _, ctx := decision(t, run("bob", b, "SessionStart", map[string]any{"source": "startup"})); !strings.Contains(ctx, "bob's agent") ||
+				refused.Load() != 1 {
+				t.Fatalf("session start, %d bodies refused: %q", refused.Load(), ctx)
+			}
+			if out, errOut, code := tm.as("bob", b, "", "declare", "-x", "-m", "Move the retry policy", "svc/pay/**"); code != 0 {
+				t.Fatalf("declare: %s %s", out, errOut)
+			}
+			run("bob", b, "UserPromptSubmit", map[string]any{"prompt": "Payments"})
+			run("bob", b, "Stop", map[string]any{})
+			if s := state(); s != board.StateWaiting || refused.Load() != 2 {
+				t.Fatalf("after a stop, %d bodies refused: bob's session is %s", refused.Load(), s)
+			}
+			later := time.Now().Add(time.Hour)
+			board1.Sweep(later)
+			for _, r := range board1.Repos(later) {
+				for _, act := range board1.View(later, r.Repo).Recent {
+					if act.Kind == board.ActivitySessionStalled {
+						t.Fatalf("a session that stopped is announced as stuck: %+v", act)
+					}
+				}
+			}
+
+			run("bob", b, "SessionEnd", map[string]any{"reason": "exit"})
+			if s := state(); s != board.StateEnded || refused.Load() != 3 {
+				t.Fatalf("after a session's end, %d bodies refused: bob's session is %s", refused.Load(), s)
+			}
+			if _, err := os.Stat(filepath.Join(cacheDir(), "sent-"+worktreeKey(b))); !os.IsNotExist(err) {
+				t.Fatalf("a footprint the server refused is recorded as sent: %v", err)
+			}
+			// bob's reservation bumps alice once now that his agent has ended.
+			edit := map[string]any{"tool_name": "Edit", "tool_input": map[string]any{"file_path": filepath.Join(a, "svc/pay/retry.go")}}
+			run("alice", a, "UserPromptSubmit", map[string]any{"prompt": "Tidy up"})
+			run("alice", a, "PreToolUse", edit)
+			if dec, reason, _ := decision(t, run("alice", a, "PreToolUse", edit)); dec == "deny" {
+				t.Fatalf("alice's second try at bob's file after his agent ended: %s %s", dec, reason)
+			}
+		})
 	}
 }

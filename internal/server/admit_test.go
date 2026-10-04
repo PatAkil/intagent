@@ -249,6 +249,57 @@ func TestLargeEditMustBeAPreEdit(t *testing.T) {
 	}
 }
 
+// A stop's or a session end's footprint makes a large body, which a member
+// over budget is refused, but the same event without it is small, never
+// metered, and lands; intagent's hooks send it again so (cli's sendHook).
+// Lost, a stop would leave its session working, to be announced as stalled,
+// and an end would leave the session live, its reservation refusing
+// teammates' edits for hours.
+func TestLifecycleEventsWithoutTheirFootprintAreNotMetered(t *testing.T) {
+	ts := newTestServer(t)
+	ts.do(t, "POST", "/v1/hook", "bob", hookEv(board.KindPrompt, "bob", "b1"), nil)
+	dec := board.DeclareRequest{Where: where("bob"), Summary: "retry", Patterns: []string{"svc/pay/**"}, Mode: board.ModeExclusive}
+	if code := ts.do(t, "POST", "/v1/intents", "bob", dec, nil); code != http.StatusOK {
+		t.Fatalf("declare: %d", code)
+	}
+	ts.admit.mu.Lock()
+	ts.admit.byteCap = 1 // bob's budget for large bodies is spent
+	ts.admit.mu.Unlock()
+	send := func(kind board.Kind) {
+		t.Helper()
+		ev := heartbeat("bob", 30<<10)
+		ev.Kind, ev.SessionID = kind, "b1"
+		if code, _ := ts.post(t, "/v1/hook", "bob", ev); code != http.StatusTooManyRequests {
+			t.Fatalf("%s with a footprint over the budget: %d", kind, code)
+		}
+		ev.Footprint = nil
+		if code, _ := ts.post(t, "/v1/hook", "bob", ev); code != http.StatusOK {
+			t.Fatalf("%s without its footprint: %d", kind, code)
+		}
+	}
+
+	send(board.KindStop)
+	ts.mu.Lock()
+	ts.clock = ts.clock.Add(11 * time.Minute) // past StallAfter
+	ts.mu.Unlock()
+	ts.Board().Sweep(ts.now())
+	for _, a := range ts.Board().View(ts.now(), repo).Recent {
+		if a.Kind == board.ActivitySessionStalled {
+			t.Fatalf("a session that stopped is announced as stuck: %+v", a)
+		}
+	}
+
+	send(board.KindSessionEnd)
+	var res board.HookResult
+	for range 2 { // bumped once, as by any reservation whose agent has ended
+		res = board.HookResult{}
+		ts.do(t, "POST", "/v1/hook", "alice", hookEv(board.KindPreEdit, "alice", "a1", "svc/pay/retry.go"), &res)
+	}
+	if res.Decision != board.DecisionAllow {
+		t.Fatalf("alice's second try after bob's agent ended: %s %+v", res.Decision, res.Conflicts)
+	}
+}
+
 // Large bodies wait for one of a few slots to be decoded and handled, and
 // give up with 503 after a while; small ones never wait.
 func TestLargeBodiesWaitForASlot(t *testing.T) {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime/debug"
@@ -163,10 +164,7 @@ func (a *App) handleHook(ctx context.Context, ad hook.Adapter, ev hook.Event) (h
 	}
 	ctx, cancel := context.WithTimeout(ctx, ws.settings.Timeout+2*time.Second)
 	defer cancel()
-	res, err := ws.client.Hook(ctx, hev)
-	if err == nil && hev.Footprint != nil {
-		footprintSent(ws.wt.Root, began)
-	}
+	res, err := sendHook(ctx, ws, hev, began)
 	if err == nil && res.Unchecked && ev.Kind == board.KindPreEdit {
 		err = errAnsweredLate
 	}
@@ -195,6 +193,32 @@ func (a *App) handleHook(ctx context.Context, ad hook.Adapter, ev hook.Event) (h
 		}
 	}
 	return ad.Render(ev, res), nil
+}
+
+// sendHook sends hev to the server, and records a footprint it took. A
+// server under load meters large bodies and answers one it will not read now
+// with 429 or 503 (internal/server/admit.go). A footprint makes a session
+// start's, a stop's or a session end's body large, but the event itself is
+// small and never metered, so it goes again at once without the footprint:
+// a stop or a session end lost with it would leave the session working,
+// announced as stalled, or live, its reservations refusing teammates' edits
+// for hours. The footprint is not recorded as sent, so the next scan sends
+// it.
+func sendHook(ctx context.Context, ws *workspace, hev board.HookEvent, began time.Time) (board.HookResult, error) {
+	res, err := ws.client.Hook(ctx, hev)
+	if hev.Footprint == nil {
+		return res, err
+	}
+	var ae *client.APIError
+	if errors.As(err, &ae) && (ae.Status == http.StatusTooManyRequests || ae.Status == http.StatusServiceUnavailable) {
+		hookLog("%s: the server did not take its footprint (%v); sent again without it", hev.Kind, err)
+		hev.Footprint = nil
+		return ws.client.Hook(ctx, hev)
+	}
+	if err == nil {
+		footprintSent(ws.wt.Root, began)
+	}
+	return res, err
 }
 
 // gitTime is how long git may take before a server request of up to
