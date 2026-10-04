@@ -24,8 +24,8 @@ twice. intagent moves that meeting point to the moment an agent is about to edit
    work disappears by itself.
 4. **Leases, not locks.** Nothing an agent holds outlives the agent for long. A crashed or hung agent stops blocking
    anyone after the stall timeout; its unmerged work stays visible as a warning.
-5. **Fail open.** If the server is down or slow, the hook allows the edit and says nothing. intagent must never be the
-   reason an agent cannot work.
+5. **Fail open.** If the server is down or slow, the hook allows the edit; the agent hears afterwards which of its
+   edits went ahead unchecked. intagent must never be the reason an agent cannot work.
 6. **Untrusted text is data.** Everything one agent reports reaches other agents' context. It is sanitised, capped and
    framed as data from teammates, never as instructions.
 
@@ -155,6 +155,32 @@ All endpoints take and return JSON and require `Authorization: Bearer <token>`, 
 | `GET /v1/board` | CLI, dashboard | Every claim and session in a repo, with derived states. |
 | `GET /v1/stream` | dashboard | Server-sent events. |
 | `GET /v1/whoami` | CLI | The member a token belongs to. |
+| `GET /healthz` | monitors | Up, and whether agents' edits go ahead unchecked (`?strict=1`: 503 while they do). |
+
+## When the server falls behind
+
+A hook client waits a short time and then lets the agent go ahead, so under load the server can get to an event
+after its agent has stopped waiting. Every request carries `X-Intagent-Timeout`, how long the client waits in
+milliseconds. The server notes when a hook arrived and, once it holds the board's lock, asks whether the request has
+waited longer than that, less min(300 ms, a quarter), or whether its connection has closed after at least a second
+(a proxy that half-closes a connection closes the request's context while it still waits). Then:
+
+- a late question (`pre_edit`, a tool starting, a heartbeat without a footprint) changes nothing: nothing is
+  acknowledged, counted, recorded or announced, and the answer is an allow marked `unchecked`, which a client still
+  waiting treats as no answer;
+- a late fact (any other event) is recorded, but nothing is delivered: notes, alerts and held-back context wait for
+  the session's next answer.
+
+An answer can also miss its agent for reasons the server cannot see. A `post_edit` whose `tool_use_id` the board did
+not see start, or saw refused, is judged when it arrives, without acknowledging anything; what the agent would have
+been told reaches it as information, a refusal it never heard is unspent so that its next attempt is refused again,
+and a change inside an active reservation is recorded as a breach. The hook keeps its own ledger of the edits that
+went ahead without an answer, per worktree and session, and tells them at the session's next answer.
+
+The server counts, per second over the last minute, the `pre_edit`s that arrive and those whose agent went ahead
+unchecked. It is degraded once more than 5% of the last 10 seconds' (and at least 3) went unchecked, and recovers
+once fewer than 1% of the last 30 seconds' did. It says so in `/healthz`, on the dashboard (a `status` event on the
+stream, and `server` in `/v1/board`), in its log and, if asked, by webhook.
 
 ## Security model
 
@@ -171,8 +197,9 @@ All endpoints take and return JSON and require `Authorization: Bearer <token>`, 
 - Webhook messages escape `&`, `<` and `>`, which Slack reads as mentions and links.
 - Notes are rate-limited per member.
 - Request bodies are capped. Paths are validated.
-- The hook fails open with a short timeout. `INTAGENT_FAIL=closed` turns an unreachable server, or a setup intagent
-  cannot read, into a refusal of edits in enrolled repositories, for teams that want it. A whole hook run, git
+- The hook fails open with a short timeout. `INTAGENT_FAIL=closed` turns an unreachable server, an answer the server
+  could not check in time, or a setup intagent cannot read, into a refusal of edits in enrolled repositories, for
+  teams that want it. A whole hook run, git
   included, has 8 seconds (2 at a session's end), under the timeouts `init` gives the agents, which would otherwise
   kill it and let the edit through; git gets at most half of what is left, so the event still reaches the server.
 
