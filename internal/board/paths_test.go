@@ -67,9 +67,12 @@ func TestEditsAreCheckedUpToTheCap(t *testing.T) {
 	if res := edit(b, now, paths); res.Decision != DecisionRefuse || strings.Contains(res.Context, "checked only") {
 		t.Fatalf("the reserved path last of %d: %s %q", maxCheckPaths, res.Decision, res.Context)
 	}
-	b, now, paths = reservedBoard(t, 1500, maxCheckPaths/2)
+	// The last path checked, past those an activity lists if the cap ever
+	// exceeds them: the activity lists it first.
+	n, at := maxCheckPaths+300, maxCheckPaths-1
+	b, now, paths = reservedBoard(t, n, at)
 	if res := edit(b, now, paths); res.Decision != DecisionRefuse {
-		t.Fatalf("the reserved path at %d of 1500: %s", maxCheckPaths/2, res.Decision)
+		t.Fatalf("the reserved path at %d of %d: %s", at, n, res.Decision)
 	}
 	var conflict *Activity
 	for _, a := range b.View(now, "r").Recent {
@@ -77,8 +80,12 @@ func TestEditsAreCheckedUpToTheCap(t *testing.T) {
 			conflict = &a
 		}
 	}
-	if conflict == nil || !slices.Contains(conflict.Paths, "svc/pay/retry.go") || len(conflict.Paths)+conflict.MorePaths != 1500 {
-		t.Fatalf("the refused edit's activity: %+v", conflict)
+	if conflict == nil {
+		t.Fatal("no conflict activity")
+	}
+	if conflict.Paths[0] != "svc/pay/retry.go" || len(conflict.Paths)+conflict.MorePaths != min(n, DefaultConfig().MaxFootprint) {
+		t.Fatalf("the refused edit's activity lists %d paths, %q first, and %d more; svc/pay/retry.go listed: %v",
+			len(conflict.Paths), conflict.Paths[0], conflict.MorePaths, slices.Contains(conflict.Paths, "svc/pay/retry.go"))
 	}
 	for _, n := range []int{maxCheckPaths + 1, 2100} {
 		b, now, paths = reservedBoard(t, n, n-1)

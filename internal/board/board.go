@@ -125,7 +125,8 @@ const maxShownPaths = 200
 // for 750 ms, with ten times the conflicts in the answer. It can rise to
 // MaxFootprint once a claim's areas are indexed and answers are bounded.
 // Past it, an edit's agent is told what was not checked, and a check is
-// refused.
+// refused. It may exceed maxShownPaths: an edit's activity lists the paths
+// that decided its answer first.
 const maxCheckPaths = 200
 
 // Board holds every claim and session the server knows about.
@@ -1016,8 +1017,31 @@ func (b *Board) announce(now time.Time, c *claim, s *session, paths []PathRef, d
 		}
 	}
 	b.record(Activity{At: now, Kind: ActivityConflict, Repo: c.Repo, Member: c.Member, ClaimID: c.ID, Session: s.ID, Agent: s.Agent,
-		Paths: pathsOf(paths), Severity: top.Severity, Decision: d, Also: also,
+		Paths: decidedFirst(paths, acted), Severity: top.Severity, Decision: d, Also: also,
 		Text: fmt.Sprintf("%s → %s (%s)", top.Path, top.Member, top.Why)})
+}
+
+// decidedFirst names an edit's paths for its activity. When there are more
+// than an activity lists, those of the conflicts that decided the answer come
+// first, so that the files it lists include the ones it was about.
+func decidedFirst(paths []PathRef, acted []Conflict) []string {
+	names := pathsOf(paths)
+	if len(names) <= maxShownPaths {
+		return names
+	}
+	decided := make(map[string]bool, len(acted))
+	for _, cf := range acted {
+		decided[cf.Path] = true
+	}
+	out := make([]string, 0, len(names))
+	for _, first := range []bool{true, false} {
+		for _, p := range names {
+			if decided[p] == first {
+				out = append(out, p)
+			}
+		}
+	}
+	return out
 }
 
 // judge applies the policy to the conflicts on every path being written. A
