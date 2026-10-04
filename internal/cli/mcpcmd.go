@@ -123,11 +123,7 @@ func (a *App) mcpTools() []mcp.Tool {
 				if len(refs) == 0 {
 					return "None of these paths are inside this repository.", nil
 				}
-				res, err := ws.client.Check(ctx, board.CheckRequest{Where: ws.where, Paths: refs})
-				if err != nil {
-					return "", err
-				}
-				return res.Text, nil
+				return checkPaths(ctx, ws, refs, a.now())
 			},
 		},
 		{

@@ -194,7 +194,7 @@ All endpoints take and return JSON and require `Authorization: Bearer <token>`, 
 | `POST /v1/hook` | hooks | One normalised lifecycle event in, a decision and context out. |
 | `POST /v1/intents` | MCP, CLI | Declare intents for a claim. Returns overlaps. |
 | `POST /v1/intents/release` | MCP, CLI | Release some or all intents. |
-| `POST /v1/check` | MCP, CLI, guard | Who else claims or touched these paths, up to 200 (more is a 400). Read-only. |
+| `POST /v1/check` | MCP, CLI, guard | Who else claims or touched these paths, up to 200 (more is a 400; intagent's CLI, MCP tool and guard send more in several checks). Read-only. |
 | `POST /v1/notes` | MCP, CLI | Send a note to a claim or a member. |
 | `GET /v1/board` | CLI, dashboard | Every claim and session in a repo, with derived states. Gzip when the client takes it, and a weak `ETag` for `If-None-Match`. Its `epoch` changes when the server restarts, and `server` is there while agents' edits go ahead unchecked (below). With `format=text`, the board as text; adding `limit`, `host` and `worktree` gives an agent at most `limit` claims (16 KB), those sharing files or areas with its own first, as the MCP `team_board` tool shows them. |
 | `GET /v1/repos` | dashboard | The repositories with claims, each with the server's `epoch`. |
@@ -260,7 +260,8 @@ while degraded), in its log and, if asked, by webhook.
   to size before the board's lock is taken: a footprint to its first 2000 entries, duplicates and invalid paths
   included.
 - An edit is checked on the first 200 paths it names, and past that its agent is told how many were not checked; a
-  check of more than 200 paths is refused rather than cut short. Each path costs a pass over the repository's claims
+  check of more than 200 paths is refused rather than cut short, and `intagent check`, the MCP `check_paths` tool and
+  `intagent guard` send more in checks of 200. Each path costs a pass over the repository's claims
   and, for its area, over their files, under the board's lock: 200 paths on a repository of 300 claims of 50 files
   hold it for 75 ms. A post_edit's paths, which only join the claim's files, are kept up to 2000, and an activity
   lists 200 of them and counts the rest. Checks and declarations are paced per member and worktree, one at a time and

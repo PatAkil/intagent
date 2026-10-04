@@ -116,7 +116,7 @@ func (a *App) guard(ctx context.Context, args []string) error {
 		return unchecked("not signed in to "+ws.settings.URL+" (run: intagent login --url "+ws.settings.URL+")", "this commit was")
 	}
 	refs := ws.refs(ws.wt.Root, staged)
-	conflicts, left, err := checkStaged(ctx, ws, refs)
+	conflicts, left, err := checkInBatches(ctx, ws, refs)
 	var blocked, overlap []board.Conflict
 	for _, c := range conflicts {
 		switch {
@@ -158,28 +158,45 @@ func (a *App) guard(ctx context.Context, args []string) error {
 	return unchecked(why, what)
 }
 
-// guardBatch is how many paths guard sends in one check: older servers check
-// only the first 200 paths of a check, and say nothing of the rest.
-const guardBatch = 200
+// pathsPerCheck is how many paths one check carries: the server checks at
+// most 200 at once and refuses more, and older servers checked only the
+// first 200 and said nothing of the rest.
+const pathsPerCheck = 200
 
-// maxBusyRetries bounds how often guard sends a batch again when the server
+// maxBusyRetries bounds how often a check is sent again when the server
 // says it is busy, as it does when one worktree sends checks faster than it
 // takes them.
 const maxBusyRetries = 5
 
-// checkStaged checks refs in batches of guardBatch, each with the request
-// timeout to itself, and merges what the server found. It stops at the
-// first batch the server does not answer, and reports how many paths were
-// left unchecked.
-func checkStaged(ctx context.Context, ws *workspace, refs []board.PathRef) (conflicts []board.Conflict, left int, err error) {
-	for start := 0; start < len(refs); start += guardBatch {
-		res, err := checkBatch(ctx, ws, refs[start:min(start+guardBatch, len(refs))])
+// checkInBatches checks refs in batches of pathsPerCheck, each with the
+// request timeout to itself, and merges what the server found. It stops at
+// the first batch the server does not answer, and reports how many paths
+// were left unchecked.
+func checkInBatches(ctx context.Context, ws *workspace, refs []board.PathRef) (conflicts []board.Conflict, left int, err error) {
+	for start := 0; start < len(refs); start += pathsPerCheck {
+		res, err := checkBatch(ctx, ws, refs[start:min(start+pathsPerCheck, len(refs))])
 		if err != nil {
 			return conflicts, len(refs) - start, err
 		}
 		conflicts = append(conflicts, res.Conflicts...)
 	}
 	return conflicts, 0, nil
+}
+
+// checkPaths asks who else is working on refs, for 'intagent check' and the
+// MCP check_paths tool, and answers in the server's words. More paths than
+// one check carries go in several, and what they find is told together, as
+// of now.
+func checkPaths(ctx context.Context, ws *workspace, refs []board.PathRef, now time.Time) (string, error) {
+	if len(refs) <= pathsPerCheck {
+		res, err := checkBatch(ctx, ws, refs)
+		return res.Text, err
+	}
+	conflicts, left, err := checkInBatches(ctx, ws, refs)
+	if err != nil {
+		return "", fmt.Errorf("%d of the %d paths were not checked: %w", left, len(refs), err)
+	}
+	return board.RenderConflicts(now, conflicts), nil
 }
 
 // checkBatch sends one check, again after the wait the server asks for when

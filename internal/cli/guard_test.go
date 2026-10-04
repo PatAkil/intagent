@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -103,5 +105,45 @@ func TestGuardSaysWhatItDidNotCheck(t *testing.T) {
 	g.mu.Unlock()
 	if _, errOut, code := tm.as("bob", b, "", "guard"); code != 1 || !strings.Contains(errOut, "INTAGENT_FAIL=closed is set, so the commit is refused") {
 		t.Fatalf("guard under fail-closed: exit %d\n%s", code, errOut)
+	}
+}
+
+// 'intagent check' and the MCP check_paths tool take more paths than one
+// check carries, sent in several, and tell what all of them found.
+func TestCheckTakesMorePathsThanOneCheck(t *testing.T) {
+	tm, g, b := gatedTeam(t, func(int) int { return 0 })
+	var paths []string
+	for i := range 250 {
+		paths = append(paths, fmt.Sprintf("docs/f%04d.txt", i))
+	}
+	paths = append(paths, "svc/pay/retry.go")
+	const found = "svc/pay/retry.go:\n  [block] alice's agent"
+	out, errOut, code := tm.as("bob", b, "", append([]string{"check"}, paths...)...)
+	if code != 0 || !strings.Contains(out, found) {
+		t.Fatalf("check: exit %d\n%s%s", code, out, errOut)
+	}
+	if n := g.count(); n != 2 {
+		t.Errorf("check: %d checks for 251 paths, want 2", n)
+	}
+	args, err := json.Marshal(map[string]any{"name": "check_paths", "arguments": map[string]any{"paths": paths}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := `{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}` + "\n" +
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":` + string(args) + "}\n"
+	out, errOut, code = tm.as("bob", b, calls, "mcp")
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	var r struct {
+		Result struct {
+			Content []struct{ Text string } `json:"content"`
+			IsError bool                    `json:"isError"`
+		} `json:"result"`
+	}
+	if code != 0 || len(lines) != 2 || json.Unmarshal([]byte(lines[1]), &r) != nil || r.Result.IsError ||
+		len(r.Result.Content) != 1 || !strings.Contains(r.Result.Content[0].Text, found) {
+		t.Fatalf("check_paths: exit %d\n%s%s", code, out, errOut)
+	}
+	if n := g.count(); n != 4 {
+		t.Errorf("check_paths: %d checks in all, want 4", n)
 	}
 }

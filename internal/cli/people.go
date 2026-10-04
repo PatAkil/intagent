@@ -89,11 +89,11 @@ func (a *App) check(ctx context.Context, args []string) error {
 	if len(refs) == 0 {
 		return fmt.Errorf("none of these paths are inside %s", ws.wt.Root)
 	}
-	res, err := ws.client.Check(ctx, board.CheckRequest{Where: ws.where, Paths: refs})
+	text, err := checkPaths(ctx, ws, refs, a.now())
 	if err != nil {
 		return err
 	}
-	fmt.Fprintln(a.Out, res.Text)
+	fmt.Fprintln(a.Out, text)
 	return nil
 }
 
