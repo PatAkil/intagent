@@ -75,6 +75,8 @@ type Server struct {
 	closeOnce  sync.Once
 	// uiKey signs dashboard sessions, so a session cookie is never a token.
 	uiKey []byte
+	// boards shares board answers among the requests that ask at once.
+	boards *boardBuilds
 }
 
 type memberHash struct {
@@ -126,6 +128,7 @@ func New(o Options) (*Server, error) {
 	if err := s.load(); err != nil {
 		return nil, err
 	}
+	s.boards = newBoardBuilds(s.boardView, s.log)
 	key, err := loadUIKey(s.dataDir)
 	if err != nil {
 		return nil, err
@@ -447,21 +450,103 @@ func (s *Server) handleNote(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleBoard(w http.ResponseWriter, r *http.Request) {
-	repo := board.RepoID(r.URL.Query().Get("repo"))
+	q := r.URL.Query()
+	repo := board.RepoID(q.Get("repo"))
 	if repo == "" {
 		writeError(w, http.StatusBadRequest, "repo is required")
 		return
 	}
-	v := s.board.View(s.now(), repo)
-	if r.URL.Query().Get("format") == "text" {
-		writeText(w, v.Text()+"\n")
+	text := q.Get("format") == "text"
+	b, err := s.boards.get(r.Context(), repo)
+	if err != nil {
+		if r.Context().Err() == nil {
+			s.log.Error("board answer failed", "repo", repo, "err", err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+		}
 		return
 	}
-	writeJSON(w, http.StatusOK, v)
+	if text {
+		writeText(w, b.view.Text()+"\n")
+		return
+	}
+	writeBoard(w, r, b)
+}
+
+// boardView is the view a board build reads.
+func (s *Server) boardView(repo string) board.View {
+	return s.board.View(s.now(), repo)
+}
+
+// writeBoard sends a shared board answer, compressed when the client takes
+// gzip, or 304 when the client already holds an equivalent one.
+func writeBoard(w http.ResponseWriter, r *http.Request, b *boardBuild) {
+	h := w.Header()
+	h.Set("Content-Type", "application/json")
+	h.Set("Vary", "Accept-Encoding")
+	h.Set("Cache-Control", "private, no-cache")
+	if b.etag != "" {
+		h.Set("ETag", b.etag)
+		if etagMatch(r.Header.Get("If-None-Match"), b.etag) {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+	}
+	body := b.json
+	if acceptsGzip(r.Header.Get("Accept-Encoding")) {
+		body = b.gz
+		h.Set("Content-Encoding", "gzip")
+	}
+	h.Set("Content-Length", strconv.Itoa(len(body)))
+	w.WriteHeader(http.StatusOK)
+	_, _ = progress(w).Write(body)
 }
 
 func (s *Server) handleRepos(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, s.board.Repos(s.now()))
+}
+
+// acceptsGzip reports whether an Accept-Encoding header allows gzip: named
+// with a quality above zero, or covered by a "*" that is.
+func acceptsGzip(header string) bool {
+	gzip, star := -1.0, -1.0
+	for _, part := range strings.Split(header, ",") {
+		name, params, _ := strings.Cut(part, ";")
+		q := 1.0
+		for _, p := range strings.Split(params, ";") {
+			if k, v, ok := strings.Cut(strings.TrimSpace(p), "="); ok && strings.EqualFold(strings.TrimSpace(k), "q") {
+				if f, err := strconv.ParseFloat(strings.TrimSpace(v), 64); err == nil {
+					q = f
+				} else {
+					q = 0
+				}
+			}
+		}
+		switch strings.ToLower(strings.TrimSpace(name)) {
+		case "gzip", "x-gzip":
+			gzip = max(gzip, q)
+		case "*":
+			star = max(star, q)
+		}
+	}
+	if gzip >= 0 {
+		return gzip > 0
+	}
+	return star > 0
+}
+
+// etagMatch reports whether an If-None-Match header names tag, compared
+// weakly as RFC 9110 has it for GET.
+func etagMatch(header, tag string) bool {
+	if header == "" || tag == "" {
+		return false
+	}
+	for _, t := range strings.Split(header, ",") {
+		t = strings.TrimSpace(t)
+		if t == "*" || strings.TrimPrefix(t, "W/") == strings.TrimPrefix(tag, "W/") {
+			return true
+		}
+	}
+	return false
 }
 
 // handleStream sends activities as server-sent events. A client reconnecting
