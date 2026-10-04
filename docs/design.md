@@ -172,7 +172,12 @@ All endpoints take and return JSON and require `Authorization: Bearer <token>`, 
   no spaces, quotes or angle brackets.
 - Webhook messages escape `&`, `<` and `>`, which Slack reads as mentions and links.
 - Notes are rate-limited per member.
-- Request bodies are capped. Paths are validated.
+- Request bodies are capped at 1 MB. Paths are validated. A body over 16 KB (a footprint, in practice) is charged to
+  its member's budget of 4 MB a second, with a burst of 32 MB for a fleet's session starts, from its `Content-Length`
+  before it is read (429 past it), and only as many are decoded and handled at once as the server has CPUs (503
+  after a second's wait). The hooks that check edits are a few hundred bytes and are never metered, so no edit is
+  refused for load under `INTAGENT_FAIL=closed`. Footprints and prompts are cut to size before the board's lock is
+  taken: a footprint to its first 2000 entries, duplicates and invalid paths included.
 - A client has 15 seconds to send a whole request and 16 KB for its headers, and past 4096 open connections
   (`serve --max-connections`) the server closes new ones as soon as it accepts them, so a client that sends slowly, or
   opens many connections, with a token or without, cannot use up the server's file descriptors and memory. A hook

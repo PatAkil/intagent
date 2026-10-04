@@ -103,6 +103,7 @@ func (c Config) WithDefaults() Config {
 
 const (
 	maxTaskLen   = 200
+	maxPrompt    = 8 << 10 // the part of a prompt's first line the board reads
 	maxNoteLen   = 600
 	maxBranchLen = 120
 	maxPaths     = 200
@@ -364,7 +365,7 @@ func (b *Board) liveSessions(now time.Time) map[string]bool {
 // It never refuses on error: callers should allow the agent to continue.
 func (b *Board) Hook(now time.Time, ev HookEvent) (HookResult, error) {
 	allow := HookResult{Decision: DecisionAllow}
-	ev, err := ev.clean()
+	ev, err := ev.clean(b.cfg.MaxFootprint) // the config never changes after New
 	if err != nil {
 		return allow, err
 	}
@@ -446,8 +447,9 @@ func (b *Board) Hook(now time.Time, ev HookEvent) (HookResult, error) {
 }
 
 // clean validates an event, before anything is created for it, and bounds
-// its fields.
-func (ev HookEvent) clean() (HookEvent, error) {
+// its fields. It runs before the board's lock is taken, so that how much a
+// client sends does not decide how long others wait for the lock.
+func (ev HookEvent) clean(maxFootprint int) (HookEvent, error) {
 	w, err := cleanWhere(ev.Where)
 	if err != nil {
 		return ev, err
@@ -464,6 +466,14 @@ func (ev HookEvent) clean() (HookEvent, error) {
 		// An event this board does not know (from a newer client, say) must
 		// not bring a dormant claim back to life.
 		return ev, fmt.Errorf("%w: unknown event kind %q", ErrInvalid, ev.Kind)
+	}
+	if fp := ev.Footprint; fp != nil {
+		files := cleanFootprint(fp.Files, maxFootprint)
+		ev.Footprint = &Footprint{Files: files, Truncated: fp.Truncated || len(fp.Files) > len(files)}
+	}
+	// A task is the first line's first maxTaskLen characters.
+	if ev.Prompt = firstLine(ev.Prompt); len(ev.Prompt) > maxPrompt {
+		ev.Prompt = ev.Prompt[:maxPrompt]
 	}
 	ev.Paths, err = cleanPaths(ev.Paths)
 	return ev, err
@@ -553,12 +563,13 @@ func firstLine(s string) string {
 	return s
 }
 
-// reconcile replaces a claim's footprint with what git reports.
+// reconcile replaces a claim's footprint with what git reports, as
+// HookEvent.clean left it.
 func (b *Board) reconcile(now time.Time, c *claim, s *session, fp *Footprint) {
 	if fp == nil {
 		return
 	}
-	files := cleanFootprint(fp.Files, b.cfg.MaxFootprint)
+	files := fp.Files
 	next := make(map[string]*touch, len(files))
 	var added []PathRef
 	for _, f := range files {
@@ -579,7 +590,7 @@ func (b *Board) reconcile(now time.Time, c *claim, s *session, fp *Footprint) {
 		}
 	}
 	c.Footprint = next
-	c.FootprintTruncated = fp.Truncated || len(fp.Files) > len(files)
+	c.FootprintTruncated = fp.Truncated
 	if len(added) > 0 || removed > 0 {
 		b.record(Activity{At: now, Kind: ActivityFootprintReconciled, Repo: c.Repo, Member: c.Member, ClaimID: c.ID, Session: s.ID, Agent: s.Agent,
 			Text: fmt.Sprintf("%d changed files (+%d, -%d)", len(next), len(added), removed)})
@@ -590,19 +601,23 @@ func (b *Board) reconcile(now time.Time, c *claim, s *session, fp *Footprint) {
 	}
 }
 
+// cleanFootprint keeps the valid, distinct paths among the first limit
+// entries. Duplicates and invalid paths count toward the limit: a client
+// sends neither, and they must not make the work longer.
 func cleanFootprint(in []PathRef, limit int) []PathRef {
-	out := make([]PathRef, 0, min(len(in), limit))
-	seen := map[string]bool{}
+	in = in[:min(len(in), limit)]
+	out := make([]PathRef, 0, len(in))
+	seen := make(map[string]bool, len(in))
 	for _, f := range in {
-		if len(out) >= limit {
-			break
-		}
 		p, err := glob.CleanPath(f.Path)
 		if err != nil || seen[p] {
 			continue
 		}
 		seen[p] = true
-		area, _ := glob.CleanPath(f.Area)
+		area := ""
+		if f.Area != "" {
+			area, _ = glob.CleanPath(f.Area)
+		}
 		out = append(out, PathRef{Path: p, Area: area})
 	}
 	return out

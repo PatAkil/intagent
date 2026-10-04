@@ -89,6 +89,8 @@ type Server struct {
 	maxConns         int
 	readTimeout      time.Duration
 	handshakeTimeout time.Duration
+	// admit meters what members ask of the server.
+	admit *admission
 }
 
 type memberHash struct {
@@ -139,6 +141,7 @@ func New(o Options) (*Server, error) {
 	if s.maxConns <= 0 {
 		s.maxConns = DefaultMaxConnections
 	}
+	s.admit = newAdmission()
 	// The key comes first: SetMembers computes each member's dashboard cookie
 	// with it.
 	key, err := loadUIKey(s.dataDir)
@@ -357,7 +360,8 @@ func bearer(r *http.Request) string {
 	return ""
 }
 
-// write admits only bearer tokens, so a browser cookie can never cause a write.
+// write admits only bearer tokens, so a browser cookie can never cause a write,
+// and meters large bodies.
 func (s *Server) write(h http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		name, ok := s.authenticate(bearer(r))
@@ -365,6 +369,11 @@ func (s *Server) write(h http.HandlerFunc) http.Handler {
 			writeError(w, http.StatusUnauthorized, "missing or unknown token")
 			return
 		}
+		release, ok := s.admitBody(w, r, name)
+		if !ok {
+			return
+		}
+		defer release()
 		h(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, name)))
 	})
 }
