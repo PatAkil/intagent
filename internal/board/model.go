@@ -279,7 +279,8 @@ type Footprint struct {
 	// Dirs, sent only with a truncated list, are directories the worktree
 	// added whole, each in place of every file under it that Files leaves
 	// out: a .venv or build output not ignored, say. Its Area is that of the
-	// files directly inside.
+	// files directly inside. The board keeps the valid, distinct ones among
+	// the first 200, as it keeps Files, and does not judge them yet.
 	Dirs []PathRef `json:"dirs,omitempty"`
 }
 

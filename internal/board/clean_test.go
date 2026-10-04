@@ -1,6 +1,7 @@
 package board
 
 import (
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -53,6 +54,38 @@ func TestCleanBoundsWhatClientsSend(t *testing.T) {
 		if got, _ := ev.clean(2000); got.Prompt != want {
 			t.Errorf("prompt of %d bytes cleaned to %d bytes", len(prompt), len(got.Prompt))
 		}
+	}
+}
+
+// The directories a footprint names in place of files it leaves out are
+// bounded and cleaned as its files are: by the number of entries sent,
+// whatever they hold.
+func TestCleanBoundsFootprintDirs(t *testing.T) {
+	dirs := []PathRef{{Path: `gen\out`, Area: "gen"}, {Path: "/etc"}, {Path: "gen/out"}, {Path: "a/../../b"}}
+	for i := range 300 {
+		dirs = append(dirs, PathRef{Path: fmt.Sprintf("build/%03d", i)})
+	}
+	ev := HookEvent{Kind: KindHeartbeat, Member: "alice", Agent: AgentClaudeCode, SessionID: "s",
+		Where: Where{Repo: "r", Host: "h", Worktree: "/w"}, Footprint: &Footprint{Files: []PathRef{{Path: "a/x.go"}}, Dirs: dirs}}
+	got, err := ev.clean(2000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fp := got.Footprint
+	want := []PathRef{{Path: "gen/out", Area: "gen"}, {Path: "build/000"}}
+	if len(fp.Dirs) != maxFootprintDirs-3 || !slices.Equal(fp.Dirs[:2], want) || fp.Dirs[len(fp.Dirs)-1].Path != "build/195" {
+		t.Fatalf("dirs = %d entries, from %v to %v", len(fp.Dirs), fp.Dirs[:min(2, len(fp.Dirs))], fp.Dirs[len(fp.Dirs)-1])
+	}
+	if !fp.Truncated || len(fp.Files) != 1 {
+		t.Fatalf("footprint = %+v files, truncated %v", fp.Files, fp.Truncated)
+	}
+	if len(ev.Footprint.Dirs) != len(dirs) {
+		t.Fatal("clean changed the caller's footprint")
+	}
+	// A footprint without directories keeps none.
+	ev.Footprint = &Footprint{Files: []PathRef{{Path: "a/x.go"}}}
+	if got, _ := ev.clean(2000); got.Footprint.Dirs != nil || got.Footprint.Truncated {
+		t.Fatalf("footprint without dirs cleaned to %+v", *got.Footprint)
 	}
 }
 

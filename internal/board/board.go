@@ -117,6 +117,10 @@ const (
 	idLen        = 8 // characters of an ID after its prefix
 )
 
+// maxFootprintDirs bounds the directories a footprint names in place of the
+// files it leaves out (Footprint.Dirs), as intagent's client bounds them.
+const maxFootprintDirs = 200
+
 // maxShownPaths bounds the paths an activity lists, since the feed, the
 // snapshot and every stream carry them; MorePaths counts the rest.
 const maxShownPaths = 200
@@ -556,7 +560,10 @@ func (ev HookEvent) clean(maxFootprint int) (HookEvent, error) {
 		// clean does not know of kept.
 		cut := *fp
 		cut.Files = cleanFootprint(fp.Files, maxFootprint)
-		cut.Truncated = fp.Truncated || len(fp.Files) > len(cut.Files)
+		if fp.Dirs != nil {
+			cut.Dirs = cleanFootprint(fp.Dirs, maxFootprintDirs)
+		}
+		cut.Truncated = fp.Truncated || len(fp.Files) > len(cut.Files) || len(fp.Dirs) > len(cut.Dirs)
 		ev.Footprint = &cut
 	}
 	ev.Prompt = PromptLine(ev.Prompt)
