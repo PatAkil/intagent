@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -170,7 +171,8 @@ func TestChangesLeaveTheIndexAlone(t *testing.T) {
 	}
 }
 
-// Stopped at any point, a footprint scan leaves no lock and no copy behind.
+// Stopped at any point, a footprint scan leaves no lock and no copy behind
+// but the one it kept.
 func TestChangesStoppedAnywhereLeaveNoLock(t *testing.T) {
 	_, clone := newRepo(t)
 	generated(t, clone, 1000)
@@ -180,6 +182,7 @@ func TestChangesStoppedAnywhereLeaveNoLock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	w.Cache = t.TempDir()
 	statDirty(t, clone, "gen")
 	start := time.Now()
 	if _, _, err := w.Changes(context.Background()); err != nil {
@@ -199,6 +202,9 @@ func TestChangesStoppedAnywhereLeaveNoLock(t *testing.T) {
 		}
 		if left, _ := os.ReadDir(tmp); len(left) != 0 {
 			t.Fatalf("a scan stopped after %s left %v behind", full*time.Duration(i)/20, left)
+		}
+		if left := copies(t, w.Cache); len(left) != 1 || !strings.HasPrefix(left[0], keptPrefix) {
+			t.Fatalf("a scan stopped after %s left %v in the cache", full*time.Duration(i)/20, left)
 		}
 	}
 	if stopped == 0 {
@@ -226,5 +232,154 @@ func TestIndexCopyKeepsItsTime(t *testing.T) {
 	}
 	if copyFile(src, dst) == nil {
 		t.Fatal("copyFile replaced an existing file")
+	}
+}
+
+// indexWrites counts the times git writes an index, from its trace.
+func indexWrites(t *testing.T) func() int {
+	t.Helper()
+	trace := filepath.Join(t.TempDir(), "trace.json")
+	t.Setenv("GIT_TRACE2_EVENT", trace)
+	return func() int {
+		data, _ := os.ReadFile(trace)
+		return bytes.Count(data, []byte(`"key":"write/cache_nr"`))
+	}
+}
+
+// After a formatter, the first scan checks the content of the files it
+// touched and refreshes its copy of the index; the scans after it start
+// from that copy, while the real index is as it was, and check nothing.
+// Without a Cache, each scan starts from the real index and checks again.
+func TestKeptIndexSparesLaterScans(t *testing.T) {
+	ctx := context.Background()
+	_, clone := newRepo(t)
+	generated(t, clone, 50)
+	writes := indexWrites(t)
+	for _, c := range []struct {
+		cache  string
+		writes []int // by each of three scans
+	}{
+		{"", []int{1, 1, 1}},
+		{t.TempDir(), []int{1, 0, 0}},
+	} {
+		w, err := Open(ctx, clone)
+		if err != nil {
+			t.Fatal(err)
+		}
+		w.Cache = c.cache
+		statDirty(t, clone, "gen")
+		var got []int
+		for range 3 {
+			before := writes()
+			files, _, err := w.Changes(ctx)
+			if err != nil || len(files) != 0 {
+				t.Fatalf("changes = %v, %v", files, err)
+			}
+			got = append(got, writes()-before)
+		}
+		if !slices.Equal(got, c.writes) {
+			t.Errorf("cache %q: scans wrote an index %v times, want %v", c.cache, got, c.writes)
+		}
+		if c.cache != "" {
+			if left := copies(t, c.cache); len(left) != 1 || !strings.HasPrefix(left[0], keptPrefix) {
+				t.Errorf("cache holds %v, want one kept copy", left)
+			}
+		}
+	}
+}
+
+// copies lists the index copies in a Cache.
+func copies(t *testing.T, cache string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(cache)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	return names
+}
+
+// A kept copy serves only while the real index is as it was when the copy
+// was made: once the person stages a new file, the next scan starts from
+// the real index again, and a kept copy git cannot read is replaced.
+func TestKeptIndexFollowsTheRealOne(t *testing.T) {
+	ctx := context.Background()
+	_, clone := newRepo(t)
+	w, err := Open(ctx, clone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.Cache = t.TempDir()
+	write(t, clone, "services/payments/new.go", "package pay\n")
+	scan := func(want string) {
+		t.Helper()
+		files, _, err := w.Changes(ctx)
+		if got := strings.Join(files, ","); err != nil || got != want {
+			t.Fatalf("changes = %s, %v; want %s", got, err, want)
+		}
+	}
+	scan("services/payments/new.go")
+	// Staged, the file is no longer untracked: only an index that has it
+	// shows it.
+	git(t, clone, "add", "services/payments/new.go")
+	scan("services/payments/new.go")
+
+	kept := copies(t, w.Cache)
+	if len(kept) != 1 {
+		t.Fatalf("cache holds %v, want one kept copy", kept)
+	}
+	write(t, w.Cache, kept[0], "not an index")
+	scan("services/payments/new.go")
+	if data, err := os.ReadFile(filepath.Join(w.Cache, kept[0])); err != nil || !bytes.HasPrefix(data, []byte("DIRC")) {
+		t.Fatalf("the unreadable copy was not replaced: %q, %v", data, err)
+	}
+}
+
+// A scan prunes what scans killed outright left in the Cache, this
+// worktree's copies of an index it no longer has, and copies of other
+// worktrees not refreshed for a day; it leaves the rest alone.
+func TestScansPruneOldCopies(t *testing.T) {
+	ctx := context.Background()
+	_, clone := newRepo(t)
+	w, err := Open(ctx, clone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.Cache = t.TempDir()
+	mine := keptPrefix + hashKey(filepath.Join(w.Root, ".git", "index")) + "-"
+	now := time.Now()
+	for name, age := range map[string]time.Duration{
+		copyPrefix + "killed/index":  2 * copyFor,
+		copyPrefix + "running/index": 0,
+		mine + "0123456789abcdef":    0,
+		keptPrefix + "other-recent":  time.Hour,
+		keptPrefix + "other-gone":    2 * keptFor,
+		"hook.log":                   2 * keptFor,
+		"scan-0123-1":                2 * keptFor,
+	} {
+		write(t, w.Cache, name, "")
+		for p := filepath.Join(w.Cache, name); p != w.Cache; p = filepath.Dir(p) {
+			if err := os.Chtimes(p, now.Add(-age), now.Add(-age)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if _, _, err := w.Changes(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got := copies(t, w.Cache)
+	var kept string
+	for _, n := range got {
+		if strings.HasPrefix(n, mine) {
+			kept = n
+		}
+	}
+	want := []string{"hook.log", keptPrefix + "other-recent", "scan-0123-1", copyPrefix + "running", kept}
+	slices.Sort(want)
+	if !slices.Equal(got, want) || kept == mine+"0123456789abcdef" {
+		t.Fatalf("cache holds %v, want %v", got, want)
 	}
 }

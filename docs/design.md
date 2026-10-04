@@ -109,8 +109,10 @@ as it does at the `Stop` just before) the hook computes the worktree's real foot
 
 The diff runs on a private copy of the index (`GIT_INDEX_FILE`): git diff writes back the index it refreshed, under
 `.git/index.lock`, even with `GIT_OPTIONAL_LOCKS=0`, and that lock refuses the person's and other agents' `git add` while
-it is held. Git out of time is stopped with SIGTERM, so it removes its lock files (Windows has no such signal: there it
-is killed, and the private index is what keeps the real one unlocked).
+it is held. The refreshed copy is kept in intagent's cache directory, named by the real index it began as, and the next
+scan starts from it while the real index is unchanged, so after a formatter only the first scan checks the content of
+the files it touched. Git out of time is stopped with SIGTERM, so it removes its lock files (Windows has no such signal:
+there it is killed, and the private index is what keeps the real one unlocked).
 
 The files the repository's `ignore` patterns match are left out first. A footprint keeps at most 2000 files; past
 that, the client keeps one file of each changed area, then the files the branch has not committed, a new package

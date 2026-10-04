@@ -54,6 +54,7 @@ func openWorkspace(ctx context.Context, dir string) (*workspace, error) {
 	if err != nil {
 		return nil, err
 	}
+	wt.Cache = cacheDir()
 	st, err := client.Resolve(wt.Root)
 	if err != nil {
 		return nil, err

@@ -17,7 +17,7 @@ func TestScanStampsPerWorktree(t *testing.T) {
 	cache := t.TempDir()
 	t.Setenv("XDG_CACHE_HOME", cache)
 	t.Setenv("HOME", cache) // where macOS keeps its cache
-	dir := stampDir()
+	dir := cacheDir()
 	writeFile(t, filepath.Join(dir, "scan-0123456789abcdef"), "")  // an older version's
 	writeFile(t, filepath.Join(dir, "hook.log"), "")               // not a stamp
 	writeFile(t, filepath.Join(dir, "unchecked-0123456789ab"), "") // not a stamp either
@@ -130,10 +130,10 @@ func TestHooksScanTheWorktreeOnce(t *testing.T) {
 	}
 
 	// A Stop whose footprint the server refused leaves the session's end to scan.
-	if _, err := os.Stat(filepath.Join(stampDir(), "sent-"+worktreeKey(a))); err != nil {
+	if _, err := os.Stat(filepath.Join(cacheDir(), "sent-"+worktreeKey(a))); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Remove(filepath.Join(stampDir(), "sent-"+worktreeKey(a))); err != nil {
+	if err := os.Remove(filepath.Join(cacheDir(), "sent-"+worktreeKey(a))); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("INTAGENT_TOKEN", "not-a-token")

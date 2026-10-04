@@ -34,8 +34,10 @@ func scanDue(root string, kind board.Kind, now time.Time) bool {
 	return true
 }
 
-// stampDir is where the stamps that pace scans live, or "" if there is none.
-func stampDir() string {
+// cacheDir is intagent's directory in the user's cache, where the hook log,
+// the stamps that pace scans and the index copies they keep live, or "" if
+// there is none.
+func cacheDir() string {
 	dir, err := os.UserCacheDir()
 	if err != nil {
 		return ""
@@ -60,7 +62,7 @@ func worktreeKey(root string) string {
 // hook that claims a window removes the stamps of windows past. Any trouble
 // with the stamps means a scan.
 func footprintDue(root string, now time.Time) bool {
-	dir := stampDir()
+	dir := cacheDir()
 	if dir == "" {
 		return true
 	}
@@ -105,7 +107,7 @@ func pruneStamps(dir string, window int64, now time.Time) {
 
 // footprintSent records that the worktree's footprint reached the server.
 func footprintSent(root string, now time.Time) {
-	if dir := stampDir(); dir != "" {
+	if dir := cacheDir(); dir != "" {
 		p := filepath.Join(dir, "sent-"+worktreeKey(root))
 		if os.WriteFile(p, nil, 0o600) == nil {
 			_ = os.Chtimes(p, now, now) // the write's own time is near enough
@@ -116,7 +118,7 @@ func footprintSent(root string, now time.Time) {
 // sentRecently reports whether the worktree's footprint reached the server
 // less than footprintEvery before now.
 func sentRecently(root string, now time.Time) bool {
-	dir := stampDir()
+	dir := cacheDir()
 	if dir == "" {
 		return false
 	}

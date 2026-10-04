@@ -220,12 +220,8 @@ func capitalize(s string) string {
 // hookLog appends to intagent's hook log, since a hook's stdout belongs to the
 // agent and its stderr is rarely seen.
 func hookLog(format string, args ...any) {
-	dir, err := os.UserCacheDir()
-	if err != nil {
-		return
-	}
-	dir = filepath.Join(dir, "intagent")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	dir := cacheDir()
+	if dir == "" {
 		return
 	}
 	p := filepath.Join(dir, "hook.log")
