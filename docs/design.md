@@ -189,8 +189,8 @@ All endpoints take and return JSON and require `Authorization: Bearer <token>`, 
   hold it for 75 ms. A post_edit's paths, which only join the claim's files, are kept up to 2000, and an activity
   lists 200 of them and counts the rest. Checks and declarations are paced per member and worktree, one at a time and
   five a second with a burst of 20 (429 past that), since each holds the board's lock for as long as its paths and
-  patterns take; an orchestrator's agents, each in its own worktree, are paced apart. Hooks are never paced: a fleet's
-  agents share one token, and each of their edits is checked.
+  patterns take; an orchestrator's agents, each in its own worktree, are paced apart. Hooks are never paced, since a
+  fleet's agents share one token.
 - A client has 15 seconds to send a whole request and 16 KB for its headers, and past 4096 open connections
   (`serve --max-connections`) the server closes new ones as soon as it accepts them, so a client that sends slowly, or
   opens many connections, with a token or without, cannot use up the server's file descriptors and memory. A hook

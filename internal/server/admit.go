@@ -35,7 +35,7 @@ const (
 // for as long as its paths and patterns take, so an agent that loops on them
 // is answered 429 rather than keep the lock from everyone's hooks; an
 // orchestrator's agents, each in its own worktree, are paced apart. Hooks are
-// never paced: a fleet's agents share one token, and each edit is checked.
+// never paced, since a fleet's agents share one token.
 const (
 	callRate  = 5
 	callBurst = 20
