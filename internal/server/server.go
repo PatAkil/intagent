@@ -468,8 +468,7 @@ func (s *Server) handleRepos(w http.ResponseWriter, _ *http.Request) {
 // handleStream sends activities as server-sent events. A client reconnecting
 // with Last-Event-ID first receives what it missed.
 func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
-	flusher, ok := w.(http.Flusher)
-	if !ok {
+	if _, ok := w.(http.Flusher); !ok {
 		writeError(w, http.StatusInternalServerError, "streaming unsupported")
 		return
 	}
@@ -483,53 +482,65 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	h.Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 
-	fmt.Fprint(w, "retry: 3000\n: connected\n\n")
-	last, _ := strconv.ParseUint(r.Header.Get("Last-Event-ID"), 10, 64)
-	if last > 0 {
+	out := newStreamWriter(w, repo)
+	out.raw("retry: 3000\n: connected\n\n")
+	if last, _ := strconv.ParseUint(r.Header.Get("Last-Event-ID"), 10, 64); last > 0 {
+		out.last = last
 		for _, a := range s.board.Since(repo, last) {
-			if !sendEvent(w, a) {
-				return
+			if f, ok := activityFrame(a); ok {
+				out.frames([]frame{f})
 			}
-			last = a.Seq
 		}
 	}
-	flusher.Flush()
+	if out.flush() != nil {
+		return
+	}
 
 	keep := time.NewTicker(sseKeepAway)
 	defer keep.Stop()
+	// After each write the stream lingers before it takes more: what is
+	// published meanwhile waits in the hub and goes out in the next write.
+	linger := time.NewTimer(streamLinger)
+	linger.Stop()
+	defer linger.Stop()
+	pos, wake, lingering := sub.pos, sub.wake, false
+	var batches [][]frame
 	for {
+		next := wake
+		if lingering {
+			next = nil
+		}
 		select {
 		case <-r.Context().Done():
 			return
 		case <-s.closing:
 			return
-		case <-sub.dropped:
+		case <-sub.done:
 			return
+		case <-linger.C:
+			lingering = false
 		case <-keep.C:
-			if _, err := fmt.Fprint(w, ": keep-alive\n\n"); err != nil {
+			out.raw(": keep-alive\n\n")
+			if out.flush() != nil {
 				return
 			}
-			flusher.Flush()
-		case a := <-sub.ch:
-			if a.Seq <= last {
-				continue
+		case <-next:
+			var ok bool
+			batches, pos, wake, ok = s.hub.since(pos, batches[:0])
+			if !ok {
+				return // too far behind: the client reconnects and catches up
 			}
-			if !sendEvent(w, a) {
+			for _, b := range batches {
+				out.frames(b)
+			}
+			clear(batches)
+			if out.flush() != nil {
 				return
 			}
-			last = a.Seq
-			flusher.Flush()
+			lingering = true
+			linger.Reset(streamLinger)
 		}
 	}
-}
-
-func sendEvent(w io.Writer, a board.Activity) bool {
-	data, err := json.Marshal(a)
-	if err != nil {
-		return false
-	}
-	_, err = fmt.Fprintf(w, "id: %d\nevent: activity\ndata: %s\n\n", a.Seq, data)
-	return err == nil
 }
 
 // --- plumbing ------------------------------------------------------------

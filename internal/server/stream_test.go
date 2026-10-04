@@ -1,0 +1,190 @@
+package server
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"flag"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/patakil/intagent/internal/board"
+)
+
+var update = flag.Bool("update", false, "rewrite the golden files in testdata")
+
+// oldFrame is how the stream wrote an activity before frames were encoded
+// once for every stream; the bytes must not change.
+func oldFrame(a board.Activity) string {
+	data, _ := json.Marshal(a)
+	return fmt.Sprintf("id: %d\nevent: activity\ndata: %s\n\n", a.Seq, data)
+}
+
+// rawStream opens a stream as member and returns its reader once the server
+// has subscribed it.
+func (ts *testServer) rawStream(t *testing.T, member, query string, header http.Header) (*bufio.Reader, func()) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.url+"/v1/stream"+query, nil)
+	for k, v := range header {
+		req.Header[k] = v
+	}
+	if member != "" {
+		req.Header.Set("Authorization", "Bearer "+ts.tokens[member])
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		cancel()
+		t.Fatalf("stream: %v %v", resp, err)
+	}
+	return bufio.NewReader(resp.Body), func() { cancel(); _ = resp.Body.Close() }
+}
+
+// readBlocks reads n blank-line-terminated blocks: events, comments, fields.
+func readBlocks(t *testing.T, r *bufio.Reader, n int) string {
+	t.Helper()
+	var b strings.Builder
+	for n > 0 {
+		line, err := r.ReadString('\n')
+		if err != nil {
+			t.Fatalf("stream ended with %d blocks to go after %q: %v", n, b.String(), err)
+		}
+		b.WriteString(line)
+		if line == "\n" {
+			n--
+		}
+	}
+	return b.String()
+}
+
+var claimIDs = regexp.MustCompile(`"claim_id":"[^"]*"`)
+
+// compareGolden compares got with a golden file, or rewrites the file with -update.
+func compareGolden(t *testing.T, name, got string) {
+	t.Helper()
+	p := filepath.Join("testdata", name)
+	if *update {
+		if err := os.MkdirAll("testdata", 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(got), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	want, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatalf("%v (run the test with -update to create it)", err)
+	}
+	if got != string(want) {
+		t.Fatalf("%s differs; if the change is meant, read the diff after running with -update\ngot:\n%s\nwant:\n%s", p, got, want)
+	}
+}
+
+// The bytes a stream sends are what every dashboard, old or new, parses:
+// encoding each activity once for every stream must not change them.
+func TestStreamBytes(t *testing.T) {
+	ts := newTestServer(t)
+	r, closeStream := ts.rawStream(t, "bob", "?repo="+repo, nil)
+	ts.do(t, "POST", "/v1/hook", "alice", hookEv(board.KindPostEdit, "alice", "a1", "x/y.go"), nil)
+	live := readBlocks(t, r, 4) // connected; claim.opened, session.started, file.changed
+	closeStream()
+
+	ts.do(t, "POST", "/v1/hook", "alice", hookEv(board.KindPostEdit, "alice", "a1", "x/z.go"), nil)
+	r, closeStream = ts.rawStream(t, "bob", "?repo="+repo, http.Header{"Last-Event-Id": {"2"}})
+	defer closeStream()
+	replay := readBlocks(t, r, 3) // connected; what came after event 2
+
+	acts := ts.Board().Since("", 0)
+	if len(acts) != 4 {
+		t.Fatalf("activities: %+v", acts)
+	}
+	prelude := "retry: 3000\n: connected\n\n"
+	if want := prelude + oldFrame(acts[0]) + oldFrame(acts[1]) + oldFrame(acts[2]); live != want {
+		t.Fatalf("live stream:\n%q\nwant\n%q", live, want)
+	}
+	if want := prelude + oldFrame(acts[2]) + oldFrame(acts[3]); replay != want {
+		t.Fatalf("replay:\n%q\nwant\n%q", replay, want)
+	}
+	compareGolden(t, "stream.golden", claimIDs.ReplaceAllString(live+"--- reconnected with Last-Event-ID: 2\n"+replay, `"claim_id":"c-alice"`))
+}
+
+// One publish is one place in a stream's queue however many activities it
+// holds: a sweep that finds a fleet of 1000 agents stalled must not end every
+// dashboard's stream, as it did when each activity took a place of its own
+// among 256.
+func TestStreamTakesASweepWhole(t *testing.T) {
+	ts := newTestServer(t)
+	r, closeStream := ts.rawStream(t, "bob", "?repo="+repo, nil)
+	defer closeStream()
+	readBlocks(t, r, 1)
+	var acts []board.Activity
+	for i := range 1000 {
+		acts = append(acts, board.Activity{Seq: uint64(i + 1), At: ts.now(), Kind: board.ActivitySessionStalled,
+			Repo: repo, Member: "alice", Session: fmt.Sprintf("s%d", i), Text: "silent for 10m"})
+	}
+	ts.hub.publish(acts)
+	evs := readEvents(t, r, 1000)
+	if evs[0].Seq != 1 || evs[999].Seq != 1000 {
+		t.Fatalf("events %d to %d", evs[0].Seq, evs[999].Seq)
+	}
+}
+
+// A stream writes what has queued up at most every streamLinger, however fast
+// activities come: one write and flush per activity is what made 300
+// dashboards cost the server its CPU in a burst.
+func TestStreamsLingerBetweenWrites(t *testing.T) {
+	ts := newTestServer(t)
+	w := newDiscardWriter()
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodGet, "/v1/stream?repo="+repo, nil).WithContext(ctx)
+	req.Header.Set("Authorization", "Bearer "+ts.tokens["bob"])
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() { defer wg.Done(); ts.Handler().ServeHTTP(w, req) }()
+	defer func() { cancel(); wg.Wait() }()
+	for !ts.subscribed(1) {
+		time.Sleep(time.Millisecond)
+	}
+
+	const n = 500
+	var want int64
+	start := time.Now()
+	for i := range n {
+		a := board.Activity{Seq: uint64(i + 1), At: ts.now(), Kind: board.ActivityFileChanged, Repo: repo, Member: "alice",
+			Paths: []string{fmt.Sprintf("x/f%d.go", i)}}
+		want += int64(len(oldFrame(a)))
+		ts.hub.publish([]board.Activity{a})
+		time.Sleep(2 * time.Millisecond)
+	}
+	prelude := int64(len("retry: 3000\n: connected\n\n"))
+	for deadline := time.Now().Add(10 * time.Second); w.bytes.Load() < prelude+want; {
+		if time.Now().After(deadline) {
+			t.Fatalf("got %d bytes, want %d", w.bytes.Load(), prelude+want)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	took := time.Since(start)
+	// One flush per streamLinger at most, besides the first; one per activity
+	// before. The bound leaves five times the room the measured count needs.
+	flushes := w.flushes.Load()
+	t.Logf("%d activities in %s: %d writes, %d flushes", n, took.Round(time.Millisecond), w.writes.Load(), flushes)
+	if limit := int64(n / 5); flushes > limit {
+		t.Fatalf("%d flushes for %d activities in %s; want at most %d", flushes, n, took, limit)
+	}
+}
+
+// subscribed reports whether at least n streams are open.
+func (ts *testServer) subscribed(n int) bool {
+	ts.hub.mu.Lock()
+	defer ts.hub.mu.Unlock()
+	return len(ts.hub.subs) >= n
+}
