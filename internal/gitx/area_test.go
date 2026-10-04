@@ -35,6 +35,17 @@ func statArea(root, rel string) string {
 	return strings.SplitN(rel, "/", 2)[0]
 }
 
+// foldsCase reports whether the file system at dir ignores case in names.
+func foldsCase(t *testing.T, dir string) bool {
+	t.Helper()
+	write(t, dir, "probe", "")
+	_, statErr := os.Stat(filepath.Join(dir, "PROBE"))
+	if err := os.Remove(filepath.Join(dir, "probe")); err != nil {
+		t.Fatal(err)
+	}
+	return statErr == nil
+}
+
 // countReads counts the directories Areas reads, by path.
 func countReads(t *testing.T) map[string]int {
 	t.Helper()
@@ -72,8 +83,11 @@ func TestAreasReadEachDirectoryOnce(t *testing.T) {
 			files = append(files, dir+"/gone/f.go") // a deleted directory
 		}
 	}
-	write(t, root, "d1/d2/BUILD/x", "")          // a directory named like a marker
-	write(t, root, "d2/build/x", "")             // and one that differs in case
+	write(t, root, "d1/d2/BUILD/x", "") // a directory named like a marker
+	// And one that differs in case, where the loop writes nothing that
+	// could be the same name to a file system that ignores case.
+	write(t, root, "e1/e2/build/x", "")
+	files = append(files, "e1/e2/f.go")
 	write(t, root, "d3/d3/elsewhere/go.mod", "") // a link to a marker
 	if runtime.GOOS != "windows" {
 		_ = os.Symlink(filepath.Join(root, "d3/d3/elsewhere/go.mod"), filepath.Join(root, "d3/d0/go.mod"))
@@ -82,7 +96,7 @@ func TestAreasReadEachDirectoryOnce(t *testing.T) {
 
 	reads := countReads(t)
 	a := NewAreas(root, nil)
-	a.foldCase = false // as os.Stat on this file system, which tells case apart
+	a.foldCase = foldsCase(t, root) // as os.Stat does here
 	for _, f := range files {
 		if got, want := a.Of(f), statArea(root, f); got != want {
 			t.Errorf("Of(%q) = %q, want %q", f, got, want)
