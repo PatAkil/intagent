@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"maps"
 	"math"
+	"math/rand"
 	"runtime"
 	"slices"
 	"strings"
@@ -501,5 +502,96 @@ func TestInboxEvictionOrder(t *testing.T) {
 		if got := evictIndex(tc.in); got != tc.want {
 			t.Errorf("evictIndex(%+v) = %d, want %d", tc.in, got, tc.want)
 		}
+	}
+}
+
+// fleetDay runs one working day of a fleet: each slot's agent does runs
+// of an hour or so, half of them in a fresh worktree of their own, most left
+// unmerged when the run ends; some edit files everyone touches, and some
+// send a note to a teammate.
+func fleetDay(h *harness, rng *rand.Rand, day, members, slots, runs int) {
+	hot := []string{"go.mod", "go.sum", "CHANGELOG.md"}
+	for run := range runs {
+		for s := range members * slots {
+			m := fmt.Sprintf("m%02d", s%members)
+			wt := fmt.Sprintf("slot%02d", s)
+			if rng.Intn(2) == 0 {
+				wt = fmt.Sprintf("task-d%d-r%d-s%02d", day, run, s)
+			}
+			sid := fmt.Sprintf("%s-d%d-r%d", wt, day, run)
+			area := fmt.Sprintf("svc%02d", (s*7+run)%40)
+			var files []string
+			for f := range 4 + rng.Intn(8) {
+				files = append(files, fmt.Sprintf("%s/pkg%d/file%02d.go", area, f%3, rng.Intn(30)))
+			}
+			if rng.Intn(4) == 0 {
+				files = append(files, hot[rng.Intn(len(hot))])
+			}
+			h.scanAt(m, wt, sid, files...)
+			h.at(KindPrompt, m, wt, sid)
+			for _, f := range files[:3] {
+				h.at(KindPostEdit, m, wt, sid, f)
+			}
+			if rng.Intn(10) == 0 {
+				w := whereOf(m)
+				w.Worktree = "/work/" + m + "/" + wt
+				_, _ = h.b.Note(h.now, NoteRequest{Member: m, Where: w, To: fmt.Sprintf("m%02d", rng.Intn(members)), Text: "heads up"})
+			}
+			if rng.Intn(5) == 0 {
+				h.scanAt(m, wt, sid) // merged: nothing left to track
+			}
+			h.at(KindSessionEnd, m, wt, sid)
+			h.advance(time.Duration(rng.Intn(20)) * time.Second)
+		}
+		h.advance(time.Hour)
+		h.b.Sweep(h.now)
+	}
+	for range 24 - runs { // the night
+		h.advance(time.Hour)
+		h.b.Sweep(h.now)
+	}
+}
+
+// Nine days of a fleet: a claim no agent listens on is queued nothing and
+// remembers no alert, no item is kept past its day, the claims with no agent
+// running stay under the bound, and what the board holds per claim stays
+// small. Before,
+// this fleet left 525 claims holding 4,105 items and 9,975 alerts, 6.7 KB of
+// heap a claim; the scale review's soak, 11.3 KB.
+func TestFleetPlateausOverNineDays(t *testing.T) {
+	const maxDormant = 400
+	h := newHarness(t, func(c *Config) { c.MaxDormantClaims = maxDormant })
+	h.b.notify = nil // the harness would keep every activity
+	rng := rand.New(rand.NewSource(1))
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	for day := range 9 {
+		fleetDay(h, rng, day, 8, 3, 8)
+	}
+	runtime.GC()
+	runtime.ReadMemStats(&after)
+	live := h.b.liveAt(h.now)
+	items, alerts, dormant := 0, 0, 0
+	for _, c := range h.b.claims {
+		items += len(c.Inbox)
+		alerts += len(c.Alerted)
+		if !live.claim(c.ID) {
+			dormant++
+		}
+		if !h.b.listening(live, c) && len(c.Alerted) > 0 {
+			t.Errorf("claim %s, quiet since %s, holds %d alerts", c.ID, c.UpdatedAt, len(c.Alerted))
+		}
+		for _, it := range c.Inbox {
+			if h.now.Sub(it.At) >= inboxTTL {
+				t.Errorf("claim %s holds an item from %s", c.ID, it.At)
+			}
+		}
+	}
+	perClaim := float64(int64(after.HeapAlloc)-int64(before.HeapAlloc)) / float64(len(h.b.claims))
+	t.Logf("after 9 days: %d claims, %d with no agent running, %d inbox items, %d alerts; %.0f bytes of heap a claim",
+		len(h.b.claims), dormant, items, alerts, perClaim)
+	if dormant > maxDormant || perClaim > 5.5*1024 {
+		t.Fatalf("%d claims with no agent running, %.0f bytes a claim; want at most %d and 5.5 KB", dormant, perClaim, maxDormant)
 	}
 }
