@@ -17,27 +17,19 @@ import (
 // maxRefused bounds the refused calls a session remembers.
 const maxRefused = 8
 
-// advisory reports whether an event only asks something: its answer is its
-// point, and the session's later events record what it would have. Every
-// other event reports a fact, which is recorded even when nobody hears the
-// answer.
-func (ev HookEvent) advisory() bool {
-	switch ev.Kind {
-	case KindPreEdit, KindToolStart:
-		return true
-	case KindHeartbeat:
-		return ev.Footprint == nil
-	}
-	return false
-}
-
-// abandon answers an advisory event that came too late. It changes nothing
-// but the count of edits that went ahead unchecked.
+// abandon answers a pre_edit that came too late. A pre_edit only asks
+// whether an edit may go ahead: its answer is its point, the edit has gone
+// ahead without it, and the edit's post_edit reports what it did. So it
+// changes nothing but the count of edits that went ahead unchecked.
+//
+// Every other event reports a fact, which is recorded even when nobody hears
+// the answer: a tool started, a session alive, an edit made. A tool start's
+// answer carries nothing anyway, and dropping it would make a session deep in
+// a long shell command look stalled, and its reservations stop blocking
+// teammates' edits.
 func (b *Board) abandon(now time.Time, ev HookEvent) HookResult {
-	if ev.Kind == KindPreEdit {
-		b.statsOf(ev.Where.Repo, now).Unheard++
-		b.changed()
-	}
+	b.statsOf(ev.Where.Repo, now).Unheard++
+	b.changed()
 	return HookResult{Decision: DecisionAllow, Unchecked: true}
 }
 

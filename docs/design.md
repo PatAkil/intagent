@@ -165,11 +165,11 @@ milliseconds. The server notes when a hook arrived and, once it holds the board'
 waited longer than that, less min(300 ms, a quarter), or whether its connection has closed after at least a second
 (a proxy that half-closes a connection closes the request's context while it still waits). Then:
 
-- a late question (`pre_edit`, a tool starting, a heartbeat without a footprint) changes nothing: nothing is
-  acknowledged, counted, recorded or announced, and the answer is an allow marked `unchecked`, which a client still
-  waiting treats as no answer;
-- a late fact (any other event) is recorded, but nothing is delivered: notes, alerts and held-back context wait for
-  the session's next answer.
+- a late `pre_edit`, which only asks whether an edit may go ahead, changes nothing: nothing is acknowledged,
+  counted, recorded or announced, and the answer is an allow marked `unchecked`, which a client still waiting treats
+  as no answer;
+- any other late event reports a fact (a tool started, a session alive, an edit made) and is recorded, but nothing is
+  delivered: notes, alerts and held-back context wait for the session's next answer.
 
 An answer can also miss its agent for reasons the server cannot see. A `post_edit` whose `tool_use_id` the board did
 not see start, or saw refused, is judged when it arrives, without acknowledging anything; what the agent would have

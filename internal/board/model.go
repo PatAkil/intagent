@@ -319,9 +319,9 @@ type HookEvent struct {
 	LateContext bool `json:"late_context,omitempty"`
 	// Late, set by the server, reports whether the agent has stopped waiting
 	// for the answer, or will have by the time it arrives. The board asks
-	// once, when it gets to the event: a late question is dropped unanswered,
-	// and a late fact is recorded without delivering anything, which then
-	// waits for the session's next answer.
+	// once, when it gets to the event: a late pre_edit is dropped unanswered,
+	// and any other late event is recorded without delivering anything,
+	// which then waits for the session's next answer.
 	Late func() bool `json:"-"`
 }
 

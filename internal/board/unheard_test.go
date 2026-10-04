@@ -52,15 +52,15 @@ func TestLateEventsAreRecordedButNotAnswered(t *testing.T) {
 	rows := []struct {
 		name     string
 		ev       HookEvent
-		advisory bool // a late one is dropped
+		question bool // a late one is dropped
 		delivers bool // one answered in time carries the note
 		applied  func(h *harness) bool
 	}{
-		{name: "pre_edit", ev: HookEvent{Kind: KindPreEdit, Tool: "Edit", ToolUseID: "t1", Paths: refs("svc/pay/retry.go")}, advisory: true,
+		{name: "pre_edit", ev: HookEvent{Kind: KindPreEdit, Tool: "Edit", ToolUseID: "t1", Paths: refs("svc/pay/retry.go")}, question: true,
 			applied: func(h *harness) bool { return h.b.View(h.now, repo).Stats.Checks == 3 }}, // after bob's edit and hers
-		{name: "tool_start", ev: HookEvent{Kind: KindToolStart, Tool: "Grep", ToolUseID: "t1"}, advisory: true,
+		{name: "tool_start", ev: HookEvent{Kind: KindToolStart, Tool: "Grep", ToolUseID: "t1"},
 			applied: func(h *harness) bool { return h.toolOf("alice") == "Grep" }},
-		{name: "heartbeat", ev: HookEvent{Kind: KindHeartbeat}, advisory: true, delivers: true,
+		{name: "heartbeat", ev: HookEvent{Kind: KindHeartbeat}, delivers: true,
 			applied: func(h *harness) bool { return alicesSession(h.t, h).LastSeen.Equal(h.now) }},
 		{name: "heartbeat with a footprint", ev: HookEvent{Kind: KindHeartbeat, Footprint: fp}, delivers: true,
 			applied: func(h *harness) bool { return changed(h, "alice", "svc/new.go") }},
@@ -107,7 +107,7 @@ func TestLateEventsAreRecordedButNotAnswered(t *testing.T) {
 				if asked != 1 {
 					t.Errorf("Late asked %d times, want once", asked)
 				}
-				dropped := late && row.advisory
+				dropped := late && row.question
 				if got := errors.Is(err, ErrAbandoned); got != dropped || (err != nil && !dropped) {
 					t.Fatalf("err = %v, want abandoned %v", err, dropped)
 				}
@@ -145,6 +145,32 @@ func TestLateEventsAreRecordedButNotAnswered(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// A late tool start is a fact: alice's agent is inside a long shell command,
+// whose start it never waits to hear answered. Her session keeps the longer
+// stall threshold of a tool call, and her reservation keeps blocking edits.
+func TestLateToolStartKeepsTheSessionInItsTool(t *testing.T) {
+	h := newHarness(t)
+	h.hook(KindPrompt, "alice", "a1")
+	h.declare("alice", ModeExclusive, "Rewrite payments", "svc/pay/**")
+	h.hook(KindPrompt, "bob", "b1")
+	h.advance(time.Second)
+	if _, err := h.b.Hook(h.now, HookEvent{Kind: KindToolStart, Member: "alice", Agent: AgentClaudeCode, SessionID: "a1",
+		Where: whereOf("alice"), Tool: "Bash", ToolUseID: "sh1", Late: func() bool { return true }}); err != nil && !errors.Is(err, ErrAbandoned) {
+		t.Fatal(err)
+	}
+	for range 20 { // twenty minutes into her test run, with bob's agent at work
+		h.advance(time.Minute)
+		h.hook(KindHeartbeat, "bob", "b1")
+		h.b.Sweep(h.now)
+	}
+	if n := len(h.activities(ActivitySessionStalled)); n != 0 {
+		t.Fatalf("%d stalls announced for a session inside a tool call", n)
+	}
+	if res := h.hook(KindPreEdit, "bob", "b1", "svc/pay/retry.go"); len(res.Conflicts) != 1 || res.Conflicts[0].Severity != SeverityBlock {
+		t.Fatalf("bob's edit inside alice's reservation: %s %+v, want blocked", res.Decision, res.Conflicts)
 	}
 }
 

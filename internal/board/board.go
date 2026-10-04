@@ -369,9 +369,9 @@ func (b *Board) liveSessions(now time.Time) map[string]bool {
 // Hook applies one lifecycle event and returns what the agent should be told.
 // It never refuses on error: callers should allow the agent to continue.
 //
-// An event whose agent has stopped waiting (ev.Late) is not answered: a
-// question, such as an edit about to be made, returns ErrAbandoned having
-// changed nothing, and a fact is recorded without delivering anything.
+// An event whose agent has stopped waiting (ev.Late) is not answered: an
+// edit about to be made returns ErrAbandoned having changed nothing, and any
+// other event is recorded without delivering anything.
 func (b *Board) Hook(now time.Time, ev HookEvent) (HookResult, error) {
 	allow := HookResult{Decision: DecisionAllow}
 	ev, err := ev.clean()
@@ -385,7 +385,7 @@ func (b *Board) Hook(now time.Time, ev HookEvent) (HookResult, error) {
 	// Asked once the lock is held: a hook queued behind other work can reach
 	// the board after its agent went ahead without the answer.
 	late := ev.Late != nil && ev.Late()
-	if late && ev.advisory() {
+	if late && ev.Kind == KindPreEdit {
 		return b.abandon(now, ev), ErrAbandoned
 	}
 	b.changed()
