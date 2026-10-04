@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"net/http"
 	"time"
 )
@@ -11,6 +12,17 @@ import (
 // the dashboard reloads its board no faster than that anyway. A variable for
 // tests.
 var streamLinger = 100 * time.Millisecond
+
+// streamWriteTimeout bounds how long a piece of a stream's write may wait on
+// its client. The server has no WriteTimeout, which would end every stream,
+// so without this a dashboard that stops reading (a laptop put to sleep, a
+// proxy that stalls) would hold its handler and buffers in a write until TCP
+// gave up, which takes about 15 minutes. A variable for tests.
+var streamWriteTimeout = 15 * time.Second
+
+// streamPiece is how much of a write one deadline covers, so a client that
+// keeps reading a large catch-up slowly still gets all of it.
+const streamPiece = 64 << 10
 
 // maxKeptBuffer bounds the buffer a stream keeps between writes; a larger one,
 // grown for a burst, is let go.
@@ -51,18 +63,38 @@ func (o *streamWriter) frames(batch []frame) {
 	}
 }
 
-// flush writes what has been added and flushes it to the client.
+// flush writes what has been added and flushes it to the client, each piece
+// within streamWriteTimeout.
 func (o *streamWriter) flush() error {
 	if len(o.buf) == 0 {
 		return nil
 	}
-	_, err := o.w.Write(o.buf)
+	for b := o.buf; len(b) > 0; {
+		k := min(len(b), streamPiece)
+		if err := o.deadline(streamWriteTimeout); err != nil {
+			return err
+		}
+		if _, err := o.w.Write(b[:k]); err != nil {
+			return err
+		}
+		b = b[k:]
+	}
 	o.buf = o.buf[:0]
 	if cap(o.buf) > maxKeptBuffer {
 		o.buf = nil
 	}
-	if err != nil {
+	if err := o.deadline(streamWriteTimeout); err != nil {
 		return err
 	}
 	return o.rc.Flush()
+}
+
+// deadline gives the next write d. A writer that takes no deadline, such as
+// a test's recorder, writes without one.
+func (o *streamWriter) deadline(d time.Duration) error {
+	err := o.rc.SetWriteDeadline(time.Now().Add(d))
+	if errors.Is(err, http.ErrNotSupported) {
+		return nil
+	}
+	return err
 }

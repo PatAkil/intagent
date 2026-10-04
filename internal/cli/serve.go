@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
 	"os"
 	"strings"
 	"time"
@@ -63,7 +62,7 @@ func (a *App) serve(ctx context.Context, args []string) error {
 		// allow only six connections to a server.
 		tlsConfig = &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12, NextProtos: []string{"h2", "http/1.1"}}
 	}
-	ln, err := new(net.ListenConfig).Listen(ctx, "tcp", *addr)
+	ln, err := server.Listen(ctx, *addr)
 	if err != nil {
 		return err
 	}

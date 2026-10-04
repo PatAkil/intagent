@@ -141,6 +141,14 @@ The server keeps the board in memory behind one mutex. Each mutation marks the b
 an atomic snapshot (write, fsync, rename) at most once a second and on shutdown. Team scale is dozens of members and
 a few hundred sessions, which this handles with room to spare.
 
+The dashboard follows a repository through a server-sent event stream. Each activity is encoded once, and the server
+keeps the last 1024 publishes in one ring that every stream reads at its own pace, so publishing costs the same however
+many dashboards are open. A stream writes what is new in one write, then waits 100 ms before it takes more, so a burst
+wakes each stream ten times a second rather than once per activity. A stream that falls more than 1024 publishes
+behind is ended and catches up with `Last-Event-ID`. A stream whose client takes no part of a write for 15 seconds is
+ended, and on Linux the kernel gives up on a connection whose peer acknowledges nothing for a minute, so a dashboard
+that went away does not hold the server's memory.
+
 ## API
 
 All endpoints take and return JSON and require `Authorization: Bearer <token>`, except `/healthz`.

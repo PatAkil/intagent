@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -187,4 +188,50 @@ func (ts *testServer) subscribed(n int) bool {
 	ts.hub.mu.Lock()
 	defer ts.hub.mu.Unlock()
 	return len(ts.hub.subs) >= n
+}
+
+// A dashboard that stops reading must not hold its stream's handler in a
+// write until TCP gives up, about 15 minutes: the write deadline releases it.
+func TestStalledStreamIsReleased(t *testing.T) {
+	defer func(d time.Duration) { streamWriteTimeout = d }(streamWriteTimeout)
+	streamWriteTimeout = time.Second
+	ts := newTestServer(t)
+	hs := httptest.NewUnstartedServer(ts.Handler())
+	hs.Config.ConnContext = func(ctx context.Context, c net.Conn) context.Context {
+		_ = c.(*net.TCPConn).SetWriteBuffer(8 << 10) // so the kernel cannot hold the whole stream
+		return ctx
+	}
+	hs.Start()
+	defer hs.Close()
+
+	c, err := net.Dial("tcp", hs.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+	_ = c.(*net.TCPConn).SetReadBuffer(4 << 10)
+	fmt.Fprintf(c, "GET /v1/stream?repo=%s HTTP/1.1\r\nHost: intagent\r\nAuthorization: Bearer %s\r\n\r\n", repo, ts.tokens["bob"])
+	for !ts.subscribed(1) {
+		time.Sleep(time.Millisecond)
+	}
+
+	// 4 MB of activities, which the client never reads.
+	long := strings.Repeat("d", 90) + "/"
+	var acts []board.Activity
+	for i := range 200 {
+		a := board.Activity{Seq: uint64(i + 1), At: ts.now(), Kind: board.ActivityFileChanged, Repo: repo, Member: "alice"}
+		for j := range 200 {
+			a.Paths = append(a.Paths, fmt.Sprintf("%s%d/%d.go", long, i, j))
+		}
+		acts = append(acts, a)
+	}
+	start := time.Now()
+	ts.hub.publish(acts)
+	for ts.subscribed(1) {
+		if time.Since(start) > streamWriteTimeout+4*time.Second {
+			t.Fatalf("the stream's handler is still writing to a client that reads nothing, %s after the deadline", time.Since(start)-streamWriteTimeout)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Logf("released %s after the activities were published, with a %s deadline", time.Since(start).Round(time.Millisecond), streamWriteTimeout)
 }

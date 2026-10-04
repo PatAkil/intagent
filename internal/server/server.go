@@ -599,6 +599,12 @@ func (w *statusWriter) Flush() {
 	}
 }
 
+// FlushError flushes, and says when the client could not be written to: a
+// stream whose write deadline passed ends at once.
+func (w *statusWriter) FlushError() error {
+	return http.NewResponseController(w.ResponseWriter).Flush()
+}
+
 // Unwrap supports http.ResponseController.
 func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
