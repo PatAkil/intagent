@@ -169,6 +169,16 @@ func (c *Client) BoardText(ctx context.Context, repo string) (string, error) {
 	return s, err
 }
 
+// AgentBoard fetches the work of other agents in a repository as text for an
+// agent working in w: the claims nearest its own first, at most limit of them.
+// A server older than this answer sends the whole board instead.
+func (c *Client) AgentBoard(ctx context.Context, w board.Where, limit int) (string, error) {
+	q := url.Values{"format": {"text"}, "repo": {w.Repo}, "host": {w.Host}, "worktree": {w.Worktree}, "limit": {strconv.Itoa(limit)}}
+	var s string
+	err := c.do(ctx, http.MethodGet, "/v1/board?"+q.Encode(), nil, &s)
+	return s, err
+}
+
 // Repos lists repositories with claims.
 func (c *Client) Repos(ctx context.Context) ([]board.RepoSummary, error) {
 	var rs []board.RepoSummary

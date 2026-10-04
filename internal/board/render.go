@@ -152,7 +152,7 @@ func (b *Board) renderStart(now time.Time, c *claim) string {
 			lines = append(lines, b.summarizeClaim(now, r.c, live[r.c.ID]))
 		}
 		if others > maxBoardRows {
-			lines = append(lines, fmt.Sprintf("- and %d more; call the intagent team_board tool to see all.", others-maxBoardRows))
+			lines = append(lines, fmt.Sprintf("- and %d more; the intagent team_board tool lists more, and check_paths checks the files you plan to change.", others-maxBoardRows))
 		}
 	}
 	lines = append(lines, toolsHint)

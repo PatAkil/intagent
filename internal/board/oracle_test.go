@@ -214,7 +214,9 @@ func TestReportUncheckedMatchesTheOracleWithTies(t *testing.T) {
 
 // oldRenderStart is renderStart as it was: it sorted every claim in the
 // repository with a comparator that rebuilt two claims' area sets, and
-// sorted each shown claim's whole footprint for its four newest files.
+// sorted each shown claim's whole footprint for its four newest files. Its
+// "and N more" line says what renderStart says now, since what the oracle
+// checks is which claims a greeting shows, not how it words the rest.
 func (b *Board) oldRenderStart(now time.Time, c *claim) string {
 	live := b.liveClaims(now)
 	var others []*claim
@@ -240,7 +242,7 @@ func (b *Board) oldRenderStart(now time.Time, c *claim) string {
 		lines = append(lines, fmt.Sprintf("Other work in this repository %s:", dataNotice))
 		for i, o := range others {
 			if i == maxBoardRows {
-				lines = append(lines, fmt.Sprintf("- and %d more; call the intagent team_board tool to see all.", len(others)-maxBoardRows))
+				lines = append(lines, fmt.Sprintf("- and %d more; the intagent team_board tool lists more, and check_paths checks the files you plan to change.", len(others)-maxBoardRows))
 				break
 			}
 			lines = append(lines, b.oldSummarizeClaim(now, o, live[o.ID]))

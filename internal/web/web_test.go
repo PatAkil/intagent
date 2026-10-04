@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os/exec"
 	"regexp"
 	"strings"
 	"testing"
@@ -48,5 +49,19 @@ func TestDashboardIsServedLockedDown(t *testing.T) {
 	}
 	if r, _ := get(t, "/app.js"); !strings.Contains(r.Header.Get("Content-Type"), "javascript") {
 		t.Errorf("app.js Content-Type = %q", r.Header.Get("Content-Type"))
+	}
+}
+
+// The dashboard reloads the board and redraws the feed within their bounds,
+// whatever its clocks do: testdata/pacing.js runs app.js on fake clocks and
+// timers through a sleep in the middle of a request and wall clock steps both
+// ways. It needs Node, which CI's runners have.
+func TestDashboardPacingIsBounded(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("no node")
+	}
+	if out, err := exec.Command(node, "testdata/pacing.js", "static/app.js").CombinedOutput(); err != nil {
+		t.Fatalf("%v\n%s", err, out)
 	}
 }

@@ -9,8 +9,11 @@
 (function () {
   const REFRESH_MS = 15000;
   const RELTIME_MS = 10000;
-  const DEBOUNCE_MS = 300;
+  const DEBOUNCE_MS = 300; // after the first event of a burst
+  const RELOAD_GAP_MS = 1000; // between board reloads, at least
+  const RELOAD_JITTER_MS = 500;
   const FEED_CAP = 200;
+  const FEED_REDRAW_MS = 250; // between redraws of the feed, at least
   const FILES_SHOWN = 8;
   const HOT_SHOWN = 8;
   const STORE_KEY = 'intagent.repo';
@@ -48,7 +51,13 @@
     debounce: 0,
     inflight: false,
     again: false,
+    lastFetchAt: 0, // when the latest board reload started, by tick()
+    lastFetchMs: 0, // and how long it took
+    etag: '', // the validator of the board in S.view
+    feedTimer: 0,
+    feedAt: 0, // when the feed was last drawn, by tick()
     skew: 0,
+    epoch: '', // the server process the board came from
     boardError: '',
     timers: [],
   };
@@ -167,6 +176,13 @@
 
   const serverNow = () => Date.now() + S.skew;
 
+  // tick is the clock that paces reloads and redraws. It only moves forward:
+  // the wall clock can step either way (a time sync, a clock set by hand),
+  // and a wait measured on it could then last an hour.
+  const tick = typeof performance === 'object' && performance && typeof performance.now === 'function'
+    ? () => performance.now()
+    : () => Date.now();
+
   function span(ms) {
     if (!(ms >= 0)) ms = 0;
     if (ms < 60000) return Math.floor(ms / 1000) + 's';
@@ -189,9 +205,14 @@
     }
   }
 
+  // One formatter for every tooltip: toLocaleString with options builds a new
+  // one on each call, and a busy board shows thousands of times.
+  let absFormat = null;
+
   function absTime(t) {
     try {
-      return new Date(t).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'medium' });
+      absFormat = absFormat || new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'medium' });
+      return absFormat.format(new Date(t));
     } catch (_) {
       return new Date(t).toISOString();
     }
@@ -269,23 +290,47 @@
     return re;
   }
 
-  function matchSegs(p, s) {
-    while (p.length > 0) {
-      if (p[0] === '**') {
-        for (let k = 0; k <= s.length; k++) if (matchSegs(p.slice(1), s.slice(k))) return true;
+  function matchSegs(p, s, i, j) {
+    for (; i < p.length; i++, j++) {
+      if (p[i] === '**') {
+        for (let k = j; k <= s.length; k++) if (matchSegs(p, s, i + 1, k)) return true;
         return false;
       }
-      if (s.length === 0) return false;
-      const re = segRegExp(p[0]);
-      if (!re || !re.test(s[0])) return false;
-      p = p.slice(1);
-      s = s.slice(1);
+      if (j >= s.length) return false;
+      const re = segRegExp(p[i]);
+      if (!re || !re.test(s[j])) return false;
     }
     return true;
   }
 
-  function globMatch(pattern, name) {
-    return matchSegs(String(pattern).split('/'), String(name).split('/'));
+  // The directory a pattern is rooted in: its leading segments without
+  // wildcards, as internal/glob's LiteralDir has it. Every name the pattern
+  // matches is that directory or below it.
+  function literalDir(pattern) {
+    const segs = String(pattern).split('/');
+    let n = 0;
+    while (n < segs.length && !/[*?[\\]/.test(segs[n])) n++;
+    return segs.slice(0, n).join('/');
+  }
+
+  // The paths in sorted that are dir or below it ('' is everything).
+  function under(sorted, dir) {
+    if (!dir) return sorted;
+    const from = (x) => {
+      let lo = 0;
+      let hi = sorted.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >>> 1;
+        if (sorted[mid] < x) lo = mid + 1; else hi = mid;
+      }
+      return lo;
+    };
+    const out = [];
+    const i = from(dir);
+    if (sorted[i] === dir) out.push(dir);
+    const below = dir + '/';
+    for (let j = from(below); j < sorted.length && sorted[j].startsWith(below); j++) out.push(sorted[j]);
+    return out;
   }
 
   // --- API -------------------------------------------------------------------
@@ -296,22 +341,35 @@
   const FETCH_TIMEOUT_MS = 15000;
 
   // The timeout covers the body too: a response that stalls halfway is as
-  // stuck as one that never starts.
-  async function getJSON(url) {
+  // stuck as one that never starts. read turns the response into the result.
+  async function request(url, headers, read) {
     const ctl = typeof AbortController === 'function' ? new AbortController() : null;
     const timer = ctl ? setTimeout(() => ctl.abort(), FETCH_TIMEOUT_MS) : 0;
     try {
-      const r = await fetch(url, { credentials: 'same-origin', cache: 'no-store', headers: { Accept: 'application/json' }, signal: ctl ? ctl.signal : undefined });
+      const r = await fetch(url, {
+        credentials: 'same-origin', cache: 'no-store', signal: ctl ? ctl.signal : undefined,
+        headers: Object.assign({ Accept: 'application/json' }, headers),
+      });
       if (r.status === 401) throw new AuthError('not signed in');
-      if (!r.ok) {
+      if (!r.ok && r.status !== 304) {
         let msg = 'HTTP ' + r.status;
         try { const b = await r.json(); if (b && typeof b.error === 'string') msg = b.error; } catch (_) { /* keep status */ }
         throw new Error(msg);
       }
-      return await r.json();
+      return await read(r);
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  const getJSON = (url) => request(url, {}, (r) => r.json());
+
+  // A repository's board, or null when the server says the one the page holds
+  // (etag) is still current. The page sets If-None-Match itself, so the
+  // browser hands the 304 over rather than a stored copy with an old "at".
+  function getBoard(repo, etag) {
+    return request('/v1/board?repo=' + encodeURIComponent(repo), etag ? { 'If-None-Match': etag } : {},
+      async (r) => (r.status === 304 ? null : { view: await r.json(), etag: r.headers.get('ETag') || '' }));
   }
 
   // --- people ----------------------------------------------------------------
@@ -405,7 +463,7 @@
     show('foot', true);
     $('foot-text').replaceChildren(
       'intagent ', S.version ? code(S.version) : '', ' · ', location.host,
-      ' · board refreshes on every event and every 15 s');
+      ' · board refreshes a second or so after events, and every 15 s');
   }
 
   function toLogin() {
@@ -417,7 +475,7 @@
 
   function startLive() {
     stopLive();
-    S.timers.push(setInterval(() => { refreshBoard(); loadRepos(); }, REFRESH_MS));
+    S.timers.push(setInterval(() => { scheduleRefresh(); loadRepos(); }, REFRESH_MS));
     S.timers.push(setInterval(updateTimes, RELTIME_MS));
   }
 
@@ -427,6 +485,8 @@
     clearTimeout(S.reconnectTimer);
     clearTimeout(S.debounce);
     S.debounce = 0;
+    clearTimeout(S.feedTimer);
+    S.feedTimer = 0;
     if (S.es) { S.es.close(); S.es = null; }
   }
 
@@ -501,10 +561,19 @@
   }
 
   // Throttled, not debounced: under steady activity a debounce would never
-  // fire, and the board would sit still while the feed moved.
+  // fire, and the board would sit still while the feed moved. Reloads are a
+  // second apart and up to half a second more, so tabs on one board drift
+  // apart, and twice as far apart as the last one took, drawing included, so
+  // neither a slow server nor a slow laptop is asked to go faster than it can.
+  // They are never further apart than the poll's 15 s, though: a reload that
+  // only seemed long, because the laptop slept through it, must not hold the
+  // board still for as long, and the poll reloads within its period. The feed
+  // itself is live.
   function scheduleRefresh() {
     if (S.debounce) return;
-    S.debounce = setTimeout(() => { S.debounce = 0; refreshBoard(); }, DEBOUNCE_MS);
+    const gap = Math.min(REFRESH_MS, Math.max(RELOAD_GAP_MS + Math.random() * RELOAD_JITTER_MS, 2 * S.lastFetchMs));
+    const wait = Math.min(gap, Math.max(DEBOUNCE_MS, S.lastFetchAt + gap - tick()));
+    S.debounce = setTimeout(() => { S.debounce = 0; refreshBoard(); }, wait);
   }
 
   // --- repositories ------------------------------------------------------------
@@ -519,6 +588,9 @@
       return;
     }
     S.repos = Array.isArray(repos) ? repos.filter((r) => r && typeof r.repo === 'string') : [];
+    // A new server process: the board's next answer starts the feed over.
+    const epoch = (S.repos.find((r) => typeof r.epoch === 'string' && r.epoch) || {}).epoch;
+    if (epoch && S.epoch && epoch !== S.epoch && S.repo) refreshBoard();
     if (!S.repo) {
       const saved = storeGet(STORE_KEY);
       const pick = S.repos.some((r) => r.repo === saved) ? saved : (S.repos[0] && S.repos[0].repo);
@@ -554,6 +626,7 @@
     S.repo = repo;
     S.view = null;
     S.viewKey = '';
+    S.etag = '';
     S.feed = new Map();
     S.fresh.clear();
     S.expanded.clear();
@@ -572,39 +645,74 @@
     if (S.inflight) { S.again = true; return; }
     S.inflight = true;
     const repo = S.repo;
+    // Every event seen so far happened before this request, so the board it
+    // gets back counts at least this far.
+    const seenSeq = S.feed.size ? Math.max(...S.feed.keys()) : 0;
+    const started = tick();
+    S.lastFetchAt = started;
     try {
-      const v = await getJSON('/v1/board?repo=' + encodeURIComponent(repo));
+      const got = await getBoard(repo, S.view ? S.etag : '');
       if (repo !== S.repo) return;
+      S.lastOk = Date.now();
+      setBoardError('');
+      if (!got) {
+        // Unchanged since the board the page shows: only its age is new.
+        asOf(S.lastOk + S.skew);
+        updateTimes();
+        return;
+      }
+      const v = got.view;
+      S.etag = got.etag;
       const at = tsOf(v.at);
       if (Number.isFinite(at)) S.skew = at - Date.now();
       S.view = normalise(v);
-      S.lastOk = Date.now();
-      // A server restarted without its snapshot numbers events from 1 again:
-      // start the feed and the stream over rather than skip the new events.
-      const maxSeq = S.feed.size ? Math.max(...S.feed.keys()) : 0;
-      const reused = S.view.recent.some((a) => a && S.feed.has(a.seq) &&
-        (S.feed.get(a.seq).at !== a.at || S.feed.get(a.seq).kind !== a.kind));
-      if (S.view.last_seq < maxSeq || reused) {
+      if (restarted(S.view, seenSeq)) {
         S.feed = new Map();
         S.fresh.clear();
         connectStream();
       }
-      setBoardError('');
       mergeFeed(S.view.recent, false);
       const key = JSON.stringify([S.view.claims, S.view.stats, S.view.policy, S.view.live_sessions]);
       if (key !== S.viewKey) {
         S.viewKey = key;
         renderBoard();
       } else {
+        asOf(at);
         updateTimes();
       }
     } catch (e) {
       if (e instanceof AuthError) { toLogin(); return; }
       lostContact(e);
     } finally {
+      S.lastFetchMs = tick() - started;
       S.inflight = false;
       if (S.again) { S.again = false; scheduleRefresh(); }
     }
+  }
+
+  // A restarted server may number its events from 1 again: the feed and the
+  // stream then start over rather than skip the new events. The server names
+  // its process with an epoch; an older server has its numbers checked instead.
+  function restarted(v, seenSeq) {
+    if (v.epoch) {
+      const was = S.epoch;
+      S.epoch = v.epoch;
+      return was !== '' && was !== v.epoch;
+    }
+    const reused = v.recent.some((a) => a && S.feed.has(a.seq) &&
+      (S.feed.get(a.seq).at !== a.at || S.feed.get(a.seq).kind !== a.kind));
+    return v.last_seq < seenSeq || reused;
+  }
+
+  // Moves the "as of" time of a board that did not change otherwise.
+  function asOf(t) {
+    if (!S.view || !Number.isFinite(t)) return;
+    S.view.at = new Date(t).toISOString();
+    const n = $('as-of');
+    if (!n) return;
+    n.dataset.ts = String(t);
+    n.setAttribute('datetime', S.view.at);
+    n.title = 'Board read at ' + absTime(t);
   }
 
   const arr = (x) => (Array.isArray(x) ? x : []);
@@ -638,6 +746,7 @@
       members: arr(v.members),
       live_sessions: Number(v.live_sessions) || 0,
       last_seq: Number(v.last_seq) || 0,
+      epoch: typeof v.epoch === 'string' ? v.epoch : '',
     };
   }
 
@@ -720,6 +829,22 @@
         if (!byPath.has(p)) byPath.set(p, []);
       }
     }
+    // Which intents cover which of these paths. Each pattern is matched once
+    // against the paths under its directory, not every path against every
+    // pattern; the lists keep the claims' order, then each claim's intents'.
+    const sorted = Array.from(byPath.keys()).sort();
+    const segs = new Map(sorted.map((p) => [p, p.split('/')]));
+    const covered = new Map();
+    for (const c of claims) {
+      for (const it of c.intents) {
+        const pat = String(it.pattern).split('/');
+        for (const p of under(sorted, literalDir(it.pattern))) {
+          if (!matchSegs(pat, segs.get(p), 0, 0)) continue;
+          if (!covered.has(p)) covered.set(p, []);
+          covered.get(p).push([c, it]);
+        }
+      }
+    }
     const files = new Map();
     for (const [path, touchers] of byPath) {
       const involved = new Map();
@@ -729,9 +854,7 @@
       };
       for (const c of touchers) role(c).changed = true;
       for (const [id, how] of stoppedAt.get(path) || []) role(byId.get(id)).stopped = how;
-      for (const c of claims) {
-        for (const it of c.intents) if (globMatch(it.pattern, path)) role(c).intents.push(it);
-      }
+      for (const [c, it] of covered.get(path) || []) role(c).intents.push(it);
       if (involved.size < 2) continue;
       files.set(path, { path, involved, severity: spotSeverity(involved) });
     }
@@ -866,7 +989,7 @@
       el('span', { class: 'meta-strong' }, active + ' active'),
       idle ? ' · ' + idle + ' not running' : '',
       ' · ' + v.live_sessions + ' live session' + (v.live_sessions === 1 ? '' : 's'),
-      ' · as of ', timeNode(v.at, 'ago', 'Board read at') || 'now');
+      ' · as of ', asOfNode(v.at));
     if (!v.claims.length) {
       body.replaceChildren(connectHelp(false));
       return;
@@ -874,6 +997,13 @@
     const list = el('ol', { class: 'claim-list' });
     for (const c of v.claims) list.appendChild(el('li', null, claimCard(c, ax)));
     body.replaceChildren(list);
+  }
+
+  function asOfNode(at) {
+    const n = timeNode(at, 'ago', 'Board read at');
+    if (!n) return 'now';
+    n.id = 'as-of';
+    return n;
   }
 
   function connectHelp(noRepos) {
@@ -1173,10 +1303,19 @@
       const seqs = Array.from(S.feed.keys()).sort((x, y) => x - y);
       for (const s of seqs.slice(0, S.feed.size - FEED_CAP)) S.feed.delete(s);
     }
-    if (added) renderFeed();
+    if (added) scheduleFeed();
+  }
+
+  // A busy repository has tens of events a second, and each redraw rebuilds
+  // the whole list: events arriving close together are drawn together.
+  function scheduleFeed() {
+    if (S.feedTimer) return;
+    const wait = Math.min(FEED_REDRAW_MS, Math.max(0, S.feedAt + FEED_REDRAW_MS - tick()));
+    S.feedTimer = setTimeout(() => { S.feedTimer = 0; renderFeed(); }, wait);
   }
 
   function renderFeed() {
+    S.feedAt = tick();
     const list = $('feed-body');
     const empty = $('feed-empty');
     const items = Array.from(S.feed.values())

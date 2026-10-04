@@ -75,6 +75,11 @@ type Server struct {
 	closeOnce  sync.Once
 	// uiKey signs dashboard sessions, so a session cookie is never a token.
 	uiKey []byte
+	// epoch names this process to readers. A dashboard that sees it change
+	// knows the server restarted, and its event numbers may have started over.
+	epoch string
+	// boards shares board answers among the requests that ask at once.
+	boards *boardBuilds
 }
 
 type memberHash struct {
@@ -126,6 +131,12 @@ func New(o Options) (*Server, error) {
 	if err := s.load(); err != nil {
 		return nil, err
 	}
+	epoch, err := randomKey()
+	if err != nil {
+		return nil, err
+	}
+	s.epoch = hex.EncodeToString(epoch[:8])
+	s.boards = newBoardBuilds(s.boardView, s.log)
 	key, err := loadUIKey(s.dataDir)
 	if err != nil {
 		return nil, err
@@ -456,22 +467,126 @@ func (s *Server) handleNote(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleBoard(w http.ResponseWriter, r *http.Request) {
-	repo := board.RepoID(r.URL.Query().Get("repo"))
+	q := r.URL.Query()
+	repo := board.RepoID(q.Get("repo"))
 	if repo == "" {
 		writeError(w, http.StatusBadRequest, "repo is required")
 		return
 	}
-	v := s.board.View(s.now(), repo)
-	if r.URL.Query().Get("format") == "text" {
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		_, _ = io.WriteString(w, v.Text()+"\n")
+	text := q.Get("format") == "text"
+	if text && q.Has("limit") {
+		s.handleAgentBoard(w, r, repo)
 		return
 	}
-	writeJSON(w, http.StatusOK, v)
+	b, err := s.boards.get(r.Context(), repo)
+	if err != nil {
+		if r.Context().Err() == nil {
+			s.log.Error("board answer failed", "repo", repo, "err", err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+		}
+		return
+	}
+	if text {
+		writeText(w, b.view.Text()+"\n")
+		return
+	}
+	writeBoard(w, r, b)
+}
+
+// boardView is the view a board build reads.
+func (s *Server) boardView(repo string) board.View {
+	v := s.board.View(s.now(), repo)
+	v.Epoch = s.epoch
+	return v
+}
+
+// writeBoard sends a shared board answer, compressed when the client takes
+// gzip, or 304 when the client already holds an equivalent one.
+func writeBoard(w http.ResponseWriter, r *http.Request, b *boardBuild) {
+	h := w.Header()
+	h.Set("Content-Type", "application/json")
+	h.Set("Vary", "Accept-Encoding")
+	h.Set("Cache-Control", "private, no-cache")
+	if b.etag != "" {
+		h.Set("ETag", b.etag)
+		if etagMatch(r.Header.Get("If-None-Match"), b.etag) {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+	}
+	body := b.json
+	if acceptsGzip(r.Header.Get("Accept-Encoding")) {
+		body = b.gz
+		h.Set("Content-Encoding", "gzip")
+	}
+	h.Set("Content-Length", strconv.Itoa(len(body)))
+	w.WriteHeader(http.StatusOK)
+	_, _ = progress(w).Write(body)
+}
+
+// handleAgentBoard answers an agent asking about its teammates' work: the
+// claims nearest the caller's first, at most limit of them.
+func (s *Server) handleAgentBoard(w http.ResponseWriter, r *http.Request, repo string) {
+	q := r.URL.Query()
+	limit, err := strconv.Atoi(q.Get("limit"))
+	if err != nil || limit < 1 {
+		writeError(w, http.StatusBadRequest, "limit must be a whole number above zero")
+		return
+	}
+	where := board.Where{Repo: repo, Host: q.Get("host"), Worktree: q.Get("worktree")}
+	writeText(w, s.board.AgentText(s.now(), where, memberFrom(r), limit)+"\n")
 }
 
 func (s *Server) handleRepos(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, s.board.Repos(s.now()))
+	repos := s.board.Repos(s.now())
+	for i := range repos {
+		repos[i].Epoch = s.epoch
+	}
+	writeJSON(w, http.StatusOK, repos)
+}
+
+// acceptsGzip reports whether an Accept-Encoding header allows gzip: named
+// with a quality above zero, or covered by a "*" that is.
+func acceptsGzip(header string) bool {
+	gzip, star := -1.0, -1.0
+	for _, part := range strings.Split(header, ",") {
+		name, params, _ := strings.Cut(part, ";")
+		q := 1.0
+		for _, p := range strings.Split(params, ";") {
+			if k, v, ok := strings.Cut(strings.TrimSpace(p), "="); ok && strings.EqualFold(strings.TrimSpace(k), "q") {
+				if f, err := strconv.ParseFloat(strings.TrimSpace(v), 64); err == nil {
+					q = f
+				} else {
+					q = 0
+				}
+			}
+		}
+		switch strings.ToLower(strings.TrimSpace(name)) {
+		case "gzip", "x-gzip":
+			gzip = max(gzip, q)
+		case "*":
+			star = max(star, q)
+		}
+	}
+	if gzip >= 0 {
+		return gzip > 0
+	}
+	return star > 0
+}
+
+// etagMatch reports whether an If-None-Match header names tag, compared
+// weakly as RFC 9110 has it for GET.
+func etagMatch(header, tag string) bool {
+	if header == "" || tag == "" {
+		return false
+	}
+	for _, t := range strings.Split(header, ",") {
+		t = strings.TrimSpace(t)
+		if t == "*" || strings.TrimPrefix(t, "W/") == strings.TrimPrefix(tag, "W/") {
+			return true
+		}
+	}
+	return false
 }
 
 // handleStream sends activities as server-sent events. A client reconnecting
@@ -552,10 +667,55 @@ func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 	return true
 }
 
+// writeTimeout bounds how long an answer may go without progress: each piece
+// of it must reach the client's connection within this time, as nginx's
+// send_timeout has it. The server has no WriteTimeout, which would end event
+// streams, so without this a client that stopped reading (a laptop asleep
+// mid-download, a paused pipe) would hold its handler and the answer's memory
+// until TCP gave up, while a slow client that keeps reading still gets
+// everything. A variable for tests.
+var writeTimeout = 15 * time.Second
+
+// progressChunk is how much of an answer one write deadline covers.
+const progressChunk = 64 << 10
+
+// progressWriter re-arms the write deadline before each piece of an answer.
+type progressWriter struct {
+	w  http.ResponseWriter
+	rc *http.ResponseController
+}
+
+func progress(w http.ResponseWriter) progressWriter {
+	return progressWriter{w: w, rc: http.NewResponseController(w)}
+}
+
+func (p progressWriter) Write(b []byte) (int, error) {
+	n := 0
+	for len(b) > 0 {
+		k := min(len(b), progressChunk)
+		// A writer that takes no deadline (a test recorder) writes without one.
+		if err := p.rc.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil && !errors.Is(err, http.ErrNotSupported) {
+			return n, err
+		}
+		m, err := p.w.Write(b[:k])
+		n += m
+		if err != nil {
+			return n, err
+		}
+		b = b[k:]
+	}
+	return n, nil
+}
+
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
+	_ = json.NewEncoder(progress(w)).Encode(v)
+}
+
+func writeText(w http.ResponseWriter, text string) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	_, _ = io.WriteString(progress(w), text)
 }
 
 // ErrorResponse is the body of every error.
