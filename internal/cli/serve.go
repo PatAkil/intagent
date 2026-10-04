@@ -104,20 +104,24 @@ func (a *App) serve(ctx context.Context, args []string) error {
 				"certificate with a second --tls-cert and --tls-key, which intagent's clients will use")
 		}
 	}
-	srv, err := server.New(server.Options{
-		Members: fc.Members, Version: a.Version, Board: fc.BoardConfig(), DataDir: *data, PublicRead: *public,
-		Logger: logger, Dashboard: web.Handler(), Webhook: fc.Webhook, MaxConnections: *maxConns, TLS: tlsConfig,
-		Streams: streams,
-	})
-	if err != nil {
-		return err
-	}
+	// Listen before the board is restored, which takes seconds on a large
+	// one: hooks that connect meanwhile wait in the kernel's queue to be
+	// answered once it is, rather than be refused and go ahead unchecked.
 	ln, err := server.Listen(ctx, *addr)
 	if err != nil {
 		return err
 	}
 	if a.Listening != nil {
 		a.Listening(ln.Addr().String())
+	}
+	srv, err := server.New(server.Options{
+		Members: fc.Members, Version: a.Version, Board: fc.BoardConfig(), DataDir: *data, PublicRead: *public,
+		Logger: logger, Dashboard: web.Handler(), Webhook: fc.Webhook, MaxConnections: *maxConns, TLS: tlsConfig,
+		Streams: streams,
+	})
+	if err != nil {
+		_ = ln.Close()
+		return err
 	}
 	url := "http://" + ln.Addr().String()
 	if tlsConfig != nil {
