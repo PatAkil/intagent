@@ -177,6 +177,7 @@ type Board struct {
 	version       uint64
 	notes         map[string][]time.Time
 	stats         map[string]*Stats
+	statsAt       map[string]time.Time // when each repository was last counted in
 	pending       []Activity
 	notify        func([]Activity)
 	newID         func(prefix string) string
@@ -234,6 +235,7 @@ func New(cfg Config, opts ...Option) *Board {
 		memberBytes:   map[string]int{},
 		notes:         map[string][]time.Time{},
 		stats:         map[string]*Stats{},
+		statsAt:       map[string]time.Time{},
 		dropped:       map[string]uint64{},
 		unpruned:      map[string]bool{},
 		newID:         randomID,

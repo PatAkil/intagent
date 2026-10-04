@@ -290,6 +290,7 @@ func (b *Board) RestoreAfter(r io.Reader, now, stopped time.Time) error {
 	if b.stats == nil {
 		b.stats = map[string]*Stats{}
 	}
+	b.statsAt = map[string]time.Time{}
 	// What happened before the snapshot is in it, or gone with the process.
 	b.notes = map[string][]time.Time{}
 	b.pending = nil

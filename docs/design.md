@@ -70,7 +70,8 @@ sweep forgets up to 200 of those quiet longest that hold no intent, announced in
 that names no claim. A footprint counts each file's path and area, and 96 bytes more, against two budgets: 512 KB for
 one claim (2000 files of a large monorepo's paths take about 350 KB) and 32 MB for all of one member's claims, a fleet's
 included. A footprint keeps the files its budgets take, the first in the order the client sent them, which puts first
-the files it would least want left out, and is marked truncated.
+the files it would least want left out, and is marked truncated. Stats are kept for at most 1024 repositories: a new
+one takes the place of the repository with no claims counted in longest ago.
 
 The server's sweeper emits `session.stalled` and `session.gone` events once per transition, so the dashboard and the
 owner's next session see them. A webhook hears of them at most once a second, everything waiting in one message, so a

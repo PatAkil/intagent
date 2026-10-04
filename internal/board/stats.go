@@ -36,13 +36,49 @@ type Stats struct {
 	Partial int `json:"partial,omitempty"`
 }
 
+// maxStatsRepos bounds the repositories the board keeps stats for, far
+// above any team's: a client can name any repository, and each would
+// otherwise keep its stats for good, in every snapshot.
+const maxStatsRepos = 1024
+
 func (b *Board) statsOf(repo string, now time.Time) *Stats {
 	s := b.stats[repo]
 	if s == nil {
+		if len(b.stats) >= maxStatsRepos {
+			b.forgetStats()
+		}
 		s = &Stats{Since: now}
 		b.stats[repo] = s
 	}
+	b.statsAt[repo] = now
 	return s
+}
+
+// forgetStats drops the stats of the repository with no claims that was
+// counted in longest ago, by when it was last counted (as far as this
+// process knows, which after a restart is not at all), then when it was
+// first, then by name. Stats of a repository with claims are kept, past
+// the bound if they must be: claims are bounded themselves.
+func (b *Board) forgetStats() {
+	oldest := ""
+	before := func(r string) bool {
+		if c := b.statsAt[r].Compare(b.statsAt[oldest]); c != 0 {
+			return c < 0
+		}
+		if c := b.stats[r].Since.Compare(b.stats[oldest].Since); c != 0 {
+			return c < 0
+		}
+		return r < oldest
+	}
+	for r := range b.stats {
+		if b.byRepo[r] == nil && (oldest == "" || before(r)) {
+			oldest = r
+		}
+	}
+	if oldest != "" {
+		delete(b.stats, oldest)
+		delete(b.statsAt, oldest)
+	}
 }
 
 func (b *Board) statsFor(repo string) Stats {

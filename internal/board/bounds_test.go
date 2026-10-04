@@ -322,3 +322,30 @@ func TestDirectoriesAddedWholeAreNearbyWork(t *testing.T) {
 		t.Errorf("after a scan with no directories: %+v", res.Conflicts)
 	}
 }
+
+// The board keeps stats for a bounded number of repositories: past it, a
+// new one takes the place of the repository with no claims counted in
+// longest ago. A client can name any repository, and each kept its stats
+// for good, in every snapshot.
+func TestStatsAreKeptForBoundedRepositories(t *testing.T) {
+	h := newHarness(t)
+	h.edit("alice", "a1", "x.go") // a repository with a claim, counted in first
+	for i := range 2000 {
+		h.advance(time.Second)
+		w := Where{Repo: fmt.Sprintf("github.com/acme/r%04d", i), Host: "h", Worktree: "/w"}
+		ev := HookEvent{Kind: KindPreEdit, Member: "mallory", Agent: AgentCodex, SessionID: "s", Where: w, Tool: "Edit", Paths: refs("a.go")}
+		if _, err := h.b.Hook(h.now, ev); err != nil {
+			t.Fatal(err)
+		}
+		ev.Kind = KindSessionEnd
+		if _, err := h.b.Hook(h.now, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, kept := h.b.stats[repo]
+	_, oldest := h.b.stats["github.com/acme/r0000"]
+	_, newest := h.b.stats["github.com/acme/r1999"]
+	if len(h.b.stats) != maxStatsRepos || !kept || oldest || !newest {
+		t.Fatalf("stats for %d repositories; the one with a claim %v, the first %v, the last %v", len(h.b.stats), kept, oldest, newest)
+	}
+}
