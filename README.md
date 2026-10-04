@@ -103,7 +103,7 @@ runs on another machine.
 | `--config` | `team.json` | Members, policy and webhook. Members are reloaded while the server runs; the rest at the next start. |
 | `--addr` | `:7400` | The address to listen on. |
 | `--data` | `intagent-data` | Where the board's snapshot and the key that signs dashboard sessions are kept; `""` keeps both in memory. |
-| `--tls-cert`, `--tls-key` | none | Serve HTTPS. Give them twice, an ECDSA pair and an RSA pair, to serve both. |
+| `--tls-cert`, `--tls-key` | none | Serve HTTPS. Give them twice, an ECDSA pair and an RSA pair, to serve both; empty ones are ignored. |
 | `--public-read` | off | Anyone who can reach the server can see the board without a token. |
 | `--max-connections` | 4096 | Connections open at once; past it, new ones are closed as soon as they are accepted. |
 | `--max-streams` | 500 | Dashboards connected at once, in all; 0 allows none. |

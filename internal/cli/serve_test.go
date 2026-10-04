@@ -117,3 +117,36 @@ func TestServeRefusesAConnectionLimitBelowOne(t *testing.T) {
 		}
 	}
 }
+
+// Empty TLS flags serve plain HTTP, as a unit file that passes unset
+// variables, '--tls-cert "$CERT" --tls-key "$KEY"', expects; one of the pair
+// empty is still refused.
+func TestServeWithEmptyTLSFlagsServesHTTP(t *testing.T) {
+	dir := t.TempDir()
+	var setup safeBuffer
+	team := filepath.Join(dir, "team.json")
+	if code := (&App{In: strings.NewReader(""), Out: &setup, Err: &setup, Version: "test", Dir: dir}).Run(context.Background(),
+		[]string{"token", "add", "alice", "--config", team}); code != 0 {
+		t.Fatalf("token add: %s", setup.String())
+	}
+	var errb safeBuffer
+	app := &App{In: strings.NewReader(""), Out: &errb, Err: &errb, Version: "test", Dir: dir}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second) // a server that starts stops
+	code := app.Run(ctx, []string{"serve", "--config", team, "--data", "", "--addr", "127.0.0.1:0", "--tls-cert", filepath.Join(dir, "c.pem"),
+		"--tls-key", ""})
+	cancel()
+	if code == 0 || !strings.Contains(errb.String(), "go together") {
+		t.Fatalf("a certificate with an empty key: %d %s", code, errb.String())
+	}
+
+	addr := startServe(t, &App{In: strings.NewReader(""), Out: &errb, Err: &errb, Version: "test", Dir: dir},
+		"--config", team, "--tls-cert", "", "--tls-key", "")
+	resp, err := http.Get("http://" + addr + "/healthz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("healthz over HTTP with empty TLS flags: %d", resp.StatusCode)
+	}
+}

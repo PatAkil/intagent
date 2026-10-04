@@ -119,13 +119,17 @@ func (a *App) serve(ctx context.Context, args []string) error {
 	return err
 }
 
-// listFlag is a flag that may be given more than once.
+// listFlag is a flag that may be given more than once. An empty value adds
+// nothing: a unit file's '--tls-cert "$CERT" --tls-key "$KEY"', with neither
+// set, serves plain HTTP, as it did when each flag took one file.
 type listFlag []string
 
 func (l *listFlag) String() string { return strings.Join(*l, ", ") }
 
 func (l *listFlag) Set(v string) error {
-	*l = append(*l, v)
+	if v != "" {
+		*l = append(*l, v)
+	}
 	return nil
 }
 
