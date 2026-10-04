@@ -140,7 +140,8 @@ func BenchmarkScaleRecord(b *testing.B) {
 	}
 }
 
-// The busy repository's view, which every dashboard reloads.
+// The busy repository's view, which every dashboard reloads, by the old
+// View in oracle_test.go and the current one.
 func BenchmarkScaleView(b *testing.B) {
 	capped := targetShape(filesAtCap, 0)
 	capped.claims, capped.busy, capped.sessions, capped.repos, capped.intents = 300, 300, 300, 1, 0
@@ -151,13 +152,17 @@ func BenchmarkScaleView(b *testing.B) {
 		{"mixed", targetShape(filesMixed, 50)},
 		{"cap", capped},
 	} {
-		b.Run(tc.name, func(b *testing.B) {
-			sb := boardOf(b, tc.sh)
-			b.ReportAllocs()
-			b.ResetTimer()
-			for range b.N {
-				sb.View(sb.now, scaleRepo(0))
-			}
-		})
+		sb := boardOf(b, tc.sh)
+		for _, v := range []struct {
+			name string
+			view func(time.Time, string) View
+		}{{"old", sb.oldView}, {"new", sb.View}} {
+			b.Run(tc.name+"/"+v.name, func(b *testing.B) {
+				b.ReportAllocs()
+				for range b.N {
+					v.view(sb.now, scaleRepo(0))
+				}
+			})
+		}
 	}
 }

@@ -1,6 +1,8 @@
 package board
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"math/rand"
@@ -364,5 +366,144 @@ func TestGreetingRanksEachClaimOnce(t *testing.T) {
 	// 5720 rankings on this board.
 	if others := sh.busy + sh.dormant - 1; trace.ranked != others {
 		t.Fatalf("a greeting among %d other claims ranked claims %d times", others, trace.ranked)
+	}
+}
+
+// oldView is View as it was, with oldSortedFiles' sort.
+func (b *Board) oldView(now time.Time, repo string) View {
+	repo = RepoID(repo)
+	v := View{Repo: repo, At: now, Policy: b.cfg.Policy, LastSeq: b.seq, Claims: []ClaimView{}, Recent: []Activity{}}
+	live := b.liveClaims(now)
+	members := map[string]bool{}
+	bySession := map[string][]SessionView{}
+	for _, s := range b.sessions {
+		st := b.state(now, s)
+		bySession[s.ClaimID] = append(bySession[s.ClaimID], SessionView{
+			ID: s.ID, Agent: s.Agent, State: st, Tool: s.Tool, ToolSince: s.ToolSince, StartedAt: s.StartedAt, LastSeen: s.LastSeen,
+		})
+	}
+	claims := b.claimsInRepo(repo)
+	changedBy := map[string]int{}
+	for _, c := range claims {
+		for p := range c.Footprint {
+			changedBy[p]++
+		}
+	}
+	for _, c := range claims {
+		members[c.Member] = true
+		cv := ClaimView{
+			ID: c.ID, Member: c.Member, Host: c.Host, Worktree: c.Worktree, Branch: c.Branch, Task: c.Task,
+			Active: live[c.ID], Intents: append([]Intent{}, c.Intents...), Truncated: c.FootprintTruncated,
+			Sessions: bySession[c.ID], CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt, Files: []FileView{},
+		}
+		if cv.Sessions == nil {
+			cv.Sessions = []SessionView{}
+		}
+		sort.Slice(cv.Sessions, func(i, j int) bool { return cv.Sessions[i].LastSeen.After(cv.Sessions[j].LastSeen) })
+		for _, s := range cv.Sessions {
+			if s.State.Live() {
+				v.Sessions++
+			}
+		}
+		files := oldSortedFiles(c)
+		cv.FileCount = len(files)
+		if len(files) > maxViewFiles {
+			out := files[:maxViewFiles:maxViewFiles]
+			for _, p := range files[maxViewFiles:] {
+				if len(out) == 2*maxViewFiles {
+					break
+				}
+				if changedBy[p] > 1 {
+					out = append(out, p)
+				}
+			}
+			files = out
+		}
+		for _, p := range files {
+			t := c.Footprint[p]
+			cv.Files = append(cv.Files, FileView{Path: p, Area: t.Area, At: t.At, FromGit: t.FromGit})
+		}
+		for _, it := range c.Inbox {
+			if now.Sub(it.At) < inboxTTL && len(it.DeliveredTo) == 0 {
+				cv.Pending++
+			}
+		}
+		v.Claims = append(v.Claims, cv)
+	}
+	sort.SliceStable(v.Claims, func(i, j int) bool {
+		if v.Claims[i].Active != v.Claims[j].Active {
+			return v.Claims[i].Active
+		}
+		return v.Claims[i].UpdatedAt.After(v.Claims[j].UpdatedAt)
+	})
+	for m := range members {
+		v.Members = append(v.Members, m)
+	}
+	sort.Strings(v.Members)
+	for _, a := range b.recent {
+		if a.Repo == repo {
+			v.Recent = append(v.Recent, a)
+		}
+	}
+	v.Stats = b.statsFor(repo)
+	return v
+}
+
+// tiedBoard is a board whose claims all found their whole footprints at the
+// same instant: every file of every claim has one time.
+func tiedBoard(t *testing.T, claims, files int) *scaleBoard {
+	t.Helper()
+	sb := newScaleBoard(smallShape(), DefaultConfig(), t0, 0)
+	for i := range claims {
+		ev := sb.event(i, KindHeartbeat)
+		ev.Where.Repo = scaleRepo(0)
+		ev.Footprint = sb.footprint(i, files)
+		if _, err := sb.Hook(sb.now, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return sb
+}
+
+// A view lists the same files, in the same order, as the old one: on boards
+// whose files were found at many moments, whose claims are all at the cap,
+// and whose files all share one time.
+func TestViewMatchesTheOracle(t *testing.T) {
+	mixed := smallShape()
+	capped := smallShape()
+	capped.dist, capped.claims, capped.busy, capped.sessions, capped.dormant = filesAtCap, 8, 6, 8, 2
+	for _, tc := range []struct {
+		name string
+		sb   func(*testing.T) *scaleBoard
+	}{
+		{"mixed", func(t *testing.T) *scaleBoard { return buildBoard(t, mixed) }},
+		{"at the cap", func(t *testing.T) *scaleBoard { return buildBoard(t, capped) }},
+		{"all files tied", func(t *testing.T) *scaleBoard { return tiedBoard(t, 12, 700) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sb := tc.sb(t)
+			capped := 0
+			for r := range sb.sh.repos {
+				got, err := json.Marshal(sb.View(sb.now, scaleRepo(r)))
+				if err != nil {
+					t.Fatal(err)
+				}
+				want, err := json.Marshal(sb.oldView(sb.now, scaleRepo(r)))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !bytes.Equal(got, want) {
+					t.Fatalf("the view of %s differs from the old one", scaleRepo(r))
+				}
+				for _, c := range sb.View(sb.now, scaleRepo(r)).Claims {
+					if c.FileCount > maxViewFiles {
+						capped++
+					}
+				}
+			}
+			if capped == 0 {
+				t.Fatal("no claim has more files than a view lists: the cap is not exercised")
+			}
+		})
 	}
 }

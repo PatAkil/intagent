@@ -113,9 +113,8 @@ func (b *Board) View(now time.Time, repo string) View {
 			// are the ones anyone acts on, and contested ones are hot spots.
 			files = capFiles(files, changedBy)
 		}
-		for _, p := range files {
-			t := c.Footprint[p]
-			cv.Files = append(cv.Files, FileView{Path: p, Area: t.Area, At: t.At, FromGit: t.FromGit})
+		for _, f := range files {
+			cv.Files = append(cv.Files, FileView{Path: f.path, Area: f.t.Area, At: f.t.At, FromGit: f.t.FromGit})
 		}
 		for _, it := range c.Inbox {
 			if now.Sub(it.At) < inboxTTL && len(it.DeliveredTo) == 0 {
@@ -199,14 +198,14 @@ func (v View) Text() string { return renderView(v) }
 // again that another claim also changed: the dashboard finds hot spots in the
 // files a view lists. Every claim's files are capped while the board is
 // locked, so this does no more than a map lookup per file.
-func capFiles(files []string, changedBy map[string]int) []string {
+func capFiles(files []fileAt, changedBy map[string]int) []fileAt {
 	out := files[:maxViewFiles:maxViewFiles]
-	for _, p := range files[maxViewFiles:] {
+	for _, f := range files[maxViewFiles:] {
 		if len(out) == 2*maxViewFiles {
 			break
 		}
-		if changedBy[p] > 1 {
-			out = append(out, p)
+		if changedBy[f.path] > 1 {
+			out = append(out, f)
 		}
 	}
 	return out

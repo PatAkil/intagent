@@ -233,16 +233,16 @@ func (b *Board) agentsOf(now time.Time, c *claim) string {
 	return strings.Join(parts, ", ")
 }
 
-// fileAt is a changed file and when it changed.
+// fileAt is a changed file, taken out of a footprint to be ordered.
 type fileAt struct {
 	path string
-	at   time.Time
+	t    *touch
 }
 
 // newerFirst orders files newest first, and files changed at the same time
 // by path.
 func newerFirst(a, b fileAt) int {
-	if c := b.at.Compare(a.at); c != 0 {
+	if c := b.t.At.Compare(a.t.At); c != 0 {
 		return c
 	}
 	return strings.Compare(a.path, b.path)
@@ -252,7 +252,7 @@ func newerFirst(a, b fileAt) int {
 func newestFiles(c *claim, n int) []string {
 	top := make([]fileAt, 0, n)
 	for p, t := range c.Footprint {
-		top = insertTop(top, fileAt{p, t.At}, n, newerFirst)
+		top = insertTop(top, fileAt{p, t}, n, newerFirst)
 	}
 	out := make([]string, len(top))
 	for i, f := range top {
@@ -261,18 +261,15 @@ func newestFiles(c *claim, n int) []string {
 	return out
 }
 
-func sortedFiles(c *claim) []string {
-	files := make([]string, 0, len(c.Footprint))
-	for p := range c.Footprint {
-		files = append(files, p)
+// sortedFiles lists a claim's files in newerFirst's order. It sorts the
+// files with their touches beside them: a comparison that looked both up in
+// the footprint cost most of a dashboard's view.
+func sortedFiles(c *claim) []fileAt {
+	files := make([]fileAt, 0, len(c.Footprint))
+	for p, t := range c.Footprint {
+		files = append(files, fileAt{p, t})
 	}
-	sort.Slice(files, func(i, j int) bool {
-		ti, tj := c.Footprint[files[i]].At, c.Footprint[files[j]].At
-		if !ti.Equal(tj) {
-			return ti.After(tj)
-		}
-		return files[i] < files[j]
-	})
+	slices.SortFunc(files, newerFirst)
 	return files
 }
 
