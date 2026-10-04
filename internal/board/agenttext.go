@@ -35,7 +35,7 @@ func (b *Board) AgentText(now time.Time, w Where, member string, limit int) stri
 	if cw, err := cleanWhere(w); err == nil {
 		self = b.findClaim(member, cw)
 	}
-	live := b.liveClaims(now)
+	live := b.liveAt(now)
 	type row struct {
 		c       *claim
 		near    bool
@@ -43,13 +43,13 @@ func (b *Board) AgentText(now time.Time, w Where, member string, limit int) stri
 	}
 	var rows []row
 	running := 0
-	near := nearTo(self)
-	for _, o := range b.claimsInRepo(repo) {
+	for o := range b.claimsIn(repo) {
 		if self != nil && o.ID == self.ID {
 			continue
 		}
-		rows = append(rows, row{c: o, near: near(o), running: live[o.ID]})
-		if live[o.ID] {
+		r := row{c: o, near: near(self, o), running: live.claim(o.ID)}
+		rows = append(rows, r)
+		if r.running {
 			running++
 		}
 	}
@@ -76,13 +76,12 @@ func (b *Board) AgentText(now time.Time, w Where, member string, limit int) stri
 	}
 	lines := []string{head}
 	size := len(head)
-	agents := b.agentsByClaim(now)
 	shown, shownRunning := 0, 0
 	for _, r := range rows {
 		if shown == limit {
 			break
 		}
-		line := rowText(now, r.c, r.running, agents[r.c.ID])
+		line := rowText(now, r.c, r.running, b.agentsCounted(now, r.c.ID))
 		// Keep room for the closing line.
 		if size+1+len(line) > maxAgentText-200 {
 			break
@@ -101,50 +100,45 @@ func (b *Board) AgentText(now time.Time, w Where, member string, limit int) stri
 	return strings.Join(lines, "\n")
 }
 
-// nearTo returns whether a claim shares a changed file, or the area of one,
+// near reports whether claim o shares a changed file, or the area of one,
 // with self. With no self, nothing is near.
-func nearTo(self *claim) func(*claim) bool {
+func near(self, o *claim) bool {
 	if self == nil || len(self.Footprint) == 0 {
-		return func(*claim) bool { return false }
-	}
-	areas := areasOf(self)
-	return func(o *claim) bool {
-		for p, t := range o.Footprint {
-			if _, ok := self.Footprint[p]; ok || (t.Area != "" && areas[t.Area]) {
-				return true
-			}
-		}
 		return false
 	}
+	if sharesArea(self, o) {
+		return true
+	}
+	small, big := self.Footprint, o.Footprint
+	if len(big) < len(small) {
+		small, big = big, small
+	}
+	for p := range small {
+		if _, ok := big[p]; ok {
+			return true
+		}
+	}
+	return false
 }
 
-// agentsByClaim describes each claim's sessions that have not ended or gone,
+// agentsCounted describes claim id's sessions that have not ended or gone,
 // as "claude-code working", with repeats counted: "2 codex waiting".
-func (b *Board) agentsByClaim(now time.Time) map[string]string {
-	counts := map[string]map[string]int{}
-	for _, s := range b.sessions {
-		st := b.state(now, s)
-		if st == StateEnded || st == StateGone {
-			continue
+func (b *Board) agentsCounted(now time.Time, id string) string {
+	counts := map[string]int{}
+	for _, s := range b.claimSessions[id] {
+		if st := b.state(now, s); st != StateEnded && st != StateGone {
+			counts[string(s.Agent)+" "+string(st)]++
 		}
-		if counts[s.ClaimID] == nil {
-			counts[s.ClaimID] = map[string]int{}
-		}
-		counts[s.ClaimID][string(s.Agent)+" "+string(st)]++
 	}
-	out := make(map[string]string, len(counts))
-	for id, m := range counts {
-		parts := make([]string, 0, len(m))
-		for k, n := range m {
-			if n > 1 {
-				k = fmt.Sprintf("%d %s", n, k)
-			}
-			parts = append(parts, k)
+	parts := make([]string, 0, len(counts))
+	for k, n := range counts {
+		if n > 1 {
+			k = fmt.Sprintf("%d %s", n, k)
 		}
-		sort.Strings(parts)
-		out[id] = strings.Join(parts, ", ")
+		parts = append(parts, k)
 	}
-	return out
+	sort.Strings(parts)
+	return strings.Join(parts, ", ")
 }
 
 // rowText is one claim in AgentText: who, where, the claim to address a note

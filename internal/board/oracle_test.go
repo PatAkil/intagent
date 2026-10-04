@@ -12,11 +12,220 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/patakil/intagent/internal/glob"
 )
 
 // The implementations the scale work replaced, kept as oracles: each test
 // here gives the old and the new the same random boards and requires the
 // same answers, and the benchmarks in scale_bench_test.go compare their cost.
+
+// oldLiveClaims is how the board found live claims before it indexed each
+// claim's sessions: a map of them all, built from every session.
+func (b *Board) oldLiveClaims(now time.Time) map[string]bool {
+	live := map[string]bool{}
+	for _, s := range b.sessions {
+		if b.state(now, s).Live() {
+			live[s.ClaimID] = true
+		}
+	}
+	return live
+}
+
+// oldLiveSessions is oldLiveClaims for sessions.
+func (b *Board) oldLiveSessions(now time.Time) map[string]bool {
+	live := map[string]bool{}
+	for k, s := range b.sessions {
+		if b.state(now, s).Live() {
+			live[k] = true
+		}
+	}
+	return live
+}
+
+// oldClaimsInRepo is a repository's claims in ID order, found among all of them.
+func (b *Board) oldClaimsInRepo(repo string) []*claim {
+	var out []*claim
+	for _, c := range b.claims {
+		if c.Repo == repo {
+			out = append(out, c)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
+// oldConflictsFor is conflictsFor as it was: every claim on the board
+// visited, each claim's footprint searched for the area, and liveness read
+// from maps of the whole board.
+func (b *Board) oldConflictsFor(now time.Time, self *claim, selfSession string, p PathRef, live map[string]bool, liveSess map[string]bool) []Conflict {
+	var out []Conflict
+	for _, o := range b.claims {
+		if o.Repo != self.Repo || o.ID == self.ID {
+			continue
+		}
+		if cf, ok := b.oldConflictWith(now, o, p, live[o.ID]); ok {
+			out = append(out, cf)
+		}
+	}
+	if t, ok := self.Footprint[p.Path]; ok && !t.FromGit && t.Session != "" && t.Session != selfSession && liveSess[t.Session] {
+		out = append(out, Conflict{
+			Path: p.Path, Area: p.Area, Severity: SeverityOverlap, ClaimID: self.ID, Member: self.Member, Branch: self.Branch, Task: self.Task,
+			Why: "another live session in this same worktree changed this file", Since: t.At, Active: true, SameClaim: true,
+		})
+	}
+	sortConflicts(out)
+	return out
+}
+
+func (b *Board) oldConflictWith(now time.Time, o *claim, p PathRef, active bool) (Conflict, bool) {
+	best := Conflict{Path: p.Path, Area: p.Area, ClaimID: o.ID, Member: o.Member, Branch: o.Branch, Task: o.Task, Active: active}
+	consider := func(sev Severity, why, pattern string, since time.Time) {
+		if sev > best.Severity {
+			best.Severity, best.Why, best.Pattern, best.Since = sev, why, pattern, since
+		}
+	}
+	for _, in := range o.Intents {
+		if !glob.Match(in.Pattern, p.Path) {
+			continue
+		}
+		sev := SeverityOverlap
+		if in.Mode == ModeExclusive && active {
+			sev = SeverityBlock
+		}
+		consider(sev, intentWhy(in), in.Pattern, in.DeclaredAt)
+	}
+	if t, ok := o.Footprint[p.Path]; ok {
+		sev := SeverityOverlap
+		why := "has unmerged changes to this file"
+		if !active && now.Sub(o.UpdatedAt) > b.cfg.DormantFor {
+			sev = SeverityNearby
+			why = "had unmerged changes to this file (claim dormant for " + ago(now, o.UpdatedAt) + ")"
+		}
+		consider(sev, why, "", t.At)
+	}
+	if best.Severity < SeverityNearby && p.Area != "" {
+		if since, ok := oldWorkedInArea(o, p.Area); ok {
+			consider(SeverityNearby, "is working in the same area "+p.Area, "", since)
+		}
+	}
+	return best, best.Severity > SeverityNone
+}
+
+// oldWorkedInArea is workedInArea as it was: a walk of the whole footprint.
+func oldWorkedInArea(c *claim, area string) (time.Time, bool) {
+	var latest time.Time
+	found := false
+	for _, t := range c.Footprint {
+		if t.Area == area && t.At.After(latest) {
+			latest, found = t.At, true
+		}
+	}
+	for _, in := range c.Intents {
+		dir := glob.LiteralDir(in.Pattern)
+		if dir == "" {
+			continue
+		}
+		if glob.Match(area, dir) || glob.Match(dir, area) {
+			if in.DeclaredAt.After(latest) {
+				latest = in.DeclaredAt
+			}
+			found = true
+		}
+	}
+	return latest, found
+}
+
+// oldCheck is what a pre_edit or a check of paths found before the
+// indexes: the conflicts of each path.
+func (b *Board) oldCheck(now time.Time, c *claim, s *session, paths []PathRef) []Conflict {
+	live, liveSess := b.oldLiveClaims(now), b.oldLiveSessions(now)
+	var out []Conflict
+	for _, p := range paths {
+		out = append(out, b.oldConflictsFor(now, c, s.Key, p, live, liveSess)...)
+	}
+	return out
+}
+
+// newCheck is oldCheck through the indexes.
+func (b *Board) newCheck(now time.Time, c *claim, s *session, paths []PathRef) []Conflict {
+	live := b.liveAt(now)
+	var out []Conflict
+	for _, p := range paths {
+		out = append(out, b.conflictsFor(live, c, s.Key, p)...)
+	}
+	return out
+}
+
+// oldIntentOverlaps is intentOverlaps as it was: every file of every other
+// claim in the repository matched against the new intent.
+func (b *Board) oldIntentOverlaps(c *claim, in Intent, live map[string]bool) []Conflict {
+	var out []Conflict
+	for _, o := range b.oldClaimsInRepo(c.Repo) {
+		if o.ID == c.ID {
+			continue
+		}
+		cf := Conflict{Path: in.Pattern, ClaimID: o.ID, Member: o.Member, Branch: o.Branch, Task: o.Task, Active: live[o.ID]}
+		for _, oi := range o.Intents {
+			if glob.Overlap(oi.Pattern, in.Pattern) {
+				sev := SeverityOverlap
+				if oi.Mode == ModeExclusive && cf.Active {
+					sev = SeverityBlock
+				}
+				if sev > cf.Severity {
+					cf.Severity, cf.Pattern, cf.Since = sev, oi.Pattern, oi.DeclaredAt
+					cf.Why = fmt.Sprintf("declared %s intent %s", oi.Mode, oi.Pattern)
+				}
+			}
+		}
+		if cf.Severity < SeverityOverlap {
+			var hit []string
+			var since time.Time
+			for p, t := range o.Footprint {
+				if glob.Match(in.Pattern, p) {
+					hit = append(hit, p)
+					if t.At.After(since) {
+						since = t.At
+					}
+				}
+			}
+			if len(hit) > 0 {
+				sort.Strings(hit)
+				cf.Severity, cf.Since = SeverityOverlap, since
+				cf.Why = "has unmerged changes to " + listPaths(hit, 3)
+			}
+		}
+		if cf.Severity > SeverityNone {
+			out = append(out, cf)
+		}
+	}
+	return out
+}
+
+// oldAgentsOf is agentsOf as it was, over every session on the board.
+func (b *Board) oldAgentsOf(now time.Time, c *claim) string {
+	var parts []string
+	for _, s := range b.sessions {
+		if s.ClaimID != c.ID {
+			continue
+		}
+		if st := b.state(now, s); st != StateEnded && st != StateGone {
+			parts = append(parts, string(s.Agent)+" "+string(st))
+		}
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ", ")
+}
+
+func areasOf(c *claim) map[string]bool {
+	out := map[string]bool{}
+	for _, t := range c.Footprint {
+		if t.Area != "" {
+			out[t.Area] = true
+		}
+	}
+	return out
+}
 
 // oldReportUnchecked is reportUnchecked as it was: the full conflict
 // computation for every added file, keeping only block conflicts. It tells
@@ -27,11 +236,11 @@ func (b *Board) oldReportUnchecked(now time.Time, c *claim, s *session, added []
 	if action == ActionOff {
 		return
 	}
-	live, liveSess := b.liveClaims(now), b.liveSessions(now)
+	live, liveSess := b.oldLiveClaims(now), b.oldLiveSessions(now)
 	var lines, paths []string
 	var first Conflict
 	for _, p := range added {
-		for _, cf := range b.conflictsFor(now, c, s.Key, p, live, liveSess) {
+		for _, cf := range b.oldConflictsFor(now, c, s.Key, p, live, liveSess) {
 			if cf.Severity != SeverityBlock || cf.SameClaim {
 				continue
 			}
@@ -120,12 +329,11 @@ func twin(b *Board) *Board {
 		c := *st
 		t.stats[repo] = &c
 	}
-	for id, c := range b.claims {
-		t.claims[id] = c.clone()
-		t.byKey[c.key()] = id
+	for _, c := range b.claims {
+		t.addClaim(c.clone())
 	}
-	for k, s := range b.sessions {
-		t.sessions[k] = s.clone()
+	for _, s := range b.sessions {
+		t.attachSession(s.clone(), s.ClaimID)
 	}
 	return t
 }
@@ -172,7 +380,7 @@ func testReportUncheckedMatchesTheOracle(t *testing.T, ties bool) {
 			added := randomFiles(rng, 1+rng.Intn(8))
 			for _, x := range []*Board{oldB, newB} {
 				if x.sessions[key] == nil {
-					x.sessions[key] = &session{Key: key, ID: "probe", Member: c.Member, Agent: AgentClaudeCode, ClaimID: c.ID, LastSeen: now, Phase: phaseWorking}
+					x.attachSession(&session{Key: key, ID: "probe", Member: c.Member, Agent: AgentClaudeCode, LastSeen: now, Phase: phaseWorking}, c.ID)
 				}
 			}
 			oldB.oldReportUnchecked(now, oldB.claims[c.ID], oldB.sessions[key], added)
@@ -218,9 +426,9 @@ func TestReportUncheckedMatchesTheOracleWithTies(t *testing.T) {
 // "and N more" line says what renderStart says now, since what the oracle
 // checks is which claims a greeting shows, not how it words the rest.
 func (b *Board) oldRenderStart(now time.Time, c *claim) string {
-	live := b.liveClaims(now)
+	live := b.oldLiveClaims(now)
 	var others []*claim
-	for _, o := range b.claimsInRepo(c.Repo) {
+	for _, o := range b.oldClaimsInRepo(c.Repo) {
 		if o.ID != c.ID {
 			others = append(others, o)
 		}
@@ -255,7 +463,7 @@ func (b *Board) oldRenderStart(now time.Time, c *claim) string {
 func (b *Board) oldSummarizeClaim(now time.Time, o *claim, active bool) string {
 	var sb strings.Builder
 	sb.WriteString("- " + o.Member)
-	if agents := b.agentsOf(now, o); agents != "" {
+	if agents := b.oldAgentsOf(now, o); agents != "" {
 		sb.WriteString(" (" + agents + ")")
 	}
 	if o.Branch != "" {
@@ -337,7 +545,7 @@ func TestRenderStartMatchesTheOracle(t *testing.T) {
 func (b *Board) oldView(now time.Time, repo string) View {
 	repo = RepoID(repo)
 	v := View{Repo: repo, At: now, Policy: b.cfg.Policy, LastSeq: b.seq, Claims: []ClaimView{}, Recent: []Activity{}}
-	live := b.liveClaims(now)
+	live := b.oldLiveClaims(now)
 	members := map[string]bool{}
 	bySession := map[string][]SessionView{}
 	for _, s := range b.sessions {
@@ -346,7 +554,7 @@ func (b *Board) oldView(now time.Time, repo string) View {
 			ID: s.ID, Agent: s.Agent, State: st, Tool: s.Tool, ToolSince: s.ToolSince, StartedAt: s.StartedAt, LastSeen: s.LastSeen,
 		})
 	}
-	claims := b.claimsInRepo(repo)
+	claims := b.oldClaimsInRepo(repo)
 	changedBy := map[string]int{}
 	for _, c := range claims {
 		for p := range c.Footprint {
@@ -525,11 +733,11 @@ func (b *Board) oldSweep(now time.Time) {
 			changed = true
 		}
 		if !st.Live() && now.Sub(s.LastSeen) > keepEndedFor && (st == StateEnded || now.Sub(s.LastSeen) > b.cfg.IdleAfter+keepEndedFor) {
-			delete(b.sessions, k)
+			b.detachSession(s)
 			changed = true
 		}
 	}
-	live := b.liveClaims(now)
+	live := b.oldLiveClaims(now)
 	ids := make([]string, 0, len(b.claims))
 	for id := range b.claims {
 		ids = append(ids, id)

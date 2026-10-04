@@ -174,7 +174,9 @@ type Intent struct {
 	DeclaredAt time.Time `json:"declared_at"`
 }
 
-// touch records that a claim changed a file.
+// touch records that a claim changed a file. A touch in a footprint is
+// never changed: a later change to the file, or to its area, puts a new one
+// in its place, so a touch can be read once the board's lock is released.
 type touch struct {
 	Area    string    `json:"area,omitempty"`
 	At      time.Time `json:"at"`
@@ -215,6 +217,15 @@ type claim struct {
 	Alerted   map[string]bool `json:"alerted,omitempty"`
 	CreatedAt time.Time       `json:"created_at"`
 	UpdatedAt time.Time       `json:"updated_at"`
+
+	// Derived from Footprint, unexported so they are not saved, and changed
+	// only by the functions in index.go: the latest change in each area the
+	// claim changed files in, and the changed paths in order.
+	areaAt      map[string]time.Time
+	sortedPaths []string
+	// removed marks a claim taken off the board, which its repository's
+	// index skips until it drops it.
+	removed bool
 }
 
 func claimKey(repo, member, host, worktree string) string {

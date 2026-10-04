@@ -126,11 +126,11 @@ const maxFootprintDirs = 200
 const maxShownPaths = 200
 
 // maxCheckPaths bounds the paths of one edit, or one check, compared with
-// teammates' work. Each path costs a pass over the repository's claims and,
-// for its area, over each claim's files, all under the board's lock: on a
-// repository of 300 claims of 50 files, 200 paths hold it for 75 ms and 2000
-// for 750 ms, with ten times the conflicts in the answer. It can rise to
-// MaxFootprint once a claim's areas are indexed and answers are bounded.
+// teammates' work. Each path costs a look at each of the repository's
+// claims, under the board's lock: on a repository of 300 claims of 50 files,
+// every twentieth at 2000, 200 paths hold it for about 25 ms, and 2000 would
+// hold it ten times as long with ten times the conflicts in the answer. It
+// can rise to MaxFootprint once answers are bounded.
 // Past it, an edit's agent is told what was not checked, and a check's
 // answer counts and names what it did not check. It may exceed
 // maxShownPaths: an edit's activity lists the paths that decided its answer
@@ -145,14 +145,17 @@ type Board struct {
 	claims   map[string]*claim
 	byKey    map[string]string
 	sessions map[string]*session
-	recent   []Activity
-	seq      uint64
-	version  uint64
-	notes    map[string][]time.Time
-	stats    map[string]*Stats
-	pending  []Activity
-	notify   func([]Activity)
-	newID    func(prefix string) string
+	// byRepo and claimSessions index claims and sessions (index.go).
+	byRepo        map[string]*repoIndex
+	claimSessions map[string]map[string]*session
+	recent        []Activity
+	seq           uint64
+	version       uint64
+	notes         map[string][]time.Time
+	stats         map[string]*Stats
+	pending       []Activity
+	notify        func([]Activity)
+	newID         func(prefix string) string
 	// unheard is set while Hook records an event whose answer nobody will
 	// read: nothing is delivered in it.
 	unheard bool
@@ -180,14 +183,16 @@ func withIDs(fn func(prefix string) string) Option { return func(b *Board) { b.n
 // New returns an empty board. Fields of cfg left unset take their defaults.
 func New(cfg Config, opts ...Option) *Board {
 	b := &Board{
-		cfg:      cfg.WithDefaults(),
-		claims:   map[string]*claim{},
-		byKey:    map[string]string{},
-		sessions: map[string]*session{},
-		notes:    map[string][]time.Time{},
-		stats:    map[string]*Stats{},
-		dropped:  map[string]uint64{},
-		newID:    randomID,
+		cfg:           cfg.WithDefaults(),
+		claims:        map[string]*claim{},
+		byKey:         map[string]string{},
+		sessions:      map[string]*session{},
+		byRepo:        map[string]*repoIndex{},
+		claimSessions: map[string]map[string]*session{},
+		notes:         map[string][]time.Time{},
+		stats:         map[string]*Stats{},
+		dropped:       map[string]uint64{},
+		newID:         randomID,
 	}
 	for _, o := range opts {
 		o(b)
@@ -349,8 +354,7 @@ func (b *Board) claimFor(now time.Time, member string, w Where) *claim {
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	b.claims[c.ID] = c
-	b.byKey[c.key()] = c.ID
+	b.addClaim(c)
 	b.record(Activity{At: now, Kind: ActivityClaimOpened, Repo: c.Repo, Member: member, ClaimID: c.ID, Text: c.Branch})
 	return c
 }
@@ -364,15 +368,13 @@ func (b *Board) sessionFor(now time.Time, ev HookEvent, c *claim) *session {
 			ID:        ev.SessionID,
 			Member:    ev.Member,
 			Agent:     ev.Agent,
-			ClaimID:   c.ID,
 			StartedAt: now,
 			LastSeen:  now,
 			Phase:     phaseWaiting,
 		}
-		b.sessions[key] = s
 		b.record(Activity{At: now, Kind: ActivitySessionStarted, Repo: c.Repo, Member: ev.Member, ClaimID: c.ID, Session: ev.SessionID, Agent: ev.Agent})
 	}
-	s.ClaimID = c.ID
+	b.attachSession(s, c.ID)
 	return s
 }
 
@@ -396,33 +398,6 @@ func (b *Board) state(now time.Time, s *session) State {
 		return StateWorking
 	}
 	return StateWaiting
-}
-
-// liveClaims returns the IDs of claims with at least one live session.
-func (b *Board) liveClaims(now time.Time) map[string]bool {
-	live := map[string]bool{}
-	for _, s := range b.sessions {
-		if trace != nil {
-			trace.sessionVisits++
-		}
-		if b.state(now, s).Live() {
-			live[s.ClaimID] = true
-		}
-	}
-	return live
-}
-
-func (b *Board) liveSessions(now time.Time) map[string]bool {
-	live := map[string]bool{}
-	for k, s := range b.sessions {
-		if trace != nil {
-			trace.sessionVisits++
-		}
-		if b.state(now, s).Live() {
-			live[k] = true
-		}
-	}
-	return live
 }
 
 // --- hook events ----------------------------------------------------------
@@ -676,11 +651,15 @@ func (b *Board) reconcile(now time.Time, c *claim, s *session, fp *Footprint) {
 	}
 	files := fp.Files
 	next := make(map[string]*touch, len(files))
+	paths := make([]string, 0, len(files))
 	var added []PathRef
+	moved := false // a file's area changed
 	for _, f := range files {
+		paths = append(paths, f.Path)
 		if t, ok := c.Footprint[f.Path]; ok {
-			if f.Area != "" {
-				t.Area = f.Area
+			if f.Area != "" && f.Area != t.Area {
+				moved = true
+				t = &touch{Area: f.Area, At: t.At, Session: t.Session, FromGit: t.FromGit}
 			}
 			next[f.Path] = t
 			continue
@@ -688,13 +667,11 @@ func (b *Board) reconcile(now time.Time, c *claim, s *session, fp *Footprint) {
 		next[f.Path] = &touch{Area: f.Area, At: now, Session: s.Key, FromGit: true}
 		added = append(added, f)
 	}
-	removed := 0
-	for p := range c.Footprint {
-		if _, ok := next[p]; !ok {
-			removed++
-		}
+	// The files are distinct, so those kept are the ones not added.
+	removed := len(c.Footprint) - (len(next) - len(added))
+	if len(added) > 0 || removed > 0 || moved {
+		c.setFootprint(next, paths)
 	}
-	c.Footprint = next
 	c.FootprintTruncated = fp.Truncated
 	if len(added) > 0 || removed > 0 {
 		b.record(Activity{At: now, Kind: ActivityFootprintReconciled, Repo: c.Repo, Member: c.Member, ClaimID: c.ID, Session: s.ID, Agent: s.Agent,
@@ -736,17 +713,18 @@ func (b *Board) touch(now time.Time, c *claim, s *session, paths []PathRef) {
 	var fresh []PathRef
 	for _, p := range paths {
 		if t, ok := c.Footprint[p.Path]; ok {
-			t.At, t.Session, t.FromGit = now, s.Key, false
+			area := t.Area
 			if p.Area != "" {
-				t.Area = p.Area
+				area = p.Area
 			}
+			c.putTouch(p.Path, &touch{Area: area, At: now, Session: s.Key})
 			continue
 		}
 		if len(c.Footprint) >= b.cfg.MaxFootprint {
 			c.FootprintTruncated = true
 			continue
 		}
-		c.Footprint[p.Path] = &touch{Area: p.Area, At: now, Session: s.Key}
+		c.putTouch(p.Path, &touch{Area: p.Area, At: now, Session: s.Key})
 		fresh = append(fresh, p)
 	}
 	b.record(Activity{At: now, Kind: ActivityFileChanged, Repo: c.Repo, Member: c.Member, ClaimID: c.ID, Session: s.ID, Agent: s.Agent, Paths: pathsOf(paths)})
@@ -757,7 +735,7 @@ func (b *Board) touch(now time.Time, c *claim, s *session, paths []PathRef) {
 
 // alertOthers tells every other claim that changed or claimed the same files.
 func (b *Board) alertOthers(now time.Time, c *claim, paths []PathRef) {
-	for _, o := range b.claimsInRepo(c.Repo) {
+	for o := range b.claimsIn(c.Repo) {
 		if o.ID == c.ID {
 			continue
 		}
@@ -851,11 +829,11 @@ func (b *Board) tellUnchecked(now time.Time, c *claim, s *session, lines []strin
 		"user. If this session made it and it was not meant for that file, undo it; otherwise tell your user so they " +
 		"can agree it with that teammate."
 	s.Pending = joinBlocks(s.Pending, text)
-	for _, o := range b.sessions {
+	for _, o := range b.claimSessions[c.ID] {
 		if trace != nil {
 			trace.sessionVisits++
 		}
-		if o != s && o.ClaimID == c.ID && b.state(now, o).Live() {
+		if o != s && b.state(now, o).Live() {
 			o.Pending = joinBlocks(o.Pending, text)
 		}
 	}
@@ -866,17 +844,12 @@ func (b *Board) tellUnchecked(now time.Time, c *claim, s *session, lines []strin
 // that hold one. They are in ID order.
 func (b *Board) reservationHolders(now time.Time, c *claim) []*claim {
 	var holders []*claim
-	for _, o := range b.claims {
-		if o.Repo == c.Repo && o.ID != c.ID && slices.ContainsFunc(o.Intents, func(in Intent) bool { return in.Mode == ModeExclusive }) {
+	live := b.liveAt(now)
+	for o := range b.claimsIn(c.Repo) {
+		if o.ID != c.ID && slices.ContainsFunc(o.Intents, func(in Intent) bool { return in.Mode == ModeExclusive }) && live.claim(o.ID) {
 			holders = append(holders, o)
 		}
 	}
-	if len(holders) == 0 {
-		return nil
-	}
-	live := b.liveClaims(now)
-	holders = slices.DeleteFunc(holders, func(o *claim) bool { return !live[o.ID] })
-	slices.SortFunc(holders, func(x, y *claim) int { return strings.Compare(x.ID, y.ID) })
 	return holders
 }
 
@@ -948,99 +921,94 @@ func coveredByIntent(c *claim, path string) bool {
 	return false
 }
 
-func (b *Board) claimsInRepo(repo string) []*claim {
-	var out []*claim
-	for _, c := range b.claims {
-		if c.Repo == repo {
-			out = append(out, c)
-		}
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
-	return out
-}
-
 // releaseIfDone removes a claim that has nothing left to tell anyone.
 func (b *Board) releaseIfDone(now time.Time, c *claim) {
-	if len(c.Intents) == 0 && len(c.Footprint) == 0 && !b.liveClaims(now)[c.ID] {
+	if len(c.Intents) == 0 && len(c.Footprint) == 0 && !b.liveAt(now).claim(c.ID) {
 		b.deleteClaim(now, c, ActivityClaimReleased)
 	}
 }
 
 func (b *Board) deleteClaim(now time.Time, c *claim, kind ActivityKind) {
-	delete(b.claims, c.ID)
-	delete(b.byKey, c.key())
+	b.removeClaim(c)
 	b.record(Activity{At: now, Kind: kind, Repo: c.Repo, Member: c.Member, ClaimID: c.ID, Text: c.Branch})
 }
 
 // --- conflicts and decisions ---------------------------------------------
 
 // conflictsFor lists the claims that matter to one path, most severe first.
-func (b *Board) conflictsFor(now time.Time, self *claim, selfSession string, p PathRef, live map[string]bool, liveSess map[string]bool) []Conflict {
-	repo := ""
-	if self != nil {
-		repo = self.Repo
-	}
+func (b *Board) conflictsFor(live liveness, self *claim, selfSession string, p PathRef) []Conflict {
 	if trace != nil {
 		trace.conflictsFor++
 	}
 	var out []Conflict
-	for _, o := range b.claims {
-		if o.Repo != repo || (self != nil && o.ID == self.ID) {
+	for o := range b.claimsIn(self.Repo) {
+		if o.ID == self.ID {
 			continue
 		}
-		if cf, ok := b.conflictWith(now, o, p, live[o.ID]); ok {
+		if cf, ok := b.conflictWith(live, o, p); ok {
 			out = append(out, cf)
 		}
 	}
-	if self != nil {
-		// Only a hook says which session wrote a file; a file git found was
-		// written by someone in this worktree, perhaps the asking session.
-		if t, ok := self.Footprint[p.Path]; ok && !t.FromGit && t.Session != "" && t.Session != selfSession && liveSess[t.Session] {
-			out = append(out, Conflict{
-				Path: p.Path, Area: p.Area, Severity: SeverityOverlap, ClaimID: self.ID, Member: self.Member, Branch: self.Branch, Task: self.Task,
-				Why: "another live session in this same worktree changed this file", Since: t.At, Active: true, SameClaim: true,
-			})
-		}
+	// Only a hook says which session wrote a file; a file git found was
+	// written by someone in this worktree, perhaps the asking session.
+	if t, ok := self.Footprint[p.Path]; ok && !t.FromGit && t.Session != "" && t.Session != selfSession && live.session(t.Session) {
+		out = append(out, Conflict{
+			Path: p.Path, Area: p.Area, Severity: SeverityOverlap, ClaimID: self.ID, Member: self.Member, Branch: self.Branch, Task: self.Task,
+			Why: "another live session in this same worktree changed this file", Since: t.At, Active: true, SameClaim: true,
+		})
 	}
 	sortConflicts(out)
 	return out
 }
 
-func (b *Board) conflictWith(now time.Time, o *claim, p PathRef, active bool) (Conflict, bool) {
+// conflictWith is how much claim o matters to path p: through the first of
+// its intents that covers p, the most severe first; else through its change
+// to p; else through its work in p's area. Whether o is live is asked only
+// of a claim that matters.
+func (b *Board) conflictWith(live liveness, o *claim, p PathRef) (Conflict, bool) {
 	if trace != nil {
 		trace.conflictWith++
 	}
-	best := Conflict{Path: p.Path, Area: p.Area, ClaimID: o.ID, Member: o.Member, Branch: o.Branch, Task: o.Task, Active: active}
-	consider := func(sev Severity, why, pattern string, since time.Time) {
-		if sev > best.Severity {
-			best.Severity, best.Why, best.Pattern, best.Since = sev, why, pattern, since
-		}
-	}
-	for _, in := range o.Intents {
-		if !match(in.Pattern, p.Path) {
+	planned, reserved := -1, -1 // the first intent that covers p, and the first exclusive one
+	for i := range o.Intents {
+		if !match(o.Intents[i].Pattern, p.Path) {
 			continue
 		}
-		sev := SeverityOverlap
-		if in.Mode == ModeExclusive && active {
-			sev = SeverityBlock
+		if planned < 0 {
+			planned = i
 		}
-		consider(sev, intentWhy(in), in.Pattern, in.DeclaredAt)
-	}
-	if t, ok := o.Footprint[p.Path]; ok {
-		sev := SeverityOverlap
-		why := "has unmerged changes to this file"
-		if !active && now.Sub(o.UpdatedAt) > b.cfg.DormantFor {
-			sev = SeverityNearby
-			why = "had unmerged changes to this file (claim dormant for " + ago(now, o.UpdatedAt) + ")"
-		}
-		consider(sev, why, "", t.At)
-	}
-	if best.Severity < SeverityNearby && p.Area != "" {
-		if since, ok := workedInArea(o, p.Area); ok {
-			consider(SeverityNearby, "is working in the same area "+p.Area, "", since)
+		if o.Intents[i].Mode == ModeExclusive {
+			reserved = i
+			break
 		}
 	}
-	return best, best.Severity > SeverityNone
+	t, changed := o.Footprint[p.Path]
+	var near time.Time
+	nearby := false
+	if planned < 0 && !changed && p.Area != "" {
+		near, nearby = workedInArea(o, p.Area)
+	}
+	if planned < 0 && !changed && !nearby {
+		return Conflict{}, false
+	}
+	active := live.claim(o.ID)
+	cf := Conflict{Path: p.Path, Area: p.Area, ClaimID: o.ID, Member: o.Member, Branch: o.Branch, Task: o.Task, Active: active}
+	switch {
+	case reserved >= 0 && active:
+		in := o.Intents[reserved]
+		cf.Severity, cf.Why, cf.Pattern, cf.Since = SeverityBlock, intentWhy(in), in.Pattern, in.DeclaredAt
+	case planned >= 0:
+		in := o.Intents[planned]
+		cf.Severity, cf.Why, cf.Pattern, cf.Since = SeverityOverlap, intentWhy(in), in.Pattern, in.DeclaredAt
+	case changed && !active && live.now.Sub(o.UpdatedAt) > b.cfg.DormantFor:
+		cf.Severity, cf.Since = SeverityNearby, t.At
+		cf.Why = "had unmerged changes to this file (claim dormant for " + ago(live.now, o.UpdatedAt) + ")"
+	case changed:
+		cf.Severity, cf.Why, cf.Since = SeverityOverlap, "has unmerged changes to this file", t.At
+	default:
+		cf.Severity, cf.Why, cf.Since = SeverityNearby, "is working in the same area "+p.Area, near
+	}
+	return cf, true
 }
 
 // intentWhy says why an intent makes a conflict.
@@ -1052,18 +1020,15 @@ func intentWhy(in Intent) string {
 	return why
 }
 
-// workedInArea reports whether a claim changed or declared anything in area.
+// workedInArea reports whether a claim changed or declared anything in area,
+// and when last.
 func workedInArea(c *claim, area string) (time.Time, bool) {
 	if trace != nil {
 		trace.workedInArea++
-		trace.areaVisits += len(c.Footprint)
 	}
-	var latest time.Time
-	found := false
-	for _, t := range c.Footprint {
-		if t.Area == area && t.At.After(latest) {
-			latest, found = t.At, true
-		}
+	latest, found := c.areaAt[area]
+	if !latest.After(time.Time{}) {
+		latest, found = time.Time{}, false
 	}
 	for _, in := range c.Intents {
 		dir := glob.LiteralDir(in.Pattern)
@@ -1225,10 +1190,10 @@ func decidedFirst(paths []PathRef, acted []Conflict) []string {
 // judge applies the policy to the conflicts on every path being written. A
 // bump counts as acknowledged as soon as it is met: its retry goes through.
 func (b *Board) judge(now time.Time, c *claim, s *session, paths []PathRef, noAsk bool) verdict {
-	live, liveSess := b.liveClaims(now), b.liveSessions(now)
+	live := b.liveAt(now)
 	var v verdict
 	for _, p := range paths {
-		for _, cf := range b.conflictsFor(now, c, s.Key, p, live, liveSess) {
+		for _, cf := range b.conflictsFor(live, c, s.Key, p) {
 			v.all = append(v.all, cf)
 			key := ackKey(cf)
 			action := b.cfg.Policy.action(cf.Severity)
@@ -1437,7 +1402,7 @@ func (b *Board) Declare(now time.Time, r DeclareRequest) (DeclareResult, error) 
 	defer b.unlock()
 	b.changed()
 	c := b.claimFor(now, r.Member, w)
-	live := b.liveClaims(now)
+	live := b.liveAt(now)
 	res := DeclareResult{ClaimID: c.ID}
 
 	for _, pat := range patterns {
@@ -1475,9 +1440,9 @@ func (b *Board) Declare(now time.Time, r DeclareRequest) (DeclareResult, error) 
 	return res, nil
 }
 
-func (b *Board) exclusiveClash(self *claim, pattern string, live map[string]bool) (Conflict, bool) {
-	for _, o := range b.claimsInRepo(self.Repo) {
-		if o.ID == self.ID || !live[o.ID] {
+func (b *Board) exclusiveClash(self *claim, pattern string, live liveness) (Conflict, bool) {
+	for o := range b.claimsIn(self.Repo) {
+		if o.ID == self.ID || !slices.ContainsFunc(o.Intents, func(in Intent) bool { return in.Mode == ModeExclusive }) || !live.claim(o.ID) {
 			continue
 		}
 		for _, in := range o.Intents {
@@ -1504,17 +1469,23 @@ func upsertIntent(list []Intent, in Intent) []Intent {
 }
 
 // intentOverlaps lists other claims whose intents or changed files meet a new intent.
-func (b *Board) intentOverlaps(c *claim, in Intent, live map[string]bool) []Conflict {
+func (b *Board) intentOverlaps(c *claim, in Intent, live liveness) []Conflict {
+	// The files the intent can cover are those under the directory it is
+	// rooted in, which are together in each claim's ordered paths: from
+	// dir+"/" up to dir+"0", as '0' follows '/'. A pattern rooted nowhere,
+	// such as **/*.go, can cover any of them.
+	dir := glob.LiteralDir(in.Pattern)
+	lo, hi := dir+"/", dir+"0"
 	var out []Conflict
-	for _, o := range b.claimsInRepo(c.Repo) {
+	for o := range b.claimsIn(c.Repo) {
 		if o.ID == c.ID {
 			continue
 		}
-		cf := Conflict{Path: in.Pattern, ClaimID: o.ID, Member: o.Member, Branch: o.Branch, Task: o.Task, Active: live[o.ID]}
+		cf := Conflict{Path: in.Pattern, ClaimID: o.ID, Member: o.Member, Branch: o.Branch, Task: o.Task}
 		for _, oi := range o.Intents {
 			if overlap(oi.Pattern, in.Pattern) {
 				sev := SeverityOverlap
-				if oi.Mode == ModeExclusive && cf.Active {
+				if oi.Mode == ModeExclusive && live.claim(o.ID) {
 					sev = SeverityBlock
 				}
 				if sev > cf.Severity {
@@ -1526,21 +1497,33 @@ func (b *Board) intentOverlaps(c *claim, in Intent, live map[string]bool) []Conf
 		if cf.Severity < SeverityOverlap {
 			var hit []string
 			var since time.Time
-			for p, t := range o.Footprint {
+			see := func(p string) {
 				if match(in.Pattern, p) {
 					hit = append(hit, p)
-					if t.At.After(since) {
+					if t := o.Footprint[p]; t.At.After(since) {
 						since = t.At
 					}
 				}
 			}
+			if dir == "" {
+				for _, p := range o.sortedPaths {
+					see(p)
+				}
+			} else {
+				if _, ok := o.Footprint[dir]; ok {
+					see(dir)
+				}
+				for _, p := range o.pathsIn(lo, hi) {
+					see(p)
+				}
+			}
 			if len(hit) > 0 {
-				sort.Strings(hit)
 				cf.Severity, cf.Since = SeverityOverlap, since
 				cf.Why = "has unmerged changes to " + listPaths(hit, 3)
 			}
 		}
 		if cf.Severity > SeverityNone {
+			cf.Active = live.claim(o.ID)
 			out = append(out, cf)
 		}
 	}
@@ -1676,10 +1659,10 @@ func (b *Board) check(now time.Time, member string, w Where, paths []PathRef) []
 	if self == nil {
 		self = &claim{Repo: w.Repo, Member: member}
 	}
-	live, liveSess := b.liveClaims(now), b.liveSessions(now)
+	live := b.liveAt(now)
 	var out []Conflict
 	for _, p := range paths {
-		out = append(out, b.conflictsFor(now, self, "", p, live, liveSess)...)
+		out = append(out, b.conflictsFor(live, self, "", p)...)
 	}
 	return out
 }
@@ -1761,7 +1744,7 @@ func (b *Board) resolve(repo, to string, self *claim) ([]*claim, string) {
 		return []*claim{c}, ""
 	}
 	var out []*claim
-	for _, c := range b.claimsInRepo(repo) {
+	for c := range b.claimsIn(repo) {
 		if self != nil && c.ID == self.ID {
 			continue
 		}
@@ -1776,7 +1759,7 @@ func (b *Board) resolve(repo, to string, self *claim) ([]*claim, string) {
 	if err != nil {
 		return nil, ""
 	}
-	for _, c := range b.claimsInRepo(repo) {
+	for c := range b.claimsIn(repo) {
 		if self != nil && c.ID == self.ID {
 			continue
 		}
@@ -1838,7 +1821,7 @@ func (b *Board) Sweep(now time.Time) {
 			changed = true
 		}
 		if !st.Live() && now.Sub(s.LastSeen) > keepEndedFor && (st == StateEnded || now.Sub(s.LastSeen) > b.cfg.IdleAfter+keepEndedFor) {
-			delete(b.sessions, k)
+			b.detachSession(s)
 			changed = true
 			continue
 		}

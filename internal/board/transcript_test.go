@@ -41,7 +41,7 @@ func TestBoardTranscript(t *testing.T) {
 	t.Parallel()
 	var digest, full bytes.Buffer
 	for _, sec := range transcriptSections {
-		runTranscript(&digest, &full, sec, false)
+		runTranscript(t, &digest, &full, sec, false, true)
 	}
 	writeTranscript(t, full.Bytes())
 	compareGolden(t, "testdata/transcript.golden", digest.Bytes())
@@ -68,7 +68,7 @@ func TestBoardTranscriptWithTies(t *testing.T) {
 	var first []byte
 	for run := range 3 {
 		var digest, full bytes.Buffer
-		runTranscript(&digest, &full, sec, true)
+		runTranscript(t, &digest, &full, sec, true, run == 0)
 		if run == 0 {
 			first = full.Bytes()
 			if *transcriptFile != "" {
@@ -193,8 +193,9 @@ type transcriptRun struct {
 
 // runTranscript runs one section, writing its full transcript to out and
 // its digest to digest. With coarse, the clock moves in whole seconds and
-// often not at all, so claims tie.
-func runTranscript(digest, out *bytes.Buffer, sec transcriptSection, coarse bool) {
+// often not at all, so claims tie. With check, the board's indexes must
+// agree with a recount after every step.
+func runTranscript(t *testing.T, digest, out *bytes.Buffer, sec transcriptSection, coarse, check bool) {
 	cfg := DefaultConfig()
 	sec.cfg(&cfg)
 	tr := &transcriptRun{digest: digest, out: out, group: out.Len(), cfg: cfg, now: t0, start: t0,
@@ -216,6 +217,9 @@ func runTranscript(digest, out *bytes.Buffer, sec transcriptSection, coarse bool
 	tr.group = out.Len()
 	for i := range sec.steps {
 		tr.step(i)
+		if check {
+			mustIndex(t, tr.b, fmt.Sprintf("step %d of %s", i, sec.name))
+		}
 		if i%10 == 9 {
 			tr.digestGroup(i - 9)
 		}
@@ -542,7 +546,7 @@ func (tr *transcriptRun) note(i int) {
 	burst := 1
 	if tr.rng.Intn(4) == 0 {
 		burst = 4
-		for _, c := range tr.b.claimsInRepo(sl.where.Repo) {
+		for c := range tr.b.claimsIn(sl.where.Repo) {
 			if c.Member != sl.member {
 				to = c.Member
 				break

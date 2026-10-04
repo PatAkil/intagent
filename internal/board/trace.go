@@ -9,9 +9,10 @@ import "github.com/patakil/intagent/internal/glob"
 type workTrace struct {
 	conflictsFor  int // paths checked against the claims of a repository
 	conflictWith  int // other claims a path was compared with
-	workedInArea  int // claims searched for work in an area
-	areaVisits    int // footprint entries those searches read
+	workedInArea  int // claims asked for their work in an area
+	areaVisits    int // footprint entries read to index the areas a claim changed files in
 	ranked        int // claims ranked for a greeting
+	liveClaims    int // claims asked whether they are live
 	sessionVisits int // sessions read by Sweep and to find which are live
 	globMatch     int // glob.Match calls
 	globOverlap   int // glob.Overlap calls

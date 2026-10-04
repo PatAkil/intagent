@@ -80,6 +80,13 @@ func BenchmarkScaleStartStorm(b *testing.B) {
 	}
 }
 
+// cappedShape is the busy repository alone, its 300 claims at the cap.
+func cappedShape() shape {
+	sh := targetShape(filesAtCap, 0)
+	sh.claims, sh.busy, sh.sessions, sh.repos, sh.intents = 300, 300, 300, 1, 0
+	return sh
+}
+
 // One pre_edit of one file in the busy repository.
 func BenchmarkScalePreEdit(b *testing.B) {
 	for _, tc := range []struct {
@@ -88,6 +95,7 @@ func BenchmarkScalePreEdit(b *testing.B) {
 	}{
 		{"typical", targetShape(filesLognormal, 23)},
 		{"mixed", targetShape(filesMixed, 50)},
+		{"cap", cappedShape()},
 	} {
 		b.Run(tc.name, func(b *testing.B) {
 			sb := boardOf(b, tc.sh)
@@ -152,17 +160,81 @@ func BenchmarkScaleRecord(b *testing.B) {
 	}
 }
 
-// The busy repository's view, which every dashboard reloads, by the old
-// View in oracle_test.go and the current one.
-func BenchmarkScaleView(b *testing.B) {
-	capped := targetShape(filesAtCap, 0)
-	capped.claims, capped.busy, capped.sessions, capped.repos, capped.intents = 300, 300, 300, 1, 0
+// What a pre_edit or a check of 1 and of 200 files in the busy repository
+// finds, by the old walk of every claim, footprint and session in
+// oracle_test.go and through the indexes.
+func BenchmarkScaleCheck(b *testing.B) {
 	for _, tc := range []struct {
 		name string
 		sh   shape
 	}{
 		{"mixed", targetShape(filesMixed, 50)},
-		{"cap", capped},
+		{"cap", cappedShape()},
+	} {
+		sb := boardOf(b, tc.sh)
+		c := sb.findClaim(sb.member(1), sb.where(1))
+		s := sb.sessions[sessionKey(sb.member(1), AgentClaudeCode, "s00001")]
+		for _, n := range []int{1, 200} {
+			var paths []PathRef
+			for k := range n {
+				paths = append(paths, sb.path(sb.baseArea(1)+k%7, k))
+			}
+			for _, v := range []struct {
+				name  string
+				check func(time.Time, *claim, *session, []PathRef) []Conflict
+			}{{"old", sb.oldCheck}, {"new", sb.newCheck}} {
+				b.Run(fmt.Sprintf("%s/%d/%s", tc.name, n, v.name), func(b *testing.B) {
+					b.ReportAllocs()
+					for range b.N {
+						v.check(sb.now, c, s, paths)
+					}
+				})
+			}
+		}
+	}
+}
+
+// The overlaps 50 newly declared patterns meet in the busy repository at
+// the cap, by the old match of every file in oracle_test.go and through
+// each claim's ordered paths.
+func BenchmarkScaleDeclareOverlaps(b *testing.B) {
+	sb := boardOf(b, cappedShape())
+	c := sb.findClaim(sb.member(1), sb.where(1))
+	var intents []Intent
+	for k := range 50 {
+		pat := fmt.Sprintf("%s/pkg%02d/**", areaName(sb.baseArea(1)+k%9), k%10)
+		if k%5 == 4 {
+			pat = fmt.Sprintf("%s/**/file1*.go", areaName(sb.baseArea(1)+k))
+		}
+		intents = append(intents, Intent{Pattern: pat, Mode: ModeShared, DeclaredAt: sb.now})
+	}
+	for _, v := range []struct {
+		name     string
+		overlaps func(in Intent) []Conflict
+	}{
+		{"old", func(in Intent) []Conflict { return sb.oldIntentOverlaps(c, in, sb.oldLiveClaims(sb.now)) }},
+		{"new", func(in Intent) []Conflict { return sb.intentOverlaps(c, in, sb.liveAt(sb.now)) }},
+	} {
+		b.Run(v.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for range b.N {
+				for _, in := range intents {
+					v.overlaps(in)
+				}
+			}
+		})
+	}
+}
+
+// The busy repository's view, which every dashboard reloads, by the old
+// View in oracle_test.go and the current one.
+func BenchmarkScaleView(b *testing.B) {
+	for _, tc := range []struct {
+		name string
+		sh   shape
+	}{
+		{"mixed", targetShape(filesMixed, 50)},
+		{"cap", cappedShape()},
 	} {
 		sb := boardOf(b, tc.sh)
 		for _, v := range []struct {

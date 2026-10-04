@@ -69,6 +69,8 @@ func (c *claim) clone() *claim {
 		d.Inbox[i] = it
 	}
 	d.Alerted = maps.Clone(c.Alerted)
+	// The copy is not on the board: it has no indexes.
+	d.areaAt, d.sortedPaths, d.removed = nil, nil, false
 	return &d
 }
 
@@ -81,7 +83,8 @@ func (s *session) clone() *session {
 	return &d
 }
 
-// Restore replaces the board's contents with a snapshot.
+// Restore replaces the board's contents with a snapshot, and rebuilds what
+// is derived from them.
 func (b *Board) Restore(data []byte) error {
 	var s snapshot
 	if err := json.Unmarshal(data, &s); err != nil {
@@ -95,21 +98,19 @@ func (b *Board) Restore(data []byte) error {
 	b.claims = map[string]*claim{}
 	b.byKey = map[string]string{}
 	b.sessions = map[string]*session{}
+	b.byRepo = map[string]*repoIndex{}
+	b.claimSessions = map[string]map[string]*session{}
 	for _, c := range s.Claims {
 		if c == nil || c.ID == "" {
 			continue
 		}
-		if c.Footprint == nil {
-			c.Footprint = map[string]*touch{}
-		}
-		b.claims[c.ID] = c
-		b.byKey[c.key()] = c.ID
+		b.addClaim(c)
 	}
 	for _, x := range s.Sessions {
 		if x == nil || x.Key == "" {
 			continue
 		}
-		b.sessions[x.Key] = x
+		b.attachSession(x, x.ClaimID)
 	}
 	b.seq = s.Seq
 	b.recent = s.Recent

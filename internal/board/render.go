@@ -132,18 +132,18 @@ func (b *Board) renderStart(now time.Time, c *claim) string {
 	if b.unheard {
 		return ""
 	}
-	live := b.liveClaims(now)
-	mine := areasOf(c)
+	live := b.liveAt(now)
 	// A busy repository has hundreds of claims and the greeting shows a few:
 	// rank each claim once, and keep only the first rows.
 	var top []rankedClaim
 	others := 0
-	for _, o := range b.claims {
-		if o.Repo != c.Repo || o.ID == c.ID {
+	for o := range b.claimsIn(c.Repo) {
+		if o.ID == c.ID {
 			continue
 		}
 		others++
-		top = insertTop(top, rankedClaim{o, relevance(o, mine, live)}, maxBoardRows, rankedFirst)
+		rel, active := relevance(o, c, live)
+		top = insertTop(top, rankedClaim{o, rel, active}, maxBoardRows, rankedFirst)
 	}
 	var lines []string
 	lines = append(lines, fmt.Sprintf("%s You are connected to your team's intagent board as %s (claim %s%s). Teammates' agents see the files you change, and you hear about theirs.",
@@ -153,7 +153,7 @@ func (b *Board) renderStart(now time.Time, c *claim) string {
 	} else {
 		lines = append(lines, fmt.Sprintf("Other work in this repository %s:", dataNotice))
 		for _, r := range top {
-			lines = append(lines, b.summarizeClaim(now, r.c, live[r.c.ID]))
+			lines = append(lines, b.summarizeClaim(now, r.c, r.live))
 		}
 		if others > maxBoardRows {
 			lines = append(lines, fmt.Sprintf("- and %d more; the intagent team_board tool lists more, and check_paths checks the files you plan to change.", others-maxBoardRows))
@@ -165,8 +165,9 @@ func (b *Board) renderStart(now time.Time, c *claim) string {
 
 // rankedClaim is another claim with its relevance to a greeted session.
 type rankedClaim struct {
-	c   *claim
-	rel int
+	c    *claim
+	rel  int
+	live bool
 }
 
 // rankedFirst orders claims for a greeting: the most relevant, then the most
@@ -225,10 +226,7 @@ func (b *Board) summarizeClaim(now time.Time, o *claim, active bool) string {
 // agentsOf describes the live sessions on a claim, e.g. "claude-code working".
 func (b *Board) agentsOf(now time.Time, c *claim) string {
 	var parts []string
-	for _, s := range b.sessions {
-		if s.ClaimID != c.ID {
-			continue
-		}
+	for _, s := range b.claimSessions[c.ID] {
 		if st := b.state(now, s); st != StateEnded && st != StateGone {
 			parts = append(parts, string(s.Agent)+" "+string(st))
 		}
@@ -277,34 +275,21 @@ func sortedFiles(c *claim) []fileAt {
 	return files
 }
 
-func areasOf(c *claim) map[string]bool {
-	out := map[string]bool{}
-	for _, t := range c.Footprint {
-		if t.Area != "" {
-			out[t.Area] = true
-		}
-	}
-	return out
-}
-
-// relevance orders other claims for a session's greeting: shared areas first, then active ones.
-func relevance(o *claim, mine map[string]bool, live map[string]bool) int {
+// relevance ranks claim o for a greeting of a session of claim c: o
+// changed files in an area c did, and o is live. It tells whether o is live.
+func relevance(o, c *claim, live liveness) (int, bool) {
 	if trace != nil {
 		trace.ranked++
 	}
 	r := 0
-	if len(mine) > 0 {
-		for _, t := range o.Footprint {
-			if t.Area != "" && mine[t.Area] {
-				r += 2
-				break
-			}
-		}
+	if sharesArea(o, c) {
+		r += 2
 	}
-	if live[o.ID] {
+	active := live.claim(o.ID)
+	if active {
 		r++
 	}
-	return r
+	return r, active
 }
 
 func renderDeclare(now time.Time, res DeclareResult, p Policy) string {

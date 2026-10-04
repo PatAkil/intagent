@@ -161,7 +161,13 @@ internal/web           the dashboard, embedded
 ```
 
 The server keeps the board in memory behind one mutex. Each mutation marks the board dirty; a writer goroutine saves
-an atomic snapshot (write, fsync, rename) at most once a second and on shutdown. The scale it is meant for is about
+an atomic snapshot (write, fsync, rename) at most once a second and on shutdown. Beside its maps the board keeps
+indexes, rebuilt from the snapshot on a restart: each repository's claims, each claim's sessions, and for each claim
+the latest change in each area it changed files in and its changed paths in order. A check of a path then looks at
+each claim of its repository once, asks the sessions of only the claims that matter to it whether they are live, and
+finds nearby work by a lookup rather than a walk of every file; a declared intent is matched against the files under
+the directory it is rooted in. What a check costs grows with the claims of its repository, not with every session and
+file on the server. The scale it is meant for is about
 200 members running a thousand agent sessions in 30 repositories, with 100 dashboards open; `scripts/loadgen` drives a
 running server that way, with clients and dashboards that behave as intagent's do, and reports how it held up.
 
@@ -274,9 +280,9 @@ while degraded), in its log and, if asked, by webhook.
   `intagent check`, the MCP `check_paths` tool and `intagent guard` send more in checks of 200. Older clients send a
   whole commit in one check and read only its conflicts, so they get what older servers gave them: the first 200
   paths checked and the rest let through unsaid (a refusal would let the whole commit through, or under
-  `INTAGENT_FAIL=closed` refuse every large one). Each path costs a pass over the repository's claims and, for its
-  area, over their files, under the board's lock: 200 paths on a repository of 300 claims of 50 files hold it for
-  75 ms. A post_edit's paths, which only join the claim's files, are kept up to 2000, and an activity lists 200 of them
+  `INTAGENT_FAIL=closed` refuse every large one). Each path costs a look at each of the repository's claims under
+  the board's lock: 200 paths on a repository of 300 claims of 50 files, every twentieth at 2000, hold it for about
+  25 ms. A post_edit's paths, which only join the claim's files, are kept up to 2000, and an activity lists 200 of them
   and counts the rest. Checks and declarations are paced per member and worktree, one at a time and five a second with
   a burst of 20 (429 past that), since each holds the board's lock for as long as its paths and patterns take; an
   orchestrator's agents, each in its own worktree, are paced apart. Hooks are never paced, since a fleet's agents

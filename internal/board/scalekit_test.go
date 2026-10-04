@@ -314,7 +314,7 @@ func (sb *scaleBoard) footprint(i, n int) *Footprint {
 func TestScaleKitBuildsTheShape(t *testing.T) {
 	sh := smallShape()
 	sb := buildBoard(t, sh)
-	live := sb.liveClaims(sb.now)
+	live := sb.oldLiveClaims(sb.now)
 	perRepo, dormant, liveSessions, intents := map[string]int{}, 0, 0, 0
 	for _, c := range sb.claims {
 		perRepo[c.Repo]++

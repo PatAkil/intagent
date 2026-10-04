@@ -81,25 +81,20 @@ func (b *Board) View(now time.Time, repo string) View {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	v := View{Repo: repo, At: now, Policy: b.cfg.Policy, LastSeq: b.seq, Claims: []ClaimView{}, Recent: []Activity{}}
-	live := b.liveClaims(now)
+	live := b.liveAt(now)
 	members := map[string]bool{}
-	bySession := map[string][]*session{}
-	for _, s := range b.sessions {
-		bySession[s.ClaimID] = append(bySession[s.ClaimID], s)
-	}
-	claims := b.claimsInRepo(repo)
 	changedBy := map[string]int{} // how many claims changed each file
-	for _, c := range claims {
+	for c := range b.claimsIn(repo) {
 		for p := range c.Footprint {
 			changedBy[p]++
 		}
 	}
-	for _, c := range claims {
+	for c := range b.claimsIn(repo) {
 		members[c.Member] = true
 		cv := ClaimView{
 			ID: c.ID, Member: c.Member, Host: c.Host, Worktree: c.Worktree, Branch: c.Branch, Task: c.Task,
-			Active: live[c.ID], Intents: append([]Intent{}, c.Intents...), Truncated: c.FootprintTruncated,
-			Sessions: b.sessionViews(now, bySession[c.ID]), CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt, Files: []FileView{},
+			Active: live.claim(c.ID), Intents: append([]Intent{}, c.Intents...), Truncated: c.FootprintTruncated,
+			Sessions: b.sessionViews(now, c.ID), CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt, Files: []FileView{},
 		}
 		for _, s := range cv.Sessions {
 			if s.State.Live() {
@@ -146,30 +141,26 @@ func (b *Board) View(now time.Time, repo string) View {
 func (b *Board) Repos(now time.Time) []RepoSummary {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	live := b.liveClaims(now)
-	byRepo := map[string]*RepoSummary{}
-	for _, c := range b.claims {
-		r := byRepo[c.Repo]
-		if r == nil {
-			r = &RepoSummary{Repo: c.Repo}
-			byRepo[c.Repo] = r
+	out := make([]RepoSummary, 0, len(b.byRepo))
+	for repo := range b.byRepo {
+		r := RepoSummary{Repo: repo}
+		for c := range b.claimsIn(repo) {
+			r.Claims++
+			live := 0
+			for _, s := range b.claimSessions[c.ID] {
+				if b.state(now, s).Live() {
+					live++
+				}
+			}
+			if live > 0 {
+				r.ActiveClaims++
+			}
+			r.LiveSessions += live
+			if c.UpdatedAt.After(r.UpdatedAt) {
+				r.UpdatedAt = c.UpdatedAt
+			}
 		}
-		r.Claims++
-		if live[c.ID] {
-			r.ActiveClaims++
-		}
-		if c.UpdatedAt.After(r.UpdatedAt) {
-			r.UpdatedAt = c.UpdatedAt
-		}
-	}
-	for _, s := range b.sessions {
-		if c := b.claims[s.ClaimID]; c != nil && b.state(now, s).Live() {
-			byRepo[c.Repo].LiveSessions++
-		}
-	}
-	out := make([]RepoSummary, 0, len(byRepo))
-	for _, r := range byRepo {
-		out = append(out, *r)
+		out = append(out, r)
 	}
 	slices.SortFunc(out, func(x, y RepoSummary) int {
 		if c := y.UpdatedAt.Compare(x.UpdatedAt); c != 0 {
@@ -182,7 +173,11 @@ func (b *Board) Repos(now time.Time) []RepoSummary {
 
 // sessionViews shows a claim's sessions, the most recently seen first, and
 // those seen at the same moment by key.
-func (b *Board) sessionViews(now time.Time, ss []*session) []SessionView {
+func (b *Board) sessionViews(now time.Time, id string) []SessionView {
+	ss := make([]*session, 0, len(b.claimSessions[id]))
+	for _, s := range b.claimSessions[id] {
+		ss = append(ss, s)
+	}
 	slices.SortFunc(ss, func(x, y *session) int {
 		if c := y.LastSeen.Compare(x.LastSeen); c != 0 {
 			return c

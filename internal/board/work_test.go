@@ -1,6 +1,7 @@
 package board
 
 import (
+	"fmt"
 	"runtime"
 	"slices"
 	"strconv"
@@ -27,8 +28,8 @@ func TestReconcileComparesOnlyReservations(t *testing.T) {
 			sh := smallShape()
 			sh.intents, sh.exclusive = 1, tc.exclusive
 			sb := buildBoard(t, sh)
-			live, holders := sb.liveClaims(sb.now), 0
-			for _, c := range sb.claimsInRepo(scaleRepo(0)) {
+			live, holders := sb.oldLiveClaims(sb.now), 0
+			for c := range sb.claimsIn(scaleRepo(0)) {
 				if live[c.ID] && slices.ContainsFunc(c.Intents, func(in Intent) bool { return in.Mode == ModeExclusive }) {
 					holders++
 				}
@@ -148,5 +149,148 @@ func TestSweepReadsEachSessionOnce(t *testing.T) {
 	}
 	if len(sb.claims) != quiet || len(sb.sessions) != quiet {
 		t.Fatalf("%d claims and %d sessions after the sweeps, want %d each", len(sb.claims), len(sb.sessions), quiet)
+	}
+}
+
+// counted runs fn with the work counter set, and returns what it counted.
+func counted(t *testing.T, fn func()) workTrace {
+	t.Helper()
+	trace = &workTrace{}
+	defer func() { trace = nil }()
+	fn()
+	return *trace
+}
+
+// A pre_edit reads the claims of its own repository, and the sessions of
+// those that matter to it: a board with 2000 more sessions, in other
+// repositories, costs it exactly the same work. The old check read every
+// session on the board twice, to build maps of the live ones.
+func TestPreEditIgnoresOtherRepositories(t *testing.T) {
+	base := buildBoard(t, smallShape())
+	quiet, busy := base.fork(t), base.fork(t)
+	for k := range 2000 {
+		busy.hook(t, busy.fresh(k, 1+k%2, KindHeartbeat))
+	}
+	quiet.now = busy.now
+	ev := base.event(1, KindPreEdit, base.path(base.baseArea(1), 7), base.path(base.baseArea(2), 3))
+	var work [2]workTrace
+	for i, sb := range []*scaleBoard{quiet, busy} {
+		work[i] = counted(t, func() { sb.hook(t, ev) })
+	}
+	if work[0] != work[1] {
+		t.Fatalf("a pre_edit's work grew with 2000 sessions in other repositories:\nwithout: %+v\n   with: %+v", work[0], work[1])
+	}
+	if work[0].conflictWith == 0 || work[0].liveClaims == 0 {
+		t.Fatalf("the pre_edit compared no claims: %+v", work[0])
+	}
+}
+
+// addDormant puts n claims in a repository whose agents left long ago, with
+// files in areas: claims the board keeps for a week.
+func addDormant(b *Board, repo string, n, files int, at time.Time, areas []string) {
+	for i := range n {
+		c := &claim{ID: fmt.Sprintf("c_dormant%05d", i), Repo: repo, Member: fmt.Sprintf("d%03d", i%50), Host: "h",
+			Worktree: fmt.Sprintf("/old/%05d", i), CreatedAt: at, UpdatedAt: at}
+		b.addClaim(c)
+		fp := map[string]*touch{}
+		var paths []string
+		for f := range files {
+			area := areas[(i+f)%len(areas)]
+			p := fmt.Sprintf("%s/old%05d_%d.go", area, i, f)
+			fp[p] = &touch{Area: area, At: at, FromGit: true}
+			paths = append(paths, p)
+		}
+		c.setFootprint(fp, paths)
+	}
+}
+
+// A dormant claim costs a pre_edit one look, however many files it changed:
+// whether it worked in the edit's area is a lookup, not a walk of its files.
+// The old check walked every dormant claim's footprint for the area.
+func TestDormantClaimsCostAPreEditOneLookEach(t *testing.T) {
+	const dormant, files = 3000, 40
+	base := buildBoard(t, smallShape())
+	ev := base.event(1, KindPreEdit, base.path(base.baseArea(1), 7))
+	var areas []string
+	for a := range base.sh.areas {
+		areas = append(areas, areaName(a))
+	}
+	without, with := base.fork(t), base.fork(t)
+	addDormant(with.Board, scaleRepo(0), dormant, files, t0.Add(-30*24*time.Hour), areas)
+	mustIndex(t, with.Board, "adding dormant claims")
+	w0 := counted(t, func() { without.hook(t, ev) })
+	w1 := counted(t, func() { with.hook(t, ev) })
+	for _, c := range []struct {
+		name       string
+		got, under int
+	}{
+		{"claims compared", w1.conflictWith, w0.conflictWith + dormant},
+		{"claims asked for their area", w1.workedInArea, w0.workedInArea + dormant},
+		{"claims asked whether live", w1.liveClaims, w0.liveClaims + dormant},
+		{"sessions read", w1.sessionVisits, w0.sessionVisits + dormant},
+		{"footprint entries read", w1.areaVisits, 0},
+	} {
+		if c.got > c.under {
+			t.Errorf("%s: %d with %d dormant claims of %d files, at most %d", c.name, c.got, dormant, files, c.under)
+		}
+	}
+	if w1.workedInArea < dormant {
+		t.Fatalf("the pre_edit asked %d claims for their area: the dormant ones were not compared", w1.workedInArea)
+	}
+}
+
+// A pre_edit allocates no more on a board with thousands of sessions than
+// on a small one: liveness is asked of the claims that matter, not built
+// into maps of every session. The old check allocated maps of every
+// session: 219 KB on the target board.
+func TestPreEditAllocationsAreBounded(t *testing.T) {
+	sb := buildBoard(t, smallShape())
+	for k := range 2000 {
+		sb.hook(t, sb.fresh(k, k%3, KindHeartbeat))
+	}
+	ev := sb.event(1, KindPreEdit, sb.path(sb.baseArea(1), 7))
+	sb.hook(t, ev)
+	const runs = 200
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	for range runs {
+		sb.hook(t, ev)
+	}
+	runtime.ReadMemStats(&after)
+	allocs := float64(after.Mallocs-before.Mallocs) / runs
+	bytes := float64(after.TotalAlloc-before.TotalAlloc) / runs
+	if allocs > 300 || bytes > 32<<10 {
+		t.Fatalf("a pre_edit on a board of %d sessions made %.0f allocations of %.0f bytes", len(sb.sessions), allocs, bytes)
+	}
+}
+
+// A declared intent is matched against the files under the directory it is
+// rooted in, not every file of every teammate: thousands more files
+// elsewhere cost a declaration nothing. The old declaration matched each of
+// its patterns against every file of every other claim.
+func TestDeclareMatchesOnlyFilesUnderItsDirectory(t *testing.T) {
+	var matches []int
+	for _, elsewhere := range []int{10, 2000} {
+		h := newHarness(t)
+		h.edit("bob", "b1", "a/p1/x.go", "a/p2/y.go")
+		var far []string
+		for i := range elsewhere {
+			far = append(far, fmt.Sprintf("z/p%d/f%d.go", i%40, i))
+		}
+		h.edit("carol", "c1", far...)
+		patterns := make([]string, 50)
+		for i := range patterns {
+			patterns[i] = fmt.Sprintf("a/p%d/**", i)
+		}
+		w := counted(t, func() {
+			res := h.declare("alice", ModeShared, "", patterns...)
+			if len(res.Overlaps) != 2 {
+				t.Fatalf("the declaration met %d overlaps, want bob's 2", len(res.Overlaps))
+			}
+		})
+		matches = append(matches, w.globMatch)
+	}
+	if matches[0] != matches[1] {
+		t.Fatalf("a declaration of 50 patterns made %d matches with 10 files elsewhere and %d with 2000", matches[0], matches[1])
 	}
 }
