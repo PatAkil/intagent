@@ -235,11 +235,15 @@ func TestIndexCopyKeepsItsTime(t *testing.T) {
 	}
 }
 
-// indexWrites counts the times git writes an index, from its trace.
+// indexWrites counts the times git writes an index, from its trace. The
+// user's git settings stay out of it: an fsmonitor, say, writes the index
+// for reasons of its own.
 func indexWrites(t *testing.T) func() int {
 	t.Helper()
 	trace := filepath.Join(t.TempDir(), "trace.json")
 	t.Setenv("GIT_TRACE2_EVENT", trace)
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	return func() int {
 		data, _ := os.ReadFile(trace)
 		return bytes.Count(data, []byte(`"key":"write/cache_nr"`))
