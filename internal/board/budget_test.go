@@ -412,3 +412,37 @@ func TestCallsStopOnceTheWorkIsSpent(t *testing.T) {
 		}
 	}
 }
+
+// An exclusive intent the call could not finish comparing with teammates'
+// reservations is rejected, not accepted: it could overlap one of them, and
+// two claims would then hold the same files. Declared shared, it is
+// accepted.
+func TestShortClashCheckRejectsAReservation(t *testing.T) {
+	h := newHarness(t)
+	const retry = "services/payments/internal/retry/**"
+	h.hook(KindPrompt, "alice", "a1")
+	h.declare("alice", ModeExclusive, "Retry rework", retry)
+	// Eve's live reservations, costly to compare with retry and never
+	// overlapping it, come first in ID order.
+	seg := func(w string) string { return strings.Repeat("*", 60-len(w)) + w }
+	costly := seg("services") + "/" + seg("payments") + "/" + seg("internal") + "/" + seg("retrx")
+	for k := range 700 {
+		c := &claim{ID: fmt.Sprintf("c_0eve%05d", k), Repo: repo, Member: "eve", Host: "h", Worktree: fmt.Sprintf("/work/eve%d", k),
+			CreatedAt: h.now, UpdatedAt: h.now}
+		for i := range 50 {
+			c.Intents = append(c.Intents, Intent{Pattern: fmt.Sprintf("%s%d/z", costly, i), Mode: ModeExclusive, DeclaredAt: h.now})
+		}
+		h.b.addClaim(c)
+		h.b.attachSession(&session{Key: c.ID, ID: "e", Member: "eve", Agent: AgentCodex, LastSeen: h.now, Phase: phaseWorking}, c.ID)
+	}
+	h.hook(KindPrompt, "bob", "b1")
+	res := h.declare("bob", ModeExclusive, "mine now", retry)
+	if !res.Partial || len(res.Accepted) != 0 || len(res.Rejected) != 1 {
+		t.Fatalf("an exclusive intent over alice's, not compared with hers: partial %t, accepted %v, rejected %v",
+			res.Partial, res.Accepted, res.Rejected)
+	}
+	mustContain(t, res.Text, "Not declared: "+retry+". intagent could not finish comparing it with teammates' reservations")
+	if res := h.declare("bob", ModeShared, "mine too", retry); len(res.Accepted) != 1 {
+		t.Fatalf("the same intent, shared, was not accepted: %+v", res)
+	}
+}

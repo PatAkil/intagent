@@ -115,7 +115,8 @@ A client has 15 seconds to send a request and 16 KB for its headers, and an answ
 seconds is cut off. A dashboard over its stream cap is answered 429 and tries again later. A path has at most 64
 segments of 255 bytes, and an intent's pattern at most 32 segments, 4 of them `**`, with wildcard segments of at most
 64 bytes. A hook, check or declaration may compare paths with teammates' patterns only so much; one that would take
-longer lets through what it did not compare, its agent is told, and the dashboard counts it. These are not settings.
+longer lets through what it did not compare (but refuses an exclusive intent it could not compare with every
+reservation), its agent is told, and the dashboard counts it. These are not settings.
 
 **Each repository, once** (one person; then commit the files it writes):
 

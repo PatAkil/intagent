@@ -271,8 +271,9 @@ while degraded), in its log and, if asked, by webhook.
   claims and lets through what it did not compare. A worktree's changes are compared with teammates' reservations
   before teammates are alerted of them, so a change inside a reservation is reported however much the alerts would
   cost. The edit's agent, or the session whose worktree's changes were being compared, is told intagent stopped
-  before it had compared everything; a check or a declaration says so in its answer (`partial`); and the
-  repository's stats count each such call (`partial`). The costliest patterns at the bounds then hold the
+  before it had compared everything; a check or a declaration says so in its answer (`partial`); a declaration
+  refuses an exclusive intent it could not compare with every reservation, which two claims could otherwise hold at
+  once; and the repository's stats count each such call (`partial`). The costliest patterns at the bounds then hold the
   lock for about a tenth of a second per call, however many worktrees declare them: 50 to 85 ms for a check of 200
   paths, which without the bound took 0.4 to 1.5 s (and, before the bounds on shape, about a minute), and about 85 ms
   for a worktree arriving with 2000 changed files.

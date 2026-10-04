@@ -1552,7 +1552,8 @@ type DeclareResult struct {
 }
 
 // Declare records intents. An exclusive intent that overlaps another active
-// claim's exclusive intent is rejected; the caller may declare it shared.
+// claim's exclusive intent is rejected, and so is one the call could not
+// finish comparing with them; the caller may declare it shared.
 func (b *Board) Declare(now time.Time, r DeclareRequest) (DeclareResult, error) {
 	w, err := cleanWhere(r.Where)
 	if err != nil {
@@ -1585,12 +1586,23 @@ func (b *Board) Declare(now time.Time, r DeclareRequest) (DeclareResult, error) 
 
 	for _, pat := range patterns {
 		if mode == ModeExclusive {
-			if against, ok := b.exclusiveClash(c, pat, live); ok {
+			against, ok := b.exclusiveClash(c, pat, live)
+			switch {
+			case ok:
 				res.Rejected = append(res.Rejected, Rejection{
 					Pattern: pat,
 					Reason: fmt.Sprintf("%s's agent holds %s exclusively, and a shared intent of yours would not change "+
 						"that: work elsewhere, ask them with a note, or tell your user", against.Member, against.Pattern),
 					Against: against,
+				})
+				continue
+			case b.work.Short():
+				// A reservation not compared with every other one could
+				// overlap one, and two would hold the same files.
+				res.Rejected = append(res.Rejected, Rejection{
+					Pattern: pat,
+					Reason: "intagent could not finish comparing it with teammates' reservations, so it cannot reserve it: " +
+						"declare it shared, or tell your user",
 				})
 				continue
 			}
