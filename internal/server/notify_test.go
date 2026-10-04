@@ -245,25 +245,50 @@ func TestWebhookBatchMessage(t *testing.T) {
 }
 
 // However many repositories and activities, a message stays readable: at most
-// 40 lines, and what does not fit is counted.
+// 40 lines and 12,000 characters as sent, Slack's markup escaped, and what
+// does not fit is counted.
 func TestWebhookMessageIsBounded(t *testing.T) {
-	var items []*pendingItem
-	for i := range 2000 {
+	long := func(i int) board.Activity {
 		a := refusal("bob", fmt.Sprintf("github.com/acme/r%d", i%5), fmt.Sprint("s", i), strings.Repeat("deep/", 150)+"x.go")
 		if i >= 25 {
 			a = stall(fmt.Sprint("m", i), fmt.Sprintf("github.com/acme/r%d", i%5), fmt.Sprint("s", i))
 		}
-		a.Seq = uint64(i + 1)
 		a.Text = strings.Repeat("y", 400)
-		items = append(items, &pendingItem{act: a})
+		return a
 	}
-	m := compose(items, nil)
-	lines := strings.Split(m.text, "\n")
-	if len(lines) > maxMessageLines || len(m.text) > maxMessageText || m.count != 2000 {
-		t.Fatalf("%d lines, %d bytes, count %d", len(lines), len(m.text), m.count)
+	// Five collisions in each of five repositories are told a line each, and
+	// a summary full of markup grows more than fourfold once escaped.
+	markup := func(i int) board.Activity {
+		a := refusal("bob", fmt.Sprintf("github.com/acme/r%d", i%5), fmt.Sprint("s", i), "svc/x.go")
+		quote := strings.Repeat("<&>", 66)
+		a.Text = "svc/x.go → alice (declared exclusive intent svc/**: \"" + quote + "\")"
+		for _, who := range []string{"carol", "dave", "erin"} {
+			a.Also = append(a.Also, who+" on svc/x.go: declared shared intent svc/**: \""+quote+"\"")
+		}
+		return a
 	}
-	if last := lines[len(lines)-1]; !strings.HasPrefix(last, "intagent: and ") {
-		t.Errorf("last line %q", last)
+	for _, c := range []struct {
+		name string
+		n    int
+		act  func(int) board.Activity
+	}{
+		{"long lines", 2000, long},
+		{"markup", 25, markup},
+	} {
+		var items []*pendingItem
+		for i := range c.n {
+			a := c.act(i)
+			a.Seq = uint64(i + 1)
+			items = append(items, &pendingItem{act: a})
+		}
+		m := compose(items, nil)
+		lines := strings.Split(m.text, "\n")
+		if len(lines) > maxMessageLines || len(m.text) > maxMessageText || m.count != c.n || strings.ContainsAny(m.text, "<>") {
+			t.Fatalf("%s: %d lines, %d bytes, count %d:\n%.300s", c.name, len(lines), len(m.text), m.count, m.text)
+		}
+		if last := lines[len(lines)-1]; !strings.HasPrefix(last, "intagent: and ") {
+			t.Errorf("%s: last line %q", c.name, last)
+		}
 	}
 }
 

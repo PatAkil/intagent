@@ -591,11 +591,12 @@ func compose(items []*pendingItem, counted map[board.ActivityKind]int) message {
 	size := 0
 	unlisted := map[board.ActivityKind]int{}
 	tell := func(line string, about ...board.Activity) {
+		line = slackText.Replace(line) // measured as sent: escaping can make it five times as long
 		if len(lines) >= maxMessageLines-2 || size+len(line) > maxMessageText-tailRoom {
 			unlisted[about[0].Kind] += len(about)
 			return
 		}
-		lines, size = append(lines, slackText.Replace(line)), size+len(line)+1
+		lines, size = append(lines, line), size+len(line)+1
 	}
 	groups := groupActivities(items)
 	repos := map[board.ActivityKind][]board.Activity{}
