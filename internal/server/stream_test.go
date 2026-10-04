@@ -785,3 +785,19 @@ func TestHubLetsGoOfTheRingWithTheLastStream(t *testing.T) {
 		t.Fatalf("a stream opened after: ok %v, %d publishes", ok, len(batches))
 	}
 }
+
+// A cap left at zero takes its default, and a negative one allows no
+// streams; it used to take the default as well.
+func TestStreamLimitsDefaults(t *testing.T) {
+	got := StreamLimits{PerMember: 0, Anonymous: -1, Total: 7}.withDefaults()
+	if want := (StreamLimits{PerMember: 20, Anonymous: 0, Total: 7}); got != want {
+		t.Fatalf("limits %+v, want %+v", got, want)
+	}
+	h := newHub(StreamLimits{Anonymous: -1})
+	if _, ok := h.subscribe(repo, memberHash{}); ok {
+		t.Fatal("a stream without a token was let in, with none allowed")
+	}
+	if _, ok := h.subscribe(repo, memberHash{name: "bob"}); !ok {
+		t.Fatal("bob's stream was refused")
+	}
+}

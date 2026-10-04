@@ -24,7 +24,8 @@ const (
 
 // StreamLimits caps the dashboard streams open at once. A stream counts until
 // its handler returns, so one stuck writing to a client that stopped reading
-// still holds its place. A field left at zero takes its default.
+// still holds its place. A field left at zero takes its default, and a
+// negative one allows no streams.
 type StreamLimits struct {
 	// PerMember caps one member's streams, one per open dashboard. Default 20.
 	PerMember int
@@ -36,16 +37,19 @@ type StreamLimits struct {
 }
 
 func (l StreamLimits) withDefaults() StreamLimits {
-	if l.PerMember <= 0 {
-		l.PerMember = 20
-	}
-	if l.Anonymous <= 0 {
-		l.Anonymous = 100
-	}
-	if l.Total <= 0 {
-		l.Total = 500
-	}
+	l.PerMember = limitOr(l.PerMember, 20)
+	l.Anonymous = limitOr(l.Anonymous, 100)
+	l.Total = limitOr(l.Total, 500)
 	return l
+}
+
+// limitOr is the cap a StreamLimits field n sets: def for zero, none for
+// less.
+func limitOr(n, def int) int {
+	if n == 0 {
+		return def
+	}
+	return max(n, 0)
 }
 
 // hub fans activities out to dashboard streams. Publishing costs the same

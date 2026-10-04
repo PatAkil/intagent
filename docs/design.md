@@ -152,11 +152,11 @@ reloads the board. The snapshot keeps, by repository, the newest activity the bo
 dashboard is told of a gap only when it has one. A stream whose client takes no part of a write for 15 seconds is ended,
 and on Linux the kernel gives up on a connection whose peer acknowledges nothing for a minute, so a dashboard that went
 away does not hold the server's memory. Streams are capped at 20 per member, 100 without a token on a board anyone may
-read, and 500 in all (`--max-member-streams`, `--max-public-streams`, `--max-streams`); a stream counts until its
-handler returns, and one over a cap is answered 429 with `Retry-After`, which the dashboard follows with its own
-backoff. A change to the team file ends only the streams opened with a token it removed or rotated, so adding a member
-disconnects nobody. When the server ends streams together, at shutdown say, each first tells its dashboard to reconnect
-after its own delay of 3 to 8 seconds, so they do not all come back and reload the board at once.
+read, and 500 in all (`--max-member-streams`, `--max-public-streams`, `--max-streams`, where 0 allows none); a stream
+counts until its handler returns, and one over a cap is answered 429 with `Retry-After`, which the dashboard follows
+with its own backoff. A change to the team file ends only the streams opened with a token it removed or rotated, so
+adding a member disconnects nobody. When the server ends streams together, at shutdown say, each first tells its
+dashboard to reconnect after its own delay of 3 to 8 seconds, so they do not all come back and reload the board at once.
 
 ## API
 
