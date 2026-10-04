@@ -1,9 +1,11 @@
 package cli
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -94,34 +96,29 @@ func (a *App) guard(ctx context.Context, args []string) error {
 	if !ws.settings.Enrolled || ws.settings.Disabled {
 		return nil
 	}
-	staged, err := ws.wt.Staged(ctx)
-	if err != nil || len(staged) == 0 {
-		return nil
-	}
 	// Unchecked is said out loud, and refused under INTAGENT_FAIL=closed.
-	unchecked := func(why string) error {
-		msg := fmt.Sprintf("intagent guard: %s, so this commit was not checked against teammates' work.", why)
+	unchecked := func(why, what string) error {
+		msg := fmt.Sprintf("intagent guard: %s, so %s not checked against teammates' work.", why, what)
 		if ws.settings.FailClosed {
 			return exitError{code: 1, msg: msg + " INTAGENT_FAIL=closed is set, so the commit is refused."}
 		}
 		fmt.Fprintln(a.Err, msg)
 		return nil
 	}
+	staged, err := ws.wt.Staged(ctx)
+	if err != nil {
+		return unchecked(fmt.Sprintf("git could not list the staged files (%v)", err), "this commit was")
+	}
+	if len(staged) == 0 {
+		return nil
+	}
 	if ws.settings.Token == "" {
-		return unchecked("not signed in to " + ws.settings.URL + " (run: intagent login --url " + ws.settings.URL + ")")
+		return unchecked("not signed in to "+ws.settings.URL+" (run: intagent login --url "+ws.settings.URL+")", "this commit was")
 	}
 	refs := ws.refs(ws.wt.Root, staged)
-	ctx, cancel := context.WithTimeout(ctx, ws.settings.Timeout)
-	defer cancel()
-	res, err := ws.client.Check(ctx, board.CheckRequest{Where: ws.where, Paths: refs})
-	switch {
-	case client.IsUnauthorized(err):
-		return unchecked(ws.settings.URL + " rejected your token (rotated?); get a new one and run: intagent login --url " + ws.settings.URL)
-	case err != nil:
-		return unchecked(fmt.Sprintf("%s did not answer (%v)", ws.settings.URL, err))
-	}
+	conflicts, left, err := checkStaged(ctx, ws, refs)
 	var blocked, overlap []board.Conflict
-	for _, c := range res.Conflicts {
+	for _, c := range conflicts {
 		switch {
 		case c.Severity == board.SeverityBlock && !c.SameClaim:
 			blocked = append(blocked, c)
@@ -145,5 +142,61 @@ func (a *App) guard(ctx context.Context, args []string) error {
 			"commit with 'git commit --no-verify'.")
 		return exitError{code: 1, msg: b.String()}
 	}
-	return nil
+	why := ""
+	switch {
+	case client.IsUnauthorized(err):
+		why = ws.settings.URL + " rejected your token (rotated?); get a new one and run: intagent login --url " + ws.settings.URL
+	case err != nil:
+		why = fmt.Sprintf("%s did not answer (%v)", ws.settings.URL, err)
+	default:
+		return nil
+	}
+	what := "this commit was"
+	if left < len(refs) {
+		what = fmt.Sprintf("%d of the %d files in this commit were", left, len(refs))
+	}
+	return unchecked(why, what)
+}
+
+// guardBatch is how many paths guard sends in one check: older servers check
+// only the first 200 paths of a check, and say nothing of the rest.
+const guardBatch = 200
+
+// maxBusyRetries bounds how often guard sends a batch again when the server
+// says it is busy, as it does when one worktree sends checks faster than it
+// takes them.
+const maxBusyRetries = 5
+
+// checkStaged checks refs in batches of guardBatch, each with the request
+// timeout to itself, and merges what the server found. It stops at the
+// first batch the server does not answer, and reports how many paths were
+// left unchecked.
+func checkStaged(ctx context.Context, ws *workspace, refs []board.PathRef) (conflicts []board.Conflict, left int, err error) {
+	for start := 0; start < len(refs); start += guardBatch {
+		res, err := checkBatch(ctx, ws, refs[start:min(start+guardBatch, len(refs))])
+		if err != nil {
+			return conflicts, len(refs) - start, err
+		}
+		conflicts = append(conflicts, res.Conflicts...)
+	}
+	return conflicts, 0, nil
+}
+
+// checkBatch sends one check, again after the wait the server asks for when
+// it answers that it is busy.
+func checkBatch(ctx context.Context, ws *workspace, batch []board.PathRef) (board.CheckResult, error) {
+	for attempt := 0; ; attempt++ {
+		bctx, cancel := context.WithTimeout(ctx, ws.settings.Timeout)
+		res, err := ws.client.Check(bctx, board.CheckRequest{Where: ws.where, Paths: batch})
+		cancel()
+		var ae *client.APIError
+		if !errors.As(err, &ae) || ae.Status != http.StatusTooManyRequests || attempt == maxBusyRetries {
+			return res, err
+		}
+		select {
+		case <-ctx.Done():
+			return res, err
+		case <-time.After(min(cmp.Or(ae.RetryAfter, time.Second), 5*time.Second)):
+		}
+	}
 }

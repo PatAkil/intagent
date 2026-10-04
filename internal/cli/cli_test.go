@@ -40,6 +40,8 @@ type team struct {
 	tokens map[string]string
 	// hookBudget, when set, replaces the hooks' time budget.
 	hookBudget time.Duration
+	// now, when set, replaces the clock that paces footprint scans.
+	now func() time.Time
 }
 
 func gitRun(t *testing.T, dir string, args ...string) string {
@@ -129,7 +131,7 @@ func (tm *team) as(member, dir, stdin string, args ...string) (string, string, i
 	tm.t.Setenv("INTAGENT_CONFIG", filepath.Join(tm.dir, member+".json"))
 	tm.t.Setenv("INTAGENT_HOST", member+"-laptop")
 	var out, errb bytes.Buffer
-	app := &App{In: strings.NewReader(stdin), Out: &out, Err: &errb, Version: "test", Dir: dir, HookBudget: tm.hookBudget}
+	app := &App{In: strings.NewReader(stdin), Out: &out, Err: &errb, Version: "test", Dir: dir, HookBudget: tm.hookBudget, Now: tm.now}
 	code := app.Run(context.Background(), args)
 	return out.String(), errb.String(), code
 }
@@ -1228,18 +1230,65 @@ func TestBrokenSetupRefusesOnlyTeamEdits(t *testing.T) {
 	}
 }
 
-// A hook finishes before the agent that runs it gives up on it.
+// A hook finishes before the agent that runs it gives up on it, whichever
+// agent runs the wiring: Copilot CLI runs Claude Code's, and so does Cursor.
 func TestHookBudgetFitsEveryWiredTimeout(t *testing.T) {
-	for name, wiring := range map[string][]hookWire{"claude": claudeWiring, "codex": codexWiring, "gemini": geminiWiring, "cursor": cursorWiring} {
-		for _, w := range wiring {
-			kind := board.KindPrompt
-			if strings.EqualFold(w.event, "SessionEnd") {
-				kind = board.KindSessionEnd
-			}
-			if budget, limit := hookBudget(kind), time.Duration(w.timeout)*time.Second; budget >= limit-500*time.Millisecond {
-				t.Errorf("%s %s: hook budget %s, agent timeout %s", name, w.event, budget, limit)
+	for _, c := range []struct {
+		wiring []hookWire
+		agents []board.Agent
+	}{
+		{claudeWiring, []board.Agent{board.AgentClaudeCode, board.AgentCopilot, board.AgentCursor}},
+		{codexWiring, []board.Agent{board.AgentCodex}},
+		{geminiWiring, []board.Agent{board.AgentGemini}},
+		{cursorWiring, []board.Agent{board.AgentCursor}},
+	} {
+		for _, agent := range c.agents {
+			for _, w := range c.wiring {
+				kind := board.KindPrompt
+				if strings.EqualFold(w.event, "SessionEnd") {
+					kind = board.KindSessionEnd
+				}
+				budget, limit := hookBudget(agent, kind, func(string) string { return "" }), time.Duration(w.timeout)*time.Second
+				if budget > limit-time.Second {
+					t.Errorf("%s running %s: hook budget %s, agent timeout %s", agent, w.event, budget, limit)
+				}
 			}
 		}
+	}
+}
+
+// At a session's end git gets the time the agent allows, less what the
+// request needs; Claude Code's own bound, when its person set one, is kept.
+func TestSessionEndBudgetFollowsTheAgent(t *testing.T) {
+	for _, c := range []struct {
+		agent board.Agent
+		env   string
+		want  time.Duration
+	}{
+		{board.AgentClaudeCode, "", 4 * time.Second},
+		{board.AgentGemini, "", 4 * time.Second},
+		{board.AgentCursor, "", 4 * time.Second},
+		{board.AgentCodex, "", 2 * time.Second},
+		{board.AgentCopilot, "", 2 * time.Second},
+		{"aider", "", 2 * time.Second},
+		{board.AgentClaudeCode, "3000", 2250 * time.Millisecond},
+		{board.AgentClaudeCode, "1000", 500 * time.Millisecond},
+		{board.AgentClaudeCode, "60000", 4 * time.Second},
+		{board.AgentClaudeCode, "soon", 4 * time.Second},
+		{board.AgentGemini, "1000", 4 * time.Second},
+	} {
+		getenv := func(k string) string {
+			if k == "CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS" {
+				return c.env
+			}
+			return ""
+		}
+		if got := hookBudget(c.agent, board.KindSessionEnd, getenv); got != c.want {
+			t.Errorf("%s with %q: %s, want %s", c.agent, c.env, got, c.want)
+		}
+	}
+	if got := hookBudget(board.AgentCodex, board.KindStop, os.Getenv); got != 8*time.Second {
+		t.Errorf("Stop: %s", got)
 	}
 }
 

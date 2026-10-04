@@ -99,13 +99,29 @@ off (`intagent login --share-prompts off`). An explicit `declare_intent` summary
 
 ## Footprint from git
 
-At session start, after shell commands (at most every 15 seconds), at `Stop` and at `SessionEnd` the hook computes the
-worktree's real footprint:
+At session start, after shell commands (at most once in each 15-second window per worktree, whichever of its sessions
+ran them), at `Stop` and at `SessionEnd` (unless a footprint of the worktree reached the server whose scan began in the
+last 15 seconds, after every shell command that did not scan, as the `Stop` just before sends one) the hook computes
+the worktree's real footprint:
 
 - the default branch from `refs/remotes/origin/HEAD` (falling back to `origin/main`, `origin/master`, `main`, `master`);
 - `git merge-base HEAD <default>`;
 - `git diff --name-only <merge-base>` (committed and uncommitted changes);
 - `git ls-files --others --exclude-standard` (new files).
+
+The diff runs on a private copy of the index (`GIT_INDEX_FILE`): git diff writes back the index it refreshed, under
+`.git/index.lock`, even with `GIT_OPTIONAL_LOCKS=0`, and that lock refuses the person's and other agents' `git add` while
+it is held. The refreshed copy is kept in intagent's cache directory, named by the real index it began as, and the next
+scan starts from it while the real index is unchanged, so after a formatter only the first scan checks the content of
+the files it touched. Git out of time is stopped with SIGTERM, so it removes its lock files (Windows has no such signal:
+there it is killed, and the private index is what keeps the real one unlocked).
+
+The files the repository's `ignore` patterns match are left out first. A footprint keeps at most 2000 files; past
+that, the client keeps one file of each changed area, then the files the branch has not committed, a new package
+included, then the branch's commits (`git diff --name-only <merge-base> HEAD`), then the files of each directory the
+worktree added whole with more than 500 files (a `.venv`, build output nobody ignored), the smallest first. Each group
+goes in path order, and the client sends them in that order, since the server keeps the first files it can. A
+directory added whole whose files do not all fit goes in `dirs`, one entry for the files it leaves out.
 
 The server replaces the claim's git-derived footprint with this list. Hook-recorded touches newer than the
 reconciliation stay. Once a branch is merged and the worktree is clean, the footprint is empty and the claim releases

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -102,5 +103,34 @@ func TestClientTimesOut(t *testing.T) {
 	start := time.Now()
 	if _, err := New(srv.URL, "t", 100*time.Millisecond).Whoami(context.Background()); err == nil || time.Since(start) > 2*time.Second {
 		t.Fatalf("a hung server: %v after %s", err, time.Since(start))
+	}
+}
+
+// The client tells the server how long it waits, so that the server does not
+// decide a hook for an agent that has gone ahead without the answer.
+func TestClientSendsItsTimeout(t *testing.T) {
+	var got []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = append(got, r.Header.Get(timeoutHeader))
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+	short, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	for _, c := range []struct {
+		ctx     context.Context
+		timeout time.Duration
+	}{
+		{context.Background(), 2 * time.Second},
+		{short, 2 * time.Second},
+		{context.Background(), 0},
+	} {
+		if _, err := New(srv.URL, "t", c.timeout).Hook(c.ctx, board.HookEvent{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ms, err := strconv.Atoi(got[1])
+	if got[0] != "2000" || err != nil || ms > 500 || ms < 100 || got[2] != "" {
+		t.Fatalf("X-Intagent-Timeout sent: %q", got)
 	}
 }

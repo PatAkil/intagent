@@ -88,9 +88,9 @@ func TestOpenAndChanges(t *testing.T) {
 		t.Fatalf("DefaultBranch = %q, %v", def, err)
 	}
 
-	files, _, err := w.Changes(ctx, 0)
-	if err != nil || len(files) != 0 {
-		t.Fatalf("clean worktree changes = %v, %v", files, err)
+	files, base, err := w.Changes(ctx)
+	if err != nil || len(files) != 0 || base != git(t, clone, "rev-parse", "origin/main") {
+		t.Fatalf("clean worktree changes = %v against %s, %v", files, base, err)
 	}
 	write(t, clone, "services/payments/retry.go", "package pay // changed\n")
 	write(t, clone, "services/payments/backoff.go", "package pay\n")
@@ -100,16 +100,13 @@ func TestOpenAndChanges(t *testing.T) {
 	write(t, clone, ".gitignore", "build/\n")
 	write(t, clone, "build/out.bin", "ignored\n")
 
-	files, truncated, err := w.Changes(ctx, 0)
+	files, _, err = w.Changes(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := ".gitignore,notes/new file.txt,services/payments/backoff.go,services/payments/retry.go"
-	if got := strings.Join(files, ","); got != want || truncated {
-		t.Fatalf("changes = %s (truncated %v), want %s", got, truncated, want)
-	}
-	if files, truncated, _ := w.Changes(ctx, 2); len(files) != 2 || !truncated {
-		t.Fatalf("limit not applied: %v %v", files, truncated)
+	if got := strings.Join(files, ","); got != want {
+		t.Fatalf("changes = %s, want %s", got, want)
 	}
 
 	// Undoing a committed change in the worktree undoes it in the footprint.
@@ -117,7 +114,7 @@ func TestOpenAndChanges(t *testing.T) {
 	if err := os.Remove(filepath.Join(clone, "services/payments/backoff.go")); err != nil {
 		t.Fatal(err)
 	}
-	files, _, _ = w.Changes(ctx, 0)
+	files, _, _ = w.Changes(ctx)
 	if got := strings.Join(files, ","); got != ".gitignore,notes/new file.txt,services/payments/retry.go" {
 		t.Fatalf("after undoing backoff.go: %s", got)
 	}
@@ -129,7 +126,7 @@ func TestOpenAndChanges(t *testing.T) {
 	git(t, clone, "commit", "-q", "-m", "rest")
 	git(t, clone, "push", "-q", "origin", "HEAD:main")
 	git(t, clone, "fetch", "-q", "origin")
-	if files, _, _ := w.Changes(ctx, 0); len(files) != 0 {
+	if files, _, _ := w.Changes(ctx); len(files) != 0 {
 		t.Fatalf("merged branch still shows changes: %v", files)
 	}
 }
@@ -167,8 +164,8 @@ func TestRepoWithoutCommitsOrRemote(t *testing.T) {
 	if w.RepoID() != "local/fresh" {
 		t.Fatalf("RepoID = %q", w.RepoID())
 	}
-	files, _, err := w.Changes(ctx, 0)
-	if err != nil || strings.Join(files, ",") != "a.txt" {
+	files, base, err := w.Changes(ctx)
+	if err != nil || strings.Join(files, ",") != "a.txt" || base != "HEAD" {
 		t.Fatalf("changes = %v, %v", files, err)
 	}
 	if _, err := Open(ctx, t.TempDir()); err == nil {
@@ -250,8 +247,46 @@ func TestChangesBeforeTheFirstCommit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	files, _, err := w.Changes(context.Background(), 0)
+	files, _, err := w.Changes(context.Background())
 	if err != nil || strings.Join(files, ",") != "svc/a.go,svc/b.go" {
 		t.Fatalf("changes = %v, %v", files, err)
+	}
+}
+
+// Over its cap a footprint tells committed changes from work in progress,
+// and directories the worktree added whole from single new files.
+func TestCommittedAndUntrackedDirs(t *testing.T) {
+	ctx := context.Background()
+	_, clone := newRepo(t)
+	git(t, clone, "checkout", "-q", "-b", "feat")
+	write(t, clone, "services/payments/backoff.go", "package pay\n")
+	git(t, clone, "add", ".")
+	git(t, clone, "commit", "-q", "-m", "backoff")
+	write(t, clone, "services/payments/retry.go", "package pay // changed\n")
+	write(t, clone, "services/payments/jitter.go", "package pay\n")
+	write(t, clone, ".venv/lib/site.py", "")
+	write(t, clone, ".venv/pyvenv.cfg", "")
+	write(t, clone, "tools/new/main.go", "package main\n")
+	write(t, clone, ".gitignore", "build/\n")
+	write(t, clone, "build/out.bin", "")
+	if err := os.MkdirAll(filepath.Join(clone, "empty"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	w, err := Open(ctx, clone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, base, err := w.Changes(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := w.Committed(ctx, base); err != nil || strings.Join(got, ",") != "services/payments/backoff.go" {
+		t.Fatalf("Committed = %v, %v", got, err)
+	}
+	if got, err := w.Committed(ctx, "HEAD"); err != nil || len(got) != 0 {
+		t.Fatalf("Committed with no default branch = %v, %v", got, err)
+	}
+	if got, err := w.UntrackedDirs(ctx); err != nil || strings.Join(got, ",") != ".venv,tools" {
+		t.Fatalf("UntrackedDirs = %v, %v", got, err)
 	}
 }

@@ -3,8 +3,6 @@ package cli
 import (
 	"cmp"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,14 +24,31 @@ import (
 const maxHookInput = 32 << 20
 
 // hookBudget bounds one hook run, git included, under the timeout intagent init
-// gives the event (10 seconds, and 3 to 5 at a session's end): an agent that
+// gives the event (10 seconds, and 3 to 10 at a session's end): an agent that
 // kills a slow hook lets the edit through, even under INTAGENT_FAIL=closed,
 // and a session end it kills goes unreported.
-func hookBudget(kind board.Kind) time.Duration {
-	if kind == board.KindSessionEnd {
-		return 2 * time.Second
+func hookBudget(agent board.Agent, kind board.Kind, getenv func(string) string) time.Duration {
+	if kind != board.KindSessionEnd {
+		return 8 * time.Second
 	}
-	return 8 * time.Second
+	// A second short of the agent's session-end timeout: 5 seconds for Claude
+	// Code and Gemini CLI. Cursor waits 10 for its own hooks but also runs
+	// Claude Code's, whose timeout it may not honour, so it gets Claude's.
+	// Codex allows 3 at most, and Copilot CLI's and other agents' limits are
+	// not known.
+	budget := 2 * time.Second
+	switch agent {
+	case board.AgentClaudeCode, board.AgentGemini, board.AgentCursor:
+		budget = 4 * time.Second
+	}
+	// The person may have bounded Claude Code's session-end hooks themselves.
+	if agent == board.AgentClaudeCode {
+		if ms, err := strconv.Atoi(getenv("CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS")); err == nil && ms > 0 {
+			limit := time.Duration(ms) * time.Millisecond
+			budget = min(budget, max(limit-750*time.Millisecond, limit/2))
+		}
+	}
+	return budget
 }
 
 // hook handles one agent hook event. It never blocks an agent because of its
@@ -75,7 +91,7 @@ func (a *App) hook(ctx context.Context, args []string) (err error) {
 	if ev.Skip || (*userLevel && projectWires(ad.Agent(), ev.Cwd)) {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(ctx, cmp.Or(a.HookBudget, hookBudget(ev.Kind)))
+	ctx, cancel := context.WithTimeout(ctx, cmp.Or(a.HookBudget, hookBudget(ad.Agent(), ev.Kind, os.Getenv)))
 	defer cancel()
 	out, err := a.handleHook(ctx, ad, ev)
 	if err != nil {
@@ -132,7 +148,8 @@ func (a *App) handleHook(ctx context.Context, ad hook.Adapter, ev hook.Event) (h
 	if ws.settings.SharePrompts {
 		hev.Prompt = ev.Prompt
 	}
-	if ev.Footprint && (ev.Kind != board.KindToolEnd || footprintDue(ws.wt.Root, ev.SessionID)) {
+	began := a.now()
+	if ev.Footprint && scanDue(ws.wt.Root, ev.Kind, began) {
 		// Git gets what the server request leaves of the hook's time, and at
 		// least half of it, so a slow git cannot keep the event from the server.
 		fctx, fcancel := context.WithTimeout(ctx, gitTime(ctx, ws.settings.Timeout))
@@ -147,6 +164,9 @@ func (a *App) handleHook(ctx context.Context, ad hook.Adapter, ev hook.Event) (h
 	ctx, cancel := context.WithTimeout(ctx, ws.settings.Timeout+2*time.Second)
 	defer cancel()
 	res, err := ws.client.Hook(ctx, hev)
+	if err == nil && hev.Footprint != nil {
+		footprintSent(ws.wt.Root, began)
+	}
 	switch {
 	case client.IsUnauthorized(err):
 		return offBoard(ad, ev, ws, ws.settings.URL+" rejected this computer's token (it may have been rotated)",
@@ -198,37 +218,11 @@ func capitalize(s string) string {
 	return strings.ToUpper(s[:1]) + s[1:]
 }
 
-// footprintEvery limits how often a shell command triggers a footprint scan,
-// which on a very large monorepo can take a noticeable fraction of a second.
-const footprintEvery = 15 * time.Second
-
-// footprintDue reports whether a session's worktree is due for a scan after a
-// shell command, and records that one is happening now.
-func footprintDue(root, session string) bool {
-	dir, err := os.UserCacheDir()
-	if err != nil {
-		return true
-	}
-	sum := sha256.Sum256([]byte(root + "\x00" + session))
-	stamp := filepath.Join(dir, "intagent", "scan-"+hex.EncodeToString(sum[:8]))
-	if fi, err := os.Stat(stamp); err == nil && time.Since(fi.ModTime()) < footprintEvery {
-		return false
-	}
-	if err := os.MkdirAll(filepath.Dir(stamp), 0o700); err == nil {
-		_ = os.WriteFile(stamp, nil, 0o600)
-	}
-	return true
-}
-
 // hookLog appends to intagent's hook log, since a hook's stdout belongs to the
 // agent and its stderr is rarely seen.
 func hookLog(format string, args ...any) {
-	dir, err := os.UserCacheDir()
-	if err != nil {
-		return
-	}
-	dir = filepath.Join(dir, "intagent")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	dir := cacheDir()
+	if dir == "" {
 		return
 	}
 	p := filepath.Join(dir, "hook.log")

@@ -106,7 +106,8 @@ Cursor (`.cursor/hooks.json`, `.cursor/mcp.json`) and Gemini CLI (`.gemini/setti
 Claude Code's. Leave agents out with `--agents claude-code,codex`. It merges into existing files, keeps everyone
 else's hooks, and replaces only its own, so running it again after an upgrade migrates the wiring. It reads every
 file first: one it cannot edit (JSON with comments, say) stops it before anything is written. The hooks do nothing
-for a teammate who has not installed intagent. `--areas 'services/*,libs/*'` defines your monorepo's areas.
+for a teammate who has not installed intagent. `--areas 'services/*,libs/*'` defines your monorepo's areas, and an
+`"ignore"` list in `.intagent.json` (`["api/gen/**"]`) keeps generated files out of what agents report.
 
 **Each member, in each clone:**
 

@@ -11,7 +11,8 @@
 # 3. Carol trusts the hooks but has not installed intagent: her edit goes
 #    through, because Codex fails open.
 #
-# Usage: scripts/e2e-codex.sh   (CODEX=/path/to/codex to skip the install)
+# Usage: scripts/e2e-codex.sh   (CODEX=/path/to/codex to skip the install,
+# KEEP=1 to keep the work directory after a pass)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -19,7 +20,20 @@ WORK="$(mktemp -d)"
 PORT="${PORT:-7480}"
 LLM="${LLM_PORT:-18094}"
 URL="http://127.0.0.1:$PORT"
-trap 'kill $(jobs -p) 2>/dev/null || true; echo "workdir: $WORK"' EXIT
+# On success the work directory, hundreds of MB with the agent's npm install,
+# goes unless KEEP=1; on failure it stays for a look.
+finish() {
+  local status=$?
+  kill $(jobs -p) 2>/dev/null || true
+  for _ in $(seq 50); do [ -z "$(jobs -pr)" ] && break; sleep 0.2; done
+  kill -9 $(jobs -pr) 2>/dev/null || true
+  if [ "$status" -eq 0 ] && [ "${KEEP:-}" != 1 ]; then
+    rm -rf "$WORK" 2>/dev/null || echo "workdir: $WORK (not all of it could be removed)"
+  else
+    echo "workdir: $WORK"
+  fi
+}
+trap finish EXIT
 
 export GIT_CONFIG_GLOBAL=/dev/null GIT_AUTHOR_NAME=e2e GIT_AUTHOR_EMAIL=e2e@example.com \
   GIT_COMMITTER_NAME=e2e GIT_COMMITTER_EMAIL=e2e@example.com XDG_CACHE_HOME="$WORK/cache"
