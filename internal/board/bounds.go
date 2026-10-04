@@ -17,19 +17,28 @@ import (
 // maxEndedSessions bounds the sessions that ended, or went silent for good,
 // a claim keeps; only the dashboard shows them, and a client that starts a
 // session for every event would otherwise leave thousands on one claim for
-// liveness to read through.
+// liveness to read through. A claim may hold up to twice as many between
+// trims (trimSessions), and each sweep trims every claim to it (trimEnded).
 const maxEndedSessions = 20
 
-// trimSessions drops the sessions of claim id that ended or are gone, past
+// trimSessions drops the sessions of claim c that ended or are gone, past
 // the maxEndedSessions heard from last, ties going by key; but not keep, the
-// session reporting, which is about to be heard from.
-func (b *Board) trimSessions(now time.Time, id string, keep *session) {
-	m := b.claimSessions[id]
-	if len(m) <= maxEndedSessions {
+// session reporting, which is about to be heard from. It looks only once the
+// claim holds more than twice maxEndedSessions, and more than twice what it
+// held after it last looked (c.trimAfter): the live sessions of a flood into
+// one worktree cannot be dropped, and looking at all of them for each new
+// one made the flood quadratic.
+func (b *Board) trimSessions(now time.Time, c *claim, keep *session) {
+	m := b.claimSessions[c.ID]
+	if len(m) <= max(2*maxEndedSessions, c.trimAfter) {
 		return
 	}
+	defer func() { c.trimAfter = 2 * len(b.claimSessions[c.ID]) }()
 	var done []*session
 	for _, s := range m {
+		if trace != nil {
+			trace.sessionVisits++
+		}
 		if st := b.state(now, s); s != keep && (st == StateEnded || st == StateGone) {
 			done = append(done, s)
 		}
@@ -46,6 +55,28 @@ func (b *Board) trimSessions(now time.Time, id string, keep *session) {
 	for _, s := range done[maxEndedSessions:] {
 		b.detachSession(s)
 	}
+}
+
+// trimEnded drops, of each claim's sessions not live, all but the
+// maxEndedSessions heard from last: those of a flood that went gone together
+// with none joining after them, which trimSessions never sees. done are the
+// sessions the sweep keeps that are not live, in the order they were last
+// heard from. Since the claims are trimmed, each looks afresh when the next
+// session joins it. It reports whether it dropped any.
+func (b *Board) trimEnded(done []*session) bool {
+	kept := map[string]int{}
+	dropped := false
+	for _, s := range slices.Backward(done) {
+		kept[s.ClaimID]++
+		if kept[s.ClaimID] > maxEndedSessions {
+			b.detachSession(s)
+			dropped = true
+		}
+	}
+	for _, c := range b.claims {
+		c.trimAfter = 0
+	}
+	return dropped
 }
 
 // full reports whether ev comes from a session the board does not have and

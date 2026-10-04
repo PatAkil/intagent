@@ -486,7 +486,7 @@ func (b *Board) sessionFor(now time.Time, ev HookEvent, c *claim) *session {
 	}
 	if !ok || s.ClaimID != c.ID {
 		b.attachSession(s, c.ID)
-		b.trimSessions(now, c.ID, s)
+		b.trimSessions(now, c, s)
 	}
 	return s
 }
@@ -2374,6 +2374,7 @@ func (b *Board) Sweep(now time.Time) {
 	// sessions are dropped: gathered in this pass, not by a search of every
 	// session for every claim.
 	live, held := map[string]bool{}, make(map[string]bool, len(b.claims))
+	var done []*session // those kept that are not live, in the order of keys
 	for _, k := range keys {
 		s := b.sessions[k]
 		if trace != nil {
@@ -2409,8 +2410,11 @@ func (b *Board) Sweep(now time.Time) {
 		held[s.ClaimID] = true
 		if st.Live() {
 			live[s.ClaimID] = true
+		} else {
+			done = append(done, s)
 		}
 	}
+	changed = b.trimEnded(done) || changed
 	changed = b.evictSessions(now, keys) || changed
 	ids := make([]string, 0, len(b.claims))
 	for id := range b.claims {

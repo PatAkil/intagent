@@ -7,9 +7,10 @@ import (
 	"time"
 )
 
-// A claim keeps the 20 sessions that ended last, so a client that starts a
-// session for every event leaves no more on it than that: a teammate's edit
-// that asks whether the claim is live reads them, not 20,000.
+// A claim keeps the 20 sessions that ended last, and up to twice as many
+// between trims, so a client that starts a session for every event leaves no
+// more on it than that: a teammate's edit that asks whether the claim is live
+// reads them, not 20,000.
 func TestEndedSessionsPerClaimAreBounded(t *testing.T) {
 	h := newHarness(t)
 	h.at(KindPostEdit, "bot", "w", "s-first", "svc/x.go")
@@ -18,14 +19,14 @@ func TestEndedSessionsPerClaimAreBounded(t *testing.T) {
 		h.at(KindHeartbeat, "bot", "w", s)
 		h.at(KindSessionEnd, "bot", "w", s)
 	}
-	// Besides those 20: the live one, and the last to end, which the next
+	// Besides those: the live one, and the last to end, which the next
 	// session to start makes room for.
 	c := h.claimIn("bot", "w")
-	if n := len(h.b.claimSessions[c.ID]); n > maxEndedSessions+2 {
+	if n := len(h.b.claimSessions[c.ID]); n > 2*maxEndedSessions+2 {
 		t.Fatalf("the claim keeps %d sessions", n)
 	}
 	w := counted(t, func() { h.hook(KindPreEdit, "alice", "a1", "svc/x.go") })
-	if w.sessionVisits > maxEndedSessions+2 {
+	if w.sessionVisits > 2*maxEndedSessions+2 {
 		t.Fatalf("alice's edit read %d sessions to learn whether bot's claim is live", w.sessionVisits)
 	}
 }
@@ -347,5 +348,46 @@ func TestStatsAreKeptForBoundedRepositories(t *testing.T) {
 	_, newest := h.b.stats["github.com/acme/r1999"]
 	if len(h.b.stats) != maxStatsRepos || !kept || oldest || !newest {
 		t.Fatalf("stats for %d repositories; the one with a claim %v, the first %v, the last %v", len(h.b.stats), kept, oldest, newest)
+	}
+}
+
+// A flood of live sessions into one worktree, a client that sends each hook
+// with a fresh session id, costs each new session a few looks at the claim's
+// sessions, not a look at all of them: none of them can be dropped, and
+// looking at every one for each made the flood quadratic (20,000 sessions:
+// 865 µs a hook at the end, against 6 µs).
+func TestALiveFloodIntoOneClaimCostsLittleEach(t *testing.T) {
+	h := newHarness(t)
+	h.b.notify = nil
+	const flood = 5000
+	w := counted(t, func() {
+		for i := range flood {
+			h.at(KindHeartbeat, "bot", "w", fmt.Sprint("s", i))
+		}
+	})
+	if w.sessionVisits > 4*flood {
+		t.Fatalf("%d sessions joining one claim read its sessions %d times", flood, w.sessionVisits)
+	}
+}
+
+// Sessions that went silent for good are dropped by the next sweep, past the
+// newest maxEndedSessions of their claim: a flood's sessions that go gone
+// together, with none joining after them, otherwise stay an hour, read by
+// every teammate's edit that asks whether the claim is live.
+func TestSweepBoundsTheSessionsAClaimKeeps(t *testing.T) {
+	h := newHarness(t)
+	h.at(KindPostEdit, "bot", "w", "s-first", "svc/x.go")
+	for i := range 500 {
+		h.at(KindHeartbeat, "bot", "w", fmt.Sprint("s", i))
+	}
+	h.advance(h.b.cfg.IdleAfter + time.Minute)
+	h.b.Sweep(h.now)
+	c := h.claimIn("bot", "w")
+	if n := len(h.b.claimSessions[c.ID]); n != maxEndedSessions {
+		t.Fatalf("the claim keeps %d sessions gone, want %d", n, maxEndedSessions)
+	}
+	w := counted(t, func() { h.hook(KindPreEdit, "alice", "a1", "svc/x.go") })
+	if w.sessionVisits > maxEndedSessions+1 {
+		t.Fatalf("alice's edit read %d sessions to learn whether bot's claim is live", w.sessionVisits)
 	}
 }

@@ -239,6 +239,10 @@ type claim struct {
 	// removed marks a claim taken off the board, which its repository's
 	// index skips until it drops it.
 	removed bool
+	// trimAfter is how many sessions the claim may hold before trimSessions
+	// looks at them again: a hint it and trimEnded keep, not an index, which
+	// a snapshot leaves at 0 so that the claim is looked at afresh.
+	trimAfter int
 	// fpShared and alertedShared say a snapshot shares Footprint or Alerted
 	// and may still be reading it, so the map must not be changed in place:
 	// putTouch and alert copy it first, and setFootprint replaces it.
