@@ -391,3 +391,40 @@ func TestSweepBoundsTheSessionsAClaimKeeps(t *testing.T) {
 		t.Fatalf("alice's edit read %d sessions to learn whether bot's claim is live", w.sessionVisits)
 	}
 }
+
+// The directories a footprint names in place of files count against its
+// byte budgets as files do, after the files: a footprint of one file and 200
+// directories of a kilobyte, sent to fresh worktrees, otherwise held 400 KB a
+// claim outside every budget.
+func TestDirectoriesCountAgainstTheByteBudgets(t *testing.T) {
+	const claimBytes, memberBytes = 20_000, 100_000
+	h := newHarness(t, func(c *Config) { c.MaxFootprintBytes, c.MemberFootprintBytes = claimBytes, memberBytes })
+	dirs := make([]PathRef, maxFootprintDirs)
+	for i := range dirs {
+		d := fmt.Sprintf("gen/%s%03d", strings.Repeat(strings.Repeat("d", 240)+"/", 4), i)
+		dirs[i] = PathRef{Path: d, Area: d}
+	}
+	for i := range 30 {
+		w := Where{Repo: fmt.Sprintf("github.com/acme/r%02d", i), Host: "h", Worktree: "/w"}
+		ev := HookEvent{Kind: KindHeartbeat, Member: "mallory", Agent: AgentCodex, SessionID: "s", Where: w,
+			Footprint: &Footprint{Files: refs("a.go"), Dirs: dirs, Truncated: true}}
+		if _, err := h.b.Hook(h.now, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	held, most := 0, 0
+	for _, c := range h.b.claims {
+		n := len(c.Footprint) * footprintCost("a.go", &touch{})
+		for d, t := range c.Dirs {
+			n += footprintCost(d, t)
+		}
+		held, most = held+n, max(most, n)
+		if len(c.Dirs) > 0 && (c.Footprint["a.go"] == nil || !c.FootprintTruncated) {
+			t.Fatalf("claim %s kept directories but not its file, or did not say it was cut", c.ID)
+		}
+	}
+	if held > memberBytes || most > claimBytes {
+		t.Fatalf("the member's claims hold %d bytes, the largest %d; want at most %d and %d", held, most, memberBytes, claimBytes)
+	}
+	mustIndex(t, h.b, "the footprints")
+}

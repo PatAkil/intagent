@@ -216,7 +216,8 @@ type claim struct {
 	FootprintTruncated bool `json:"footprint_truncated,omitempty"`
 	// Dirs are the directories the worktree added whole that its last scan
 	// named in place of the files it left out (Footprint.Dirs), each with
-	// when the board first heard of it. A reconcile replaces the map.
+	// when the board first heard of it, as far as the byte budgets leave room
+	// once its files are kept. A reconcile replaces the map.
 	Dirs  map[string]*touch `json:"dirs,omitempty"`
 	Inbox []InboxItem       `json:"inbox,omitempty"`
 	// Alerted remembers which symmetric alerts this claim already received.

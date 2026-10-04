@@ -67,11 +67,12 @@ cannot ask, warns instead, since nothing remembers it was said), and its session
 of its work; the repository's stats count such hooks (`unstored`). Each sweep makes room by dropping the sessions not
 live that went silent longest, down to nine tenths of the bound. Past `max_dormant_claims` (20,000) claims with no live
 session, each sweep forgets up to 200 of those quiet longest that hold no intent, announced in one `claim.forgotten` per
-repository that names no claim. A footprint counts each file's path and area, and 96 bytes more, against two budgets:
-512 KB for one claim (2000 files of a large monorepo's paths take about 350 KB) and 32 MB for all of one member's
-claims, a fleet's included. A footprint keeps the files its budgets take, the first in the order the client sent them,
-which puts first the files it would least want left out, and is marked truncated. Stats are kept for at most 1024
-repositories: a new one takes the place of the repository with no claims counted in longest ago.
+repository that names no claim. A footprint counts each file's path and area, and 96 bytes more, against two budgets,
+and then each directory added whole the same way: 512 KB for one claim (2000 files of a large monorepo's paths take
+about 350 KB) and 32 MB for all of one member's claims, a fleet's included. A footprint keeps the files its budgets
+take, the first in the order the client sent them, which puts first the files it would least want left out, and is
+marked truncated. Stats are kept for at most 1024 repositories: a new one takes the place of the repository with no
+claims counted in longest ago.
 
 The server's sweeper emits `session.stalled` and `session.gone` events once per transition, so the dashboard and the
 owner's next session see them. A webhook hears of them at most once a second, everything waiting in one message, so a
@@ -164,10 +165,11 @@ The files the repository's `ignore` patterns match are left out first. A footpri
 that, the client keeps one file of each changed area, then the files the branch has not committed, a new package
 included, then the branch's commits (`git diff --name-only <merge-base> HEAD`), then the files of each directory the
 worktree added whole with more than 500 files (a `.venv`, build output nobody ignored), the smallest first. Each group
-goes in path order, and the client sends them in that order, since the server keeps the first files it can. A
-directory added whole whose files do not all fit goes in `dirs`, one entry for the files it leaves out. The server
-keeps the valid, distinct ones among the first 200, until a scan no longer names them, and a teammate's edit of a file
-under one is nearby work ("added the directory ... whole"), warned of once per directory, when nothing closer is.
+goes in path order, and the client sends them in that order, since the server keeps the first files it can. A directory
+added whole whose files do not all fit goes in `dirs`, one entry for the files it leaves out. The server keeps the
+valid, distinct ones among the first 200 that its byte budgets leave room for once its files are kept, until a scan no
+longer names them, and a teammate's edit of a file under one is nearby work ("added the directory ... whole"), warned of
+once per directory, when nothing closer is.
 
 The server replaces the claim's git-derived footprint with this list, but never loses for it, or for its bounds, a
 change a hook reported: a footprint says how long before its event was sent its scan began (`age_ms`, read up to 8

@@ -790,8 +790,10 @@ func (b *Board) reconcile(now time.Time, c *claim, s *session, fp *Footprint) {
 	if len(added) > 0 || removed > 0 || moved {
 		b.setFootprint(c, next, paths)
 	}
-	c.FootprintTruncated = fp.Truncated || cut
-	c.Dirs = addedDirs(now, c.Dirs, fp.Dirs)
+	// The directories, in what room the budgets leave once the files are kept.
+	dirs, short := addedDirs(now, c.Dirs, fp.Dirs, b.footprintRoom(c, false)-(c.fpBytes-dirsCost(c.Dirs)))
+	b.setDirs(c, dirs)
+	c.FootprintTruncated = fp.Truncated || cut || short
 	if len(added) > 0 || removed > 0 {
 		b.record(Activity{At: now, Kind: ActivityFootprintReconciled, Repo: c.Repo, Member: c.Member, ClaimID: c.ID, Session: s.ID, Agent: s.Agent,
 			Text: fmt.Sprintf("%d changed files (+%d, -%d)", len(next), len(added), removed)})
@@ -809,10 +811,12 @@ func (b *Board) reconcile(now time.Time, c *claim, s *session, fp *Footprint) {
 
 // addedDirs is the directories a scan says its worktree added whole, each
 // with when the board first heard of it (in had), in a new map: a snapshot
-// may share the one before.
-func addedDirs(now time.Time, had map[string]*touch, dirs []PathRef) map[string]*touch {
+// may share the one before. They count against the footprint's byte budgets
+// as files do (footprintCost), so it keeps those that fit in room bytes, in
+// the order the client sent them, and reports whether it left any out.
+func addedDirs(now time.Time, had map[string]*touch, dirs []PathRef, room int) (map[string]*touch, bool) {
 	if len(dirs) == 0 {
-		return nil
+		return nil, false
 	}
 	out := make(map[string]*touch, len(dirs))
 	for _, d := range dirs {
@@ -820,9 +824,12 @@ func addedDirs(now time.Time, had map[string]*touch, dirs []PathRef) map[string]
 		if t == nil || t.Area != d.Area {
 			t = &touch{Area: d.Area, At: now, FromGit: true}
 		}
+		if room -= footprintCost(d.Path, t); room < 0 {
+			return out, true
+		}
 		out[d.Path] = t
 	}
-	return out
+	return out, false
 }
 
 // dirAbove is the directory claim c's worktree added whole that holds path,

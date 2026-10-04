@@ -16,12 +16,14 @@ import (
 //   - each claim's sessions (claimSessions);
 //   - for each claim, the latest change in each area it changed (areaAt) and
 //     its changed paths in order (sortedPaths);
-//   - what each claim's footprint, and each member's claims' footprints,
-//     count against their byte budgets (fpBytes, memberBytes).
+//   - what each claim's footprint and directories added whole, and each
+//     member's claims', count against their byte budgets (fpBytes,
+//     memberBytes).
 //
 // They are derived state, never saved, and rebuilt by Restore. Only the
 // functions in this file change them, or what they are derived from: the
-// board's claims and sessions, a session's ClaimID and a claim's Footprint.
+// board's claims and sessions, a session's ClaimID and a claim's Footprint
+// and Dirs.
 // A test recomputes them all after every step of the transcript.
 //
 // A snapshot shares each claim's Footprint and reads it after the lock is
@@ -170,6 +172,15 @@ func (b *Board) dropTouches(c *claim, paths []string) {
 	b.charge(c.Member, c.fpBytes-was)
 }
 
+// setDirs replaces c's directories added whole with dirs, and keeps its
+// byte counts. A snapshot may still be reading the map replaced.
+func (b *Board) setDirs(c *claim, dirs map[string]*touch) {
+	was := c.fpBytes
+	c.fpBytes += dirsCost(dirs) - dirsCost(c.Dirs)
+	c.Dirs = dirs
+	b.charge(c.Member, c.fpBytes-was)
+}
+
 // charge adds n to what member's claims' footprints count, which the board
 // keeps only for members whose claims have changed files.
 func (b *Board) charge(member string, n int) {
@@ -242,13 +253,23 @@ func (c *claim) indexFootprint() {
 	c.indexAreas()
 }
 
-// footprintCost is what one changed file counts against the footprint byte
-// budgets: its path and its area, and about what the board keeps for it
-// beside them.
+// footprintCost is what one changed file, or one directory added whole,
+// counts against the footprint byte budgets: its path and its area, and
+// about what the board keeps for it beside them.
 func footprintCost(path string, t *touch) int { return len(path) + len(t.Area) + 96 }
 
+// dirsCost is what a claim's directories added whole count, of at most
+// maxFootprintDirs.
+func dirsCost(dirs map[string]*touch) int {
+	n := 0
+	for d, t := range dirs {
+		n += footprintCost(d, t)
+	}
+	return n
+}
+
 func (c *claim) countBytes() {
-	c.fpBytes = 0
+	c.fpBytes = dirsCost(c.Dirs)
 	for p, t := range c.Footprint {
 		c.fpBytes += footprintCost(p, t)
 	}

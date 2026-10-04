@@ -110,8 +110,11 @@ func (c *claim) checkFootprintIndex() error {
 	for p, t := range c.Footprint {
 		n += footprintCost(p, t)
 	}
+	for d, t := range c.Dirs {
+		n += footprintCost(d, t)
+	}
 	if n != c.fpBytes {
-		return fmt.Errorf("the footprint costs %d bytes, the claim counts %d", n, c.fpBytes)
+		return fmt.Errorf("the footprint and its directories cost %d bytes, the claim counts %d", n, c.fpBytes)
 	}
 	for i, p := range c.sortedPaths {
 		if _, ok := c.Footprint[p]; !ok || (i > 0 && c.sortedPaths[i-1] >= p) {
@@ -151,8 +154,8 @@ func mustIndex(t *testing.T, b *Board, after string) {
 
 // The indexes follow every change a random history makes: claims opened,
 // released and forgotten, sessions that move between worktrees and are
-// dropped, footprints reconciled, edits, a restart, and sweeps past every
-// threshold.
+// dropped, footprints reconciled, with directories added whole or without,
+// edits, a restart, and sweeps past every threshold.
 func TestIndexesFollowEveryChange(t *testing.T) {
 	t.Parallel()
 	rng := rand.New(rand.NewSource(5))
@@ -199,6 +202,9 @@ func TestIndexesFollowEveryChange(t *testing.T) {
 				default:
 					if rng.Intn(3) > 0 {
 						ev.Footprint = &Footprint{Files: indexFiles(rng, rng.Intn(8))}
+					}
+					if ev.Footprint != nil && rng.Intn(3) == 0 { // and directories added whole
+						ev.Footprint.Dirs = indexFiles(rng, 1+rng.Intn(2))
 					}
 				}
 				_, _ = b.Hook(now, ev)
