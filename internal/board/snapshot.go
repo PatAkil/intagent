@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -213,16 +214,13 @@ func (s *session) clone() *session {
 	return &d
 }
 
-// Restore replaces the board's contents with a snapshot, and rebuilds what
-// is derived from them. It drops the intents whose patterns the board no
-// longer accepts (glob.CleanPattern), and logs each.
-func (b *Board) Restore(data []byte) error {
-	var s snapshot
-	if err := json.Unmarshal(data, &s); err != nil {
-		return fmt.Errorf("read snapshot: %w", err)
-	}
-	if s.Format != snapshotFormat {
-		return fmt.Errorf("snapshot format %d is not supported (want %d)", s.Format, snapshotFormat)
+// Restore replaces the board's contents with a snapshot read from r, and
+// rebuilds what is derived from them. It drops the intents whose patterns
+// the board no longer accepts (glob.CleanPattern), and logs each.
+func (b *Board) Restore(r io.Reader) error {
+	s, err := readSnapshot(r)
+	if err != nil {
+		return err
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -270,6 +268,121 @@ func (b *Board) Restore(data []byte) error {
 	// What happened before the snapshot is in it, or gone with the process.
 	b.notes = map[string][]time.Time{}
 	b.pending = nil
+	return nil
+}
+
+// readSnapshot decodes a snapshot as WriteSnapshot writes it, or as
+// json.Marshal did, a claim, a session and an activity at a time: what it
+// holds of r at once is one of them, not the whole file, beside what it
+// decoded.
+func readSnapshot(r io.Reader) (snapshot, error) {
+	var s snapshot
+	dec := json.NewDecoder(r)
+	err := readObject(dec, func(key string) error {
+		switch {
+		case strings.EqualFold(key, "format"):
+			if err := dec.Decode(&s.Format); err != nil {
+				return err
+			}
+			if s.Format > snapshotFormat {
+				// Before its claims, which a newer server may write otherwise.
+				return unsupportedFormat(s.Format)
+			}
+			return nil
+		case strings.EqualFold(key, "claims"):
+			return readArray(dec, &s.Claims)
+		case strings.EqualFold(key, "sessions"):
+			return readArray(dec, &s.Sessions)
+		case strings.EqualFold(key, "saved"):
+			return dec.Decode(&s.Saved)
+		case strings.EqualFold(key, "seq"):
+			return dec.Decode(&s.Seq)
+		case strings.EqualFold(key, "recent"):
+			return readArray(dec, &s.Recent)
+		case strings.EqualFold(key, "stats"):
+			return dec.Decode(&s.Stats)
+		case strings.EqualFold(key, "dropped"):
+			return dec.Decode(&s.Dropped)
+		}
+		var skip json.RawMessage // a field from a newer server
+		return dec.Decode(&skip)
+	})
+	var unsupported unsupportedFormat
+	switch {
+	case errors.As(err, &unsupported):
+		return s, err
+	case err == nil && s.Format != snapshotFormat:
+		err = unsupportedFormat(s.Format)
+	case err == nil:
+		// One object, as json.Unmarshal takes: anything after it is damage.
+		if _, end := dec.Token(); end != io.EOF {
+			err = errors.New("data after the snapshot")
+		}
+	}
+	if err != nil {
+		return s, fmt.Errorf("read snapshot: %w", err)
+	}
+	return s, nil
+}
+
+// unsupportedFormat is the format of a snapshot this board cannot read.
+type unsupportedFormat int
+
+func (e unsupportedFormat) Error() string {
+	return fmt.Sprintf("snapshot format %d is not supported (want %d)", int(e), snapshotFormat)
+}
+
+// readObject reads a JSON object from dec, and has field read the value of
+// each of its fields.
+func readObject(dec *json.Decoder, field func(key string) error) error {
+	if err := readDelim(dec, '{'); err != nil {
+		return err
+	}
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		key, _ := tok.(string) // within an object, the decoder yields only keys here
+		if err := field(key); err != nil {
+			return err
+		}
+	}
+	return readDelim(dec, '}')
+}
+
+// readArray reads a JSON array, or null, into list an element at a time.
+func readArray[T any](dec *json.Decoder, list *[]T) error {
+	tok, err := dec.Token()
+	if err != nil || tok == nil {
+		*list = nil
+		return err
+	}
+	if d, ok := tok.(json.Delim); !ok || d != '[' {
+		return fmt.Errorf("found %v where an array belongs", tok)
+	}
+	*list = []T{}
+	for dec.More() {
+		var v T
+		if err := dec.Decode(&v); err != nil {
+			return err
+		}
+		*list = append(*list, v)
+	}
+	return readDelim(dec, ']')
+}
+
+func readDelim(dec *json.Decoder, want json.Delim) error {
+	tok, err := dec.Token()
+	if err != nil {
+		if errors.Is(err, io.EOF) {
+			err = io.ErrUnexpectedEOF
+		}
+		return err
+	}
+	if d, ok := tok.(json.Delim); !ok || d != want {
+		return fmt.Errorf("found %v where %v belongs", tok, want)
+	}
 	return nil
 }
 

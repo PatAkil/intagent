@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -100,7 +101,7 @@ func shareFootprintsUnderLoad(t *testing.T, forget string) {
 			t.Fatal(err)
 		}
 		if i%10 == 9 {
-			if err := h.b.Restore(data); err != nil {
+			if err := h.b.Restore(bytes.NewReader(data)); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -162,7 +163,7 @@ func TestWriteSnapshotMatchesMarshal(t *testing.T) {
 			t.Fatalf("%s: the snapshot differs (version %d, want %d):\n got %.600s\nwant %.600s", name, version, wantVersion, got, want)
 		}
 		restored := New(DefaultConfig())
-		if err := restored.Restore(got); err != nil {
+		if err := restored.Restore(bytes.NewReader(got)); err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
 		again, _, err := restored.Snapshot(t0)
@@ -240,4 +241,80 @@ func (l *liveWriter) collect() {
 	runtime.GC()
 	runtime.GC()
 	runtime.ReadMemStats(&l.m)
+}
+
+// A snapshot decoded a claim at a time is what json.Unmarshal made of it:
+// the same snapshot from valid ones, written by WriteSnapshot or by hand
+// with unknown, repeated, null and differently cased fields; and an error
+// from every one json.Unmarshal refused, including every prefix of a valid
+// snapshot, as a crash or a full disk would leave it.
+func TestReadSnapshotMatchesUnmarshal(t *testing.T) {
+	data, _, err := buildBoard(t, smallShape()).Snapshot(t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []string{
+		string(data),
+		`{"format":1}`,
+		`{"format":1,"claims":null,"sessions":[],"recent":null}`,
+		`{"Format":1,"CLAIMS":[{"id":"c1","repo":"r"},null],"later":{"x":[1,2]},"seq":4}`,
+		`{"format":1,"claims":[{"id":"c1"}],"claims":[{"id":"c2"},{"id":"c3"}]}`,
+		` {"format":1,"stats":{"r":{"edits":2}},"dropped":{"all":3}} ` + "\n",
+		`{"format":2,"claims":[{"id":"c1"}]}`,
+		`{"format":0}`,
+		`{"claims":[]}`,
+		`{"format":1,"claims":{}}`,
+		`{"format":1,"claims":[1]}`,
+		`{"format":1,"seq":"x"}`,
+		`{"format":1}{}`,
+		`{"format":1} x`,
+		`[]`,
+		`null`,
+		``,
+		`not json`,
+	}
+	for n := 1; n < len(data); n += 1 + n/7 {
+		cases = append(cases, string(data[:n]))
+	}
+	for _, c := range cases {
+		want, wantErr := oldReadSnapshot([]byte(c))
+		got, err := readSnapshot(strings.NewReader(c))
+		if (err != nil) != (wantErr != nil) {
+			t.Fatalf("%.80q: error %v, json.Unmarshal's %v", c, err, wantErr)
+		}
+		if err == nil && jsonOf(got) != jsonOf(want) {
+			t.Fatalf("%.80q: decoded\n%s\nwant\n%s", c, jsonOf(got), jsonOf(want))
+		}
+	}
+}
+
+// Restore reads a snapshot in small pieces: what it holds of the file at
+// once is about one claim. Read whole, as it was, a read asked for a fifth
+// of the file and more.
+func TestRestoreReadsInPieces(t *testing.T) {
+	sh := smallShape()
+	sh.claims, sh.busy, sh.sessions, sh.repos, sh.files, sh.dist = 200, 20, 200, 40, 40, filesFixed
+	data, _, err := buildBoard(t, sh).Snapshot(t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &readSizes{r: bytes.NewReader(data)}
+	if err := New(DefaultConfig()).Restore(r); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("a snapshot of %d bytes restored in reads of at most %d", len(data), r.largest)
+	if r.largest*20 > len(data) {
+		t.Fatalf("a read of %d bytes, of a snapshot of %d", r.largest, len(data))
+	}
+}
+
+// readSizes notes the largest read asked of it.
+type readSizes struct {
+	r       io.Reader
+	largest int
+}
+
+func (r *readSizes) Read(p []byte) (int, error) {
+	r.largest = max(r.largest, len(p))
+	return r.r.Read(p)
 }

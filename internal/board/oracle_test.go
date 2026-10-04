@@ -991,3 +991,16 @@ func (b *Board) oldSnapshot(now time.Time) ([]byte, uint64, error) {
 	data, err := json.Marshal(s)
 	return data, version, err
 }
+
+// oldReadSnapshot is how Restore read a snapshot before it was streamed:
+// the whole file in memory, unmarshalled at once.
+func oldReadSnapshot(data []byte) (snapshot, error) {
+	var s snapshot
+	if err := json.Unmarshal(data, &s); err != nil {
+		return s, err
+	}
+	if s.Format != snapshotFormat {
+		return s, fmt.Errorf("snapshot format %d is not supported", s.Format)
+	}
+	return s, nil
+}

@@ -1,6 +1,7 @@
 package board
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -467,4 +468,63 @@ func peakHeap(f func() error) (uint64, error) {
 	close(done)
 	<-sampled
 	return peak.Load(), err
+}
+
+// A restore from a file: read whole first, as Restore did, or decoded as it
+// is read. peak-MB is the most heap in use while it restores, sampled every
+// millisecond, the board it builds included.
+func BenchmarkScaleRestore(b *testing.B) {
+	dormant := targetShape(filesFixed, 50)
+	dormant.dormant = 10_000
+	for _, tc := range []struct {
+		name string
+		sh   shape
+	}{
+		{"dormant", dormant},
+		{"cap", cappedShape()},
+	} {
+		sb := boardOf(b, tc.sh)
+		path := filepath.Join(b.TempDir(), "board.json")
+		if err := fsutil.WriteFileFunc(path, 0o600, func(w io.Writer) error {
+			_, err := sb.WriteSnapshot(w, sb.now)
+			return err
+		}); err != nil {
+			b.Fatal(err)
+		}
+		sb = nil
+		for _, v := range []struct {
+			name    string
+			restore func() error
+		}{
+			{"whole", func() error {
+				data, err := os.ReadFile(path)
+				if err != nil {
+					return err
+				}
+				return New(DefaultConfig()).Restore(bytes.NewReader(data))
+			}},
+			{"streamed", func() error {
+				f, err := os.Open(path)
+				if err != nil {
+					return err
+				}
+				defer func() { _ = f.Close() }()
+				return New(DefaultConfig()).Restore(f)
+			}},
+		} {
+			b.Run(tc.name+"/"+v.name, func(b *testing.B) {
+				b.ReportAllocs()
+				var peak uint64
+				for range b.N {
+					runtime.GC()
+					p, err := peakHeap(v.restore)
+					if err != nil {
+						b.Fatal(err)
+					}
+					peak = max(peak, p)
+				}
+				b.ReportMetric(float64(peak)/(1<<20), "peak-MB")
+			})
+		}
+	}
 }

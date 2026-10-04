@@ -101,7 +101,7 @@ func TestCostlyPatternsStopAnEditShort(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := twin.Restore(data); err != nil {
+	if err := twin.Restore(bytes.NewReader(data)); err != nil {
 		t.Fatal(err)
 	}
 	ev := HookEvent{Kind: KindPreEdit, Member: "bob", Agent: AgentClaudeCode, SessionID: "b1", Where: whereOf("bob"), Tool: "Edit", Paths: paths}
@@ -199,7 +199,7 @@ func TestRestoreDropsPatternsNoLongerAccepted(t *testing.T) {
 	}
 	var log bytes.Buffer
 	b := New(DefaultConfig(), WithLogger(slog.New(slog.NewTextHandler(&log, nil))))
-	if err := b.Restore(data); err != nil {
+	if err := b.Restore(bytes.NewReader(data)); err != nil {
 		t.Fatal(err)
 	}
 	var got []string

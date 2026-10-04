@@ -1,6 +1,7 @@
 package board
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -160,7 +161,7 @@ func TestIndexesFollowEveryChange(t *testing.T) {
 					t.Fatal(err)
 				}
 				b = New(DefaultConfig(), withIDs(func(prefix string) string { n++; return fmt.Sprintf("%s%04d", prefix, n) }))
-				if err := b.Restore(data); err != nil {
+				if err := b.Restore(bytes.NewReader(data)); err != nil {
 					t.Fatal(err)
 				}
 				what = "a restore"
@@ -413,7 +414,7 @@ func TestRestoreOfDuplicatesKeepsIndexesRight(t *testing.T) {
 		t.Fatal(err)
 	}
 	b := New(DefaultConfig())
-	if err := b.Restore(data); err != nil {
+	if err := b.Restore(bytes.NewReader(data)); err != nil {
 		t.Fatal(err)
 	}
 	mustIndex(t, b, "restoring duplicates")

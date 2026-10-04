@@ -15,18 +15,20 @@ import (
 func (s *Server) snapshotPath() string { return filepath.Join(s.dataDir, "board.json") }
 
 // load restores the board from the data directory, if a snapshot exists.
+// The snapshot is decoded as it is read, a claim at a time.
 func (s *Server) load() error {
 	if s.dataDir == "" {
 		return nil
 	}
-	data, err := os.ReadFile(s.snapshotPath())
+	f, err := os.Open(s.snapshotPath())
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	if err := s.board.Restore(data); err != nil {
+	defer func() { _ = f.Close() }()
+	if err := s.board.Restore(f); err != nil {
 		return fmt.Errorf("%s: %w", s.snapshotPath(), err)
 	}
 	s.saved = s.board.Version()

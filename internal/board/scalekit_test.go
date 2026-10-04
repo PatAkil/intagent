@@ -1,6 +1,7 @@
 package board
 
 import (
+	"bytes"
 	"fmt"
 	"math"
 	"math/rand"
@@ -210,7 +211,7 @@ func (sb *scaleBoard) forkWith(tb testing.TB, cfg Config) *scaleBoard {
 		tb.Fatal(err)
 	}
 	fb := newScaleBoard(sb.sh, cfg, sb.now, sb.ids)
-	if err := fb.Restore(data); err != nil {
+	if err := fb.Restore(bytes.NewReader(data)); err != nil {
 		tb.Fatal(err)
 	}
 	return fb
