@@ -1,7 +1,9 @@
 package server
 
 import (
+	"encoding/binary"
 	"encoding/json"
+	"hash/fnv"
 	"strconv"
 	"sync"
 
@@ -53,6 +55,7 @@ type hub struct {
 	subs   map[*subscriber]struct{}
 	open   map[string]int // streams whose handler has not returned, by member ("" for anonymous)
 	total  int            // and all of them
+	conns  uint64         // streams admitted so far
 }
 
 // frame is one server-sent event, encoded once for every stream that carries
@@ -89,8 +92,13 @@ func activityFrame(a board.Activity) (frame, bool) {
 }
 
 type subscriber struct {
-	repo   string
-	member string // who opened it; "" without a token
+	repo string
+	// who authorised the stream: a member and their token's hash, or nobody
+	// on a board open to all.
+	who memberHash
+	// retry is the reconnection delay, in milliseconds, the stream gives its
+	// client when the server ends it.
+	retry int
 	// pos is the first publish the stream takes, and wake is closed at it.
 	pos  uint64
 	wake <-chan struct{}
@@ -106,31 +114,53 @@ func newHub(limits StreamLimits) *hub {
 }
 
 // subscribe adds a stream, which takes what is published from now on, unless
-// member ("" without a token) or the server already has as many as allowed.
-// Every stream it adds must be unsubscribed.
-func (h *hub) subscribe(repo, member string) (*subscriber, bool) {
+// the member who opened it (nobody, without a token) or the server already
+// has as many as allowed. Every stream it adds must be unsubscribed.
+func (h *hub) subscribe(repo string, who memberHash) (*subscriber, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	limit := h.limits.PerMember
-	if member == "" {
+	if who.name == "" {
 		limit = h.limits.Anonymous
 	}
-	if h.total >= h.limits.Total || h.open[member] >= limit {
+	if h.total >= h.limits.Total || h.open[who.name] >= limit {
 		return nil, false
 	}
 	h.total++
-	h.open[member]++
-	s := &subscriber{repo: repo, member: member, pos: h.next, wake: h.wake, done: make(chan struct{})}
+	h.open[who.name]++
+	h.conns++
+	s := &subscriber{repo: repo, who: who, retry: reconnectDelay(who.name, h.conns), pos: h.next, wake: h.wake, done: make(chan struct{})}
 	h.subs[s] = struct{}{}
 	return s, true
 }
 
-// closeAll ends every stream; their clients reconnect and authenticate again.
-func (h *hub) closeAll() {
+// A stream the server ends tells its client to reconnect after 3 to 8
+// seconds, so streams ended together do not all come back, and reload the
+// board, at once. A stream starts out with 3 s, for drops the server did not
+// choose.
+const (
+	retryBase   = 3000
+	retrySpread = 5000
+)
+
+// reconnectDelay is the delay, in milliseconds, for the conn-th stream: the
+// same for the same member and connection, spread evenly over all of them.
+func reconnectDelay(member string, conn uint64) int {
+	f := fnv.New32a()
+	_, _ = f.Write([]byte(member))
+	_, _ = f.Write(binary.BigEndian.AppendUint64([]byte{0}, conn))
+	return retryBase + int(f.Sum32()%retrySpread)
+}
+
+// closeUnless ends the streams whose authority keep no longer accepts; their
+// clients reconnect and authenticate again.
+func (h *hub) closeUnless(keep func(memberHash) bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for s := range h.subs {
-		h.end(s)
+		if !keep(s.who) {
+			h.end(s)
+		}
 	}
 }
 
@@ -146,8 +176,8 @@ func (h *hub) unsubscribe(s *subscriber) {
 	defer h.mu.Unlock()
 	delete(h.subs, s)
 	h.total--
-	if h.open[s.member]--; h.open[s.member] <= 0 {
-		delete(h.open, s.member)
+	if h.open[s.who.name]--; h.open[s.who.name] <= 0 {
+		delete(h.open, s.who.name)
 	}
 }
 

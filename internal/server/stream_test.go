@@ -319,7 +319,7 @@ func TestStreamHoldsItsPlaceUntilItsHandlerReturns(t *testing.T) {
 	for !ts.subscribed(1) {
 		time.Sleep(time.Millisecond)
 	}
-	ts.hub.closeAll() // as a token rotation does; the handler is stuck in its first write
+	ts.hub.closeUnless(func(memberHash) bool { return false }) // as rotating bob's token does; the handler is stuck in its first write
 	if resp := ts.openStream(t, "bob"); resp.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("a second stream while the first is stuck: %d", resp.StatusCode)
 	}
@@ -327,5 +327,149 @@ func TestStreamHoldsItsPlaceUntilItsHandlerReturns(t *testing.T) {
 	<-done
 	if resp := ts.openStream(t, "bob"); resp.StatusCode != http.StatusOK {
 		t.Fatalf("a stream after the stuck one returned: %d", resp.StatusCode)
+	}
+}
+
+// readGoodbye reads what is left of a stream the server ended: the delay it
+// gives its client to reconnect after, then the end.
+func readGoodbye(t *testing.T, r *bufio.Reader) int {
+	t.Helper()
+	rest := readBlocks(t, r, 1)
+	var retry int
+	if _, err := fmt.Sscanf(rest, "retry: %d\n\n", &retry); err != nil || retry < retryBase || retry >= retryBase+retrySpread {
+		t.Fatalf("the stream ended with %q, want a retry: of 3 to 8 s", rest)
+	}
+	if line, err := r.ReadString('\n'); err == nil {
+		t.Fatalf("the stream went on after its goodbye: %q", line)
+	}
+	return retry
+}
+
+// A change to the team file ends only the streams whose token it revoked: a
+// new member, or a touch of the file, used to disconnect every dashboard,
+// and all of them reconnected and reloaded the board 3 s later, together.
+func TestMemberChangesEndOnlyTheirStreams(t *testing.T) {
+	ts := newTestServer(t, func(o *Options) { o.PublicRead = true })
+	cookie := http.Header{"Cookie": {cookieName + "=" + ts.login(t, "bob", nil)}}
+	open := func(member string, h http.Header) *bufio.Reader {
+		r, closeStream := ts.rawStream(t, member, "", h)
+		t.Cleanup(closeStream)
+		readBlocks(t, r, 1)
+		return r
+	}
+	alice, bob, bobCookie, anyone := open("alice", nil), open("bob", nil), open("", cookie), open("", nil)
+	streams := func() int {
+		ts.hub.mu.Lock()
+		defer ts.hub.mu.Unlock()
+		return len(ts.hub.subs)
+	}
+	member := func(name, hash string) Member { return Member{Name: name, TokenSHA256: hash} }
+	aliceM, bobM := member("alice", HashToken(ts.tokens["alice"])), member("bob", HashToken(ts.tokens["bob"]))
+	_, carolHash, _ := NewToken()
+	_, rotated, _ := NewToken()
+
+	for _, step := range []struct {
+		what    string
+		members []Member
+		ended   []*bufio.Reader
+	}{
+		{"the same members", []Member{aliceM, bobM}, nil},
+		{"carol added", []Member{aliceM, bobM, member("carol", carolHash)}, nil},
+		{"bob's token rotated", []Member{aliceM, member("bob", rotated)}, []*bufio.Reader{bob, bobCookie}},
+		{"alice removed", []Member{member("bob", rotated)}, []*bufio.Reader{alice}},
+	} {
+		before := streams()
+		if err := ts.SetMembers(step.members); err != nil {
+			t.Fatal(err)
+		}
+		for _, r := range step.ended {
+			readGoodbye(t, r)
+		}
+		if got, want := streams(), before-len(step.ended); got != want {
+			t.Fatalf("%s: %d streams open, want %d", step.what, got, want)
+		}
+	}
+	// No member change revokes the stream opened without a token.
+	ts.hub.publish([]board.Activity{{Seq: 1, At: ts.now(), Kind: board.ActivityNoteSent, Repo: repo, Member: "bob"}})
+	if evs := readEvents(t, anyone, 1); evs[0].Seq != 1 {
+		t.Fatalf("events: %+v", evs)
+	}
+}
+
+// A token rotated after a stream's request was authorised, but before the
+// stream subscribed, must not keep the stream: closing the streams already
+// subscribed missed it, and it carried the team's activity until the server
+// restarted. The finding saw 1.2 such streams survive each rotation.
+func TestRevokedTokenCannotSlipIntoAStream(t *testing.T) {
+	ts := newTestServer(t)
+	cookie := ts.login(t, "alice", nil)
+	for _, c := range []struct {
+		member string
+		auth   func(*http.Request)
+	}{
+		{"bob", func(r *http.Request) { r.Header.Set("Authorization", "Bearer "+ts.tokens["bob"]) }},
+		{"alice", func(r *http.Request) { r.AddCookie(&http.Cookie{Name: cookieName, Value: cookie}) }},
+	} {
+		h := ts.read(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// The token is rotated between authorising the request and subscribing its stream.
+			var ms []Member
+			for _, name := range []string{"alice", "bob"} {
+				hash := HashToken(ts.tokens[name])
+				if name == c.member {
+					_, hash, _ = NewToken()
+				}
+				ms = append(ms, Member{Name: name, TokenSHA256: hash})
+			}
+			if err := ts.SetMembers(ms); err != nil {
+				t.Error(err)
+			}
+			ts.handleStream(w, r)
+		}))
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		req := httptest.NewRequest(http.MethodGet, "/v1/stream", nil).WithContext(ctx)
+		c.auth(req)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		cancel()
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("%s's stream, rotated in between: status %d, want 401", c.member, rec.Code)
+		}
+		if ts.subscribed(1) {
+			t.Fatalf("%s's refused stream is still subscribed", c.member)
+		}
+	}
+}
+
+// When the server ends its streams together, at shutdown, each tells its
+// dashboard to come back after its own delay, 3 to 8 s, so they do not all
+// reconnect and reload the board at once.
+func TestShutdownSpreadsReconnects(t *testing.T) {
+	ts := newTestServer(t)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- ts.Serve(ctx, ln) }()
+	ts.url = "http://" + ln.Addr().String()
+	var streams []*bufio.Reader
+	for range 5 {
+		r, closeStream := ts.rawStream(t, "bob", "", nil)
+		defer closeStream()
+		readBlocks(t, r, 1)
+		streams = append(streams, r)
+	}
+	cancel()
+	got, want := map[int]bool{}, map[int]bool{}
+	for i, r := range streams {
+		got[readGoodbye(t, r)] = true
+		want[reconnectDelay("bob", uint64(i+1))] = true
+	}
+	if len(got) < 2 || len(got) != len(want) {
+		t.Fatalf("reconnect delays %v, want %v", got, want)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 }

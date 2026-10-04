@@ -3,6 +3,7 @@ package server
 import (
 	"errors"
 	"net/http"
+	"strconv"
 	"time"
 )
 
@@ -19,6 +20,11 @@ var streamLinger = 100 * time.Millisecond
 // proxy that stalls) would hold its handler and buffers in a write until TCP
 // gave up, which takes about 15 minutes. A variable for tests.
 var streamWriteTimeout = 15 * time.Second
+
+// goodbyeTimeout bounds the last write to a stream the server ends, which
+// only says when to reconnect: a client that has stopped reading does not
+// hold up a shutdown.
+const goodbyeTimeout = time.Second
 
 // streamPiece is how much of a write one deadline covers, so a client that
 // keeps reading a large catch-up slowly still gets all of it.
@@ -67,15 +73,25 @@ func (o *streamWriter) frames(batch []frame) {
 	}
 }
 
+// goodbye tells the client, as the server ends the stream, to reconnect in
+// retry milliseconds.
+func (o *streamWriter) goodbye(retry int) {
+	o.buf = strconv.AppendInt(append(o.buf[:0], "retry: "...), int64(retry), 10)
+	o.buf = append(o.buf, "\n\n"...)
+	_ = o.flushWithin(goodbyeTimeout)
+}
+
 // flush writes what has been added and flushes it to the client, each piece
 // within streamWriteTimeout.
-func (o *streamWriter) flush() error {
+func (o *streamWriter) flush() error { return o.flushWithin(streamWriteTimeout) }
+
+func (o *streamWriter) flushWithin(d time.Duration) error {
 	if len(o.buf) == 0 {
 		return nil
 	}
 	for b := o.buf; len(b) > 0; {
 		k := min(len(b), streamPiece)
-		if err := o.deadline(streamWriteTimeout); err != nil {
+		if err := o.deadline(d); err != nil {
 			return err
 		}
 		if _, err := o.w.Write(b[:k]); err != nil {
@@ -87,7 +103,7 @@ func (o *streamWriter) flush() error {
 	if cap(o.buf) > maxKeptBuffer {
 		o.buf = nil
 	}
-	if err := o.deadline(streamWriteTimeout); err != nil {
+	if err := o.deadline(d); err != nil {
 		return err
 	}
 	return o.rc.Flush()

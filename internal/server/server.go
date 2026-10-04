@@ -176,19 +176,19 @@ func (s *Server) session(m memberHash) string {
 }
 
 // sessionMember finds the member a dashboard cookie belongs to.
-func (s *Server) sessionMember(cookie string) (string, bool) {
+func (s *Server) sessionMember(cookie string) (memberHash, bool) {
 	got, err := hex.DecodeString(cookie)
 	if err != nil || len(got) != sha256.Size {
-		return "", false
+		return memberHash{}, false
 	}
-	name := ""
+	var found memberHash
 	for _, m := range *s.members.Load() {
 		want, _ := hex.DecodeString(s.session(m))
 		if hmac.Equal(got, want) {
-			name = m.name
+			found = m
 		}
 	}
-	return name, name != ""
+	return found, found.name != ""
 }
 
 // SetMembers replaces who may use the server: new members can sign in, and a
@@ -207,10 +207,27 @@ func (s *Server) SetMembers(ms []Member) error {
 	}
 	if s.members.Swap(&list) != nil {
 		// Streams were authorised against the old list: a revoked token must
-		// not keep one open.
-		s.hub.closeAll()
+		// not keep one open, and the others stay, so adding a member or a
+		// touch of the file disconnects nobody. The list is swapped first:
+		// handleStream checks a stream that subscribes after this against it.
+		s.hub.closeUnless(s.admits)
 	}
 	return nil
+}
+
+// admits reports whether the credential that authorised a request is still
+// listed: the same member with the same token, or nobody on a board open to
+// all, which the member list does not change.
+func (s *Server) admits(who memberHash) bool {
+	if who.name == "" {
+		return true
+	}
+	for _, m := range *s.members.Load() {
+		if m.name == who.name && subtle.ConstantTimeCompare(m.hash, who.hash) == 1 {
+			return true
+		}
+	}
+	return false
 }
 
 // Board exposes the board, for tests and embedding.
@@ -277,24 +294,29 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 
 type ctxKey struct{}
 
-func memberFrom(r *http.Request) string {
-	m, _ := r.Context().Value(ctxKey{}).(string)
+// memberFrom is the member a request was authorised as; "" for nobody, on a
+// board open to all.
+func memberFrom(r *http.Request) string { return authorityFrom(r).name }
+
+// authorityFrom is the member and token hash a request was authorised by.
+func authorityFrom(r *http.Request) memberHash {
+	m, _ := r.Context().Value(ctxKey{}).(memberHash)
 	return m
 }
 
 // authenticate resolves a token to a member, comparing in constant time.
-func (s *Server) authenticate(token string) (string, bool) {
+func (s *Server) authenticate(token string) (memberHash, bool) {
 	if token == "" {
-		return "", false
+		return memberHash{}, false
 	}
 	got, _ := hex.DecodeString(HashToken(token))
-	name := ""
+	var found memberHash
 	for _, m := range *s.members.Load() {
 		if subtle.ConstantTimeCompare(got, m.hash) == 1 {
-			name = m.name
+			found = m
 		}
 	}
-	return name, name != ""
+	return found, found.name != ""
 }
 
 func bearer(r *http.Request) string {
@@ -308,12 +330,12 @@ func bearer(r *http.Request) string {
 // write admits only bearer tokens, so a browser cookie can never cause a write.
 func (s *Server) write(h http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		name, ok := s.authenticate(bearer(r))
+		who, ok := s.authenticate(bearer(r))
 		if !ok {
 			writeError(w, http.StatusUnauthorized, "missing or unknown token")
 			return
 		}
-		h(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, name)))
+		h(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, who)))
 	})
 }
 
@@ -321,9 +343,9 @@ func (s *Server) write(h http.HandlerFunc) http.Handler {
 func (s *Server) read(h http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token := bearer(r)
-		name, ok := s.authenticate(token)
+		who, ok := s.authenticate(token)
 		if c, err := r.Cookie(cookieName); !ok && token == "" && err == nil {
-			name, ok = s.sessionMember(c.Value)
+			who, ok = s.sessionMember(c.Value)
 		}
 		// A board open to all still rejects a token it does not know: its
 		// owner must find out, not be treated as anonymous.
@@ -331,23 +353,18 @@ func (s *Server) read(h http.HandlerFunc) http.Handler {
 			writeError(w, http.StatusUnauthorized, "missing or unknown token")
 			return
 		}
-		h(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, name)))
+		h(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, who)))
 	})
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 4096)
-	name, ok := s.authenticate(strings.TrimSpace(r.FormValue("token")))
+	who, ok := s.authenticate(strings.TrimSpace(r.FormValue("token")))
 	if !ok {
 		http.Redirect(w, r, "/?login=failed", http.StatusSeeOther)
 		return
 	}
-	var session string
-	for _, m := range *s.members.Load() {
-		if m.name == name {
-			session = s.session(m)
-		}
-	}
+	session := s.session(who)
 	// Behind a proxy that terminates TLS, the proxy says so; a client that
 	// claims it can only make its own cookie stricter.
 	secure := r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
@@ -475,7 +492,8 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	repo := board.RepoID(r.URL.Query().Get("repo"))
-	sub, ok := s.hub.subscribe(repo, memberFrom(r))
+	who := authorityFrom(r)
+	sub, ok := s.hub.subscribe(repo, who)
 	if !ok {
 		// A dashboard's EventSource gives up on an error status, and the
 		// dashboard tries again after its own backoff.
@@ -484,6 +502,13 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer s.hub.unsubscribe(sub)
+	// SetMembers may have swapped the list after this request was
+	// authorised, and closed what it no longer admits before this stream
+	// subscribed; it is checked here against the new list instead.
+	if !s.admits(who) {
+		writeError(w, http.StatusUnauthorized, "missing or unknown token")
+		return
+	}
 
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream")
@@ -521,10 +546,15 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		}
 		select {
 		case <-r.Context().Done():
+			// The server is shutting down (requests share Serve's context),
+			// or the client has gone and the goodbye goes nowhere.
+			out.goodbye(sub.retry)
 			return
 		case <-s.closing:
+			out.goodbye(sub.retry)
 			return
 		case <-sub.done:
+			out.goodbye(sub.retry)
 			return
 		case <-linger.C:
 			lingering = false
@@ -537,7 +567,8 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 			var ok bool
 			batches, pos, wake, ok = s.hub.since(pos, batches[:0])
 			if !ok {
-				return // too far behind: the client reconnects and catches up
+				out.goodbye(sub.retry) // too far behind: the client reconnects and catches up
+				return
 			}
 			for _, b := range batches {
 				out.frames(b)
