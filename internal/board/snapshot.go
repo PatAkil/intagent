@@ -313,6 +313,57 @@ func (b *Board) RestoreAfter(r io.Reader, now, stopped time.Time) error {
 	return nil
 }
 
+// trimRestored bounds what a claim read from a snapshot remembers of its
+// teammates to what alertOthers keeps now. An older server remembered an
+// alert for every file of every teammate's claim, and listed every file in
+// an alert's item: it keeps, of each teammate's claim, the alerts of the
+// first maxToldPaths files by name, counts them in Told, as alertOthers
+// does, and lists the first maxToldPaths files of each alert.
+func (c *claim) trimRestored() {
+	if c == nil {
+		return
+	}
+	for i := range c.Inbox {
+		if it := &c.Inbox[i]; it.Kind == "overlap" && len(it.Paths) > maxToldPaths {
+			it.Paths = slices.Clone(it.Paths[:maxToldPaths])
+		}
+	}
+	told, over := map[string]int{}, false
+	for k := range c.Alerted {
+		if id, ok := toldClaim(k); ok {
+			told[id]++
+			over = over || told[id] > maxToldPaths
+		}
+	}
+	if over {
+		keep := map[string]bool{}
+		clear(told)
+		for _, k := range slices.Sorted(maps.Keys(c.Alerted)) {
+			if id, ok := toldClaim(k); ok {
+				if told[id] == maxToldPaths {
+					continue
+				}
+				told[id]++
+			}
+			keep[k] = true
+		}
+		c.Alerted = keep
+	}
+	c.Told = nil
+	if len(told) > 0 {
+		c.Told = told
+	}
+}
+
+// toldClaim is the teammate's claim an alert of a file it changed names,
+// alertOthers' touch|<claim>|<path>, which Told counts.
+func toldClaim(k string) (string, bool) {
+	if !strings.HasPrefix(k, "touch|") {
+		return "", false
+	}
+	return alertedClaim(k), true
+}
+
 // ErrCorruptSnapshot reports a snapshot that is not one: cut short, or
 // damaged by something other than the server, which writes it whole. A
 // snapshot of a newer format, or one that could not be read, is not
@@ -339,21 +390,23 @@ func readSnapshot(r io.Reader) (snapshot, error) {
 			}
 			return nil
 		case strings.EqualFold(key, "claims"):
-			return readArray(dec, &s.Claims)
+			// Each trimmed as it is read, so that what an older server
+			// kept is not all held at once.
+			return readArray(dec, &s.Claims, (*claim).trimRestored)
 		case strings.EqualFold(key, "sessions"):
-			return readArray(dec, &s.Sessions)
+			return readArray(dec, &s.Sessions, nil)
 		case strings.EqualFold(key, "saved"):
 			return dec.Decode(&s.Saved)
 		case strings.EqualFold(key, "seq"):
 			return dec.Decode(&s.Seq)
 		case strings.EqualFold(key, "recent"):
-			return readArray(dec, &s.Recent)
+			return readArray(dec, &s.Recent, nil)
 		case strings.EqualFold(key, "stats"):
 			return dec.Decode(&s.Stats)
 		case strings.EqualFold(key, "dropped"):
 			return dec.Decode(&s.Dropped)
 		case strings.EqualFold(key, "mail"):
-			return readArray(dec, &s.Mail)
+			return readArray(dec, &s.Mail, nil)
 		}
 		var skip json.RawMessage // a field from a newer server
 		return dec.Decode(&skip)
@@ -419,8 +472,9 @@ func readObject(dec *json.Decoder, field func(key string) error) error {
 	return readDelim(dec, '}')
 }
 
-// readArray reads a JSON array, or null, into list an element at a time.
-func readArray[T any](dec *json.Decoder, list *[]T) error {
+// readArray reads a JSON array, or null, into list an element at a time,
+// passing each to each, if it is not nil, as it is read.
+func readArray[T any](dec *json.Decoder, list *[]T, each func(T)) error {
 	tok, err := dec.Token()
 	if err != nil || tok == nil {
 		*list = nil
@@ -434,6 +488,9 @@ func readArray[T any](dec *json.Decoder, list *[]T) error {
 		var v T
 		if err := dec.Decode(&v); err != nil {
 			return err
+		}
+		if each != nil {
+			each(v)
 		}
 		*list = append(*list, v)
 	}

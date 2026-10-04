@@ -85,6 +85,15 @@ func (b *Board) checkIndexes() error {
 		if err := c.checkFootprintIndex(); err != nil {
 			return fmt.Errorf("claim %s: %w", id, err)
 		}
+		told := map[string]int{}
+		for k := range c.Alerted {
+			if o, ok := toldClaim(k); ok {
+				told[o]++
+			}
+		}
+		if !maps.Equal(told, c.Told) || slices.ContainsFunc(slices.Collect(maps.Values(told)), func(n int) bool { return n > maxToldPaths }) {
+			return fmt.Errorf("claim %s remembers alerts of %v files of its teammates' claims, and counts %v", id, told, c.Told)
+		}
 		members[c.Member] += c.fpBytes
 	}
 	for m, n := range members {

@@ -120,7 +120,8 @@ session was already shown, then of the oldest item of the sender holding the mos
 tie, so a flood of one teammate's alerts or notes pushes out their own items rather than another's note the agent has
 not heard yet. The sweeper drops inbox items a day old, which no session is shown any more, and the alerts a claim that
 no longer listens remembers having heard; and once a claim is removed, the alerts other claims remember of it, which
-nothing can match again since a claim's ID is never reused.
+nothing can match again since a claim's ID is never reused. A snapshot an older server wrote is trimmed to these bounds
+as it is read.
 
 Every acknowledgement is remembered per session, so an agent hears about a given overlap once, not on every edit. A
 collision is announced (a `conflict` activity, for the dashboard and webhooks) under the teammate whose work decided the

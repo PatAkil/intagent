@@ -599,3 +599,61 @@ func TestFleetPlateausOverNineDays(t *testing.T) {
 		t.Fatalf("%d claims with no agent running, %.0f bytes a claim; want at most %d and 5.5 KB", dormant, perClaim, maxDormant)
 	}
 }
+
+// A snapshot from an older server, which remembered an alert for every file
+// of every teammate's claim and listed every file in an alert's item, is
+// trimmed as it is read to what alertOthers keeps now: five alerts per pair
+// of claims, counted in Told, and five files an item. Before, the 5.7
+// million keys of 76 claims sharing 2000 files stayed until the claims went
+// quiet.
+func TestRestoreTrimsWhatOlderServersRemembered(t *testing.T) {
+	h := newHarness(t)
+	h.hook(KindPrompt, "alice", "a1")
+	h.declare("alice", ModeExclusive, "Rework retries", "retry/**")
+	h.scanAt("bob", "w", "b1", "retry/r.go", "x.go") // a breach, remembered once
+	h.scanAt("carol", "w", "c1", "x.go")
+	bob, carol := h.claimIn("bob", "w"), h.claimIn("carol", "w")
+	// As an older server left them: no counts, every file remembered and
+	// listed.
+	files := make([]string, 2000)
+	for i := range files {
+		files[i] = fmt.Sprintf("svc/f%04d.go", i)
+		bob.Alerted["touch|"+carol.ID+"|"+files[i]] = true
+	}
+	bob.Told = nil
+	bob.Inbox = append(bob.Inbox, InboxItem{ID: "i_old", At: h.now, Kind: "overlap", From: "carol", FromClaim: carol.ID,
+		Text: "carol's agent also changed svc/f0000.go and 1999 more.", Paths: files})
+	unchecked := 0
+	for k := range bob.Alerted {
+		if strings.HasPrefix(k, "unchecked|") {
+			unchecked++
+		}
+	}
+	data, _, err := h.b.Snapshot(h.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := New(DefaultConfig())
+	if err := b.Restore(bytes.NewReader(data), h.now); err != nil {
+		t.Fatal(err)
+	}
+	got := b.claims[bob.ID]
+	pairs, kept := map[string]int{}, 0
+	for k := range got.Alerted {
+		switch {
+		case strings.HasPrefix(k, "touch|"):
+			pairs[alertedClaim(k)]++
+		case strings.HasPrefix(k, "unchecked|"):
+			kept++
+		}
+	}
+	if pairs[carol.ID] != maxToldPaths || !maps.Equal(pairs, got.Told) || kept != unchecked || unchecked == 0 {
+		t.Fatalf("bob's claim remembers %v alerts per teammate, counts %v, and %d of %d breaches", pairs, got.Told, kept, unchecked)
+	}
+	for _, it := range got.Inbox {
+		if len(it.Paths) > maxToldPaths {
+			t.Fatalf("an item lists %d files", len(it.Paths))
+		}
+	}
+	mustIndex(t, b, "the restore")
+}
