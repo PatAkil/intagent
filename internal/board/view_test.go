@@ -18,8 +18,8 @@ func TestViewIsBuiltOutsideTheLock(t *testing.T) {
 	at := h.now
 	want := jsonOf(h.b.View(at, repo))
 	built := false
-	viewCopied = func() {
-		viewCopied = nil
+	h.b.viewCopied = func() {
+		h.b.viewCopied = nil
 		if !h.b.mu.TryLock() {
 			t.Error("the board's lock is held while the view is built")
 			return
@@ -30,7 +30,6 @@ func TestViewIsBuiltOutsideTheLock(t *testing.T) {
 		h.hook(KindPostEdit, "bob", "b1", "a/x.go", "a/z.go")
 		h.hook(KindSessionEnd, "carol", "c2")
 	}
-	t.Cleanup(func() { viewCopied = nil })
 	got := jsonOf(h.b.View(at, repo))
 	if !built {
 		t.Fatal("the view was not built outside the lock")

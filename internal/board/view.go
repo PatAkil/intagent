@@ -82,8 +82,8 @@ type RepoSummary struct {
 func (b *Board) View(now time.Time, repo string) View {
 	repo = RepoID(repo)
 	v, claims := b.viewCopy(now, repo)
-	if viewCopied != nil {
-		viewCopied()
+	if b.viewCopied != nil {
+		b.viewCopied()
 	}
 	changedBy := map[string]int{} // how many claims changed each file
 	for _, c := range claims {
@@ -128,9 +128,6 @@ func (b *Board) View(now time.Time, repo string) View {
 	sort.Strings(v.Members)
 	return v
 }
-
-// viewCopied, when set by a test, runs once View has let go of the lock.
-var viewCopied func()
 
 // claimCopy is what a view shows of a claim, copied under the lock: its
 // files with their touches, which are never changed once in a footprint,

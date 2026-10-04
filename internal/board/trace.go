@@ -20,20 +20,3 @@ type workTrace struct {
 // parallel or run the board from several goroutines, and must reset it when
 // it ends: the parallel tests run the board once the others are done.
 var trace *workTrace
-
-// match is glob.Match, counted and charged to the work the call holding
-// the board's lock may do.
-func (b *Board) match(pattern, name string) bool {
-	if trace != nil {
-		trace.globMatch++
-	}
-	return b.work.Match(pattern, name)
-}
-
-// overlap is glob.Overlap, counted and charged as match is.
-func (b *Board) overlap(x, y string) bool {
-	if trace != nil {
-		trace.globOverlap++
-	}
-	return b.work.Overlap(x, y)
-}

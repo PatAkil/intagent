@@ -163,6 +163,8 @@ type Board struct {
 	// work is the matching left to the call that holds the lock (lock).
 	work glob.Work
 	log  *slog.Logger
+	// viewCopied, when a test sets it, runs once View has let go of the lock.
+	viewCopied func()
 
 	// dropped is, by repository, the seq of the newest activity the feed has
 	// let go of, and droppedAll the newest of all; droppedFloor covers what a
@@ -250,6 +252,23 @@ const maxGlobWork = 2_000_000
 func (b *Board) lock() {
 	b.mu.Lock()
 	b.work = glob.NewWork(maxGlobWork)
+}
+
+// match is glob.Match, counted and charged to the work the call holding
+// the board's lock may do.
+func (b *Board) match(pattern, name string) bool {
+	if trace != nil {
+		trace.globMatch++
+	}
+	return b.work.Match(pattern, name)
+}
+
+// overlap is glob.Overlap, counted and charged as match is.
+func (b *Board) overlap(x, y string) bool {
+	if trace != nil {
+		trace.globOverlap++
+	}
+	return b.work.Overlap(x, y)
 }
 
 // countPartial counts, in repo's stats, a call that stopped matching for
