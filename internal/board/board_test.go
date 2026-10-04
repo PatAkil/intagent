@@ -446,6 +446,36 @@ func TestSweepAnnouncesStallsOnceAndRecovery(t *testing.T) {
 	}
 }
 
+// A session left waiting for its person is not a stuck agent: its gone is
+// marked idle, so a webhook can leave it to the dashboard.
+func TestSweepMarksSessionsLeftWaitingIdle(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		kinds []Kind
+		idle  bool
+	}{
+		{"turn ended, left open", []Kind{KindPrompt, KindStop}, true},
+		{"started, never prompted", []Kind{KindSessionStart}, true},
+		{"silent mid-turn", []Kind{KindPrompt}, false},
+		{"killed inside a tool", []Kind{KindPrompt, KindToolStart}, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h := newHarness(t)
+			for _, k := range c.kinds {
+				h.hook(k, "alice", "a1")
+			}
+			for range 4 * 60 / 15 { // four hours of sweeps
+				h.advance(15 * time.Minute)
+				h.b.Sweep(h.now)
+			}
+			gone := h.activities(ActivitySessionGone)
+			if len(gone) != 1 || gone[0].Idle != c.idle {
+				t.Fatalf("gone = %+v, want one with idle %v", gone, c.idle)
+			}
+		})
+	}
+}
+
 func TestSweepRemovesOldSessionsAndForgetsClaims(t *testing.T) {
 	h := newHarness(t)
 	h.hook(KindPrompt, "alice", "a1")

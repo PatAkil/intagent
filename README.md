@@ -182,10 +182,25 @@ incoming webhooks work as they are, and any other endpoint receives the activity
 `session.stalled` fires when a working agent has been silent past `stall_after` (or `tool_stall_after` inside a tool
 call), `session.gone` when an agent stopped reporting without ending its session, and `conflict` when an edit was
 refused or put to a person, or a change made through the shell landed in a teammate's reservation (warnings are not
-sent). Any other activity on the dashboard's feed can be listed too:
-`claim.opened`, `claim.released`, `claim.forgotten`, `session.started`, `session.ended`, `session.recovered`,
-`file.changed`, `footprint.reconciled`, `intent.declared`, `intent.released` and `note.sent`. A misspelt one stops the
-server from starting.
+sent). A session that had finished its turn and was left waiting for its person turns gone after `idle_after` too; it
+is not stuck, so the dashboard shows it but the webhook does not, unless the webhook sets `"idle": true`. Any other
+activity on the dashboard's feed can be listed too: `claim.opened`, `claim.released`, `claim.forgotten`,
+`session.started`, `session.ended`, `session.recovered`, `file.changed`, `footprint.reconciled`, `intent.declared`,
+`intent.released` and `note.sent`. A misspelt one stops the server from starting.
+
+Messages go out at most one a second, and a storm becomes a few of them. Whatever waits is sent together: refused
+edits first, then stalled agents, then the rest. Up to five of one kind in one repository are told one line each;
+more, or one kind across more than five repositories, are summed up in a line with counts, times and names. A message
+about one activity is `{"text", "activity"}`; a message about several is `{"text", "activity", "count", "activities",
+"more"}`, where `activity` is the first one the text names, `activities` lists up to 50 and `more` counts the rest.
+An endpoint that answers 429 is left alone for as long as its `Retry-After` asks, up to a minute; one that fails or
+cannot be reached is tried again after 1, 2, 4 … 32 seconds, and an activity is dropped, with a log line, after six
+tries. Each post carries an `Idempotency-Key` header, so an endpoint can drop a post it has already received. A stall
+or gone still waiting to be sent when its agent reports again is not sent at all; `session.recovered`, if listed, is
+sent only for an agent whose stall or gone was. Past 5,000 waiting, activities are only counted, and the next message
+says how many of each kind came; a stall or gone only counted cannot be withdrawn, so that message says some of those
+agents may be back. When the server stops, a post under way is let finish and what still waits goes out in one last
+message, within two seconds.
 
 ## Commands
 

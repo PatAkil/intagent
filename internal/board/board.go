@@ -1647,7 +1647,8 @@ func (b *Board) Sweep(now time.Time) {
 				if st == StateStalled {
 					kind = ActivitySessionStalled
 				}
-				b.record(Activity{At: now, Kind: kind, Repo: repo, Member: member, ClaimID: s.ClaimID, Session: s.ID, Agent: s.Agent, Text: text})
+				b.record(Activity{At: now, Kind: kind, Repo: repo, Member: member, ClaimID: s.ClaimID, Session: s.ID, Agent: s.Agent, Text: text,
+					Idle: st == StateGone && s.Phase == phaseWaiting})
 			}
 			s.Reported = st
 			changed = true

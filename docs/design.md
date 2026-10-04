@@ -60,7 +60,8 @@ footprint still produces warnings, but its exclusive intents stop blocking. A cl
 and an empty footprint is released. Claims with no activity for `forget_after` (7 days) are removed.
 
 The server's sweeper emits `session.stalled` and `session.gone` events once per transition, so the dashboard and the
-owner's next session see them.
+owner's next session see them. A webhook hears of them at most once a second, everything waiting in one message, so a
+network blip that stalls hundreds of agents at once reads as one summary rather than hundreds of alarms.
 
 ## Awareness and conflicts
 

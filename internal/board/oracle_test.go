@@ -483,7 +483,8 @@ func (b *Board) oldRecord(a Activity) {
 }
 
 // oldSweep is Sweep as it was: for every claim with nothing left, it
-// searched every session for one still attached to it.
+// searched every session for one still attached to it. It marks idle gones
+// as Sweep does now, since what is compared is how claims are found.
 func (b *Board) oldSweep(now time.Time) {
 	changed := false
 	keys := make([]string, 0, len(b.sessions))
@@ -514,7 +515,8 @@ func (b *Board) oldSweep(now time.Time) {
 				if st == StateStalled {
 					kind = ActivitySessionStalled
 				}
-				b.record(Activity{At: now, Kind: kind, Repo: repo, Member: member, ClaimID: s.ClaimID, Session: s.ID, Agent: s.Agent, Text: text})
+				b.record(Activity{At: now, Kind: kind, Repo: repo, Member: member, ClaimID: s.ClaimID, Session: s.ID, Agent: s.Agent, Text: text,
+					Idle: st == StateGone && s.Phase == phaseWaiting})
 			}
 			s.Reported = st
 			changed = true

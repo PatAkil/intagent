@@ -503,10 +503,10 @@ func TestConfigFiles(t *testing.T) {
 			t.Errorf("accepted %s", body)
 		}
 	}
-	_ = os.WriteFile(bad, []byte(`{"stall_after":"3m","policy":{"overlap":"warn"},"notes_per_minute":5}`), 0o600)
+	_ = os.WriteFile(bad, []byte(`{"stall_after":"3m","policy":{"overlap":"warn"},"notes_per_minute":5,"webhook":{"url":"https://hooks.example.com/x","idle":true}}`), 0o600)
 	fc, err = LoadFileConfig(bad)
-	if err != nil {
-		t.Fatal(err)
+	if err != nil || !fc.Webhook.Idle {
+		t.Fatal(fc.Webhook, err)
 	}
 	bc := fc.BoardConfig()
 	if bc.StallAfter != 3*time.Minute || bc.Policy.Overlap != board.ActionWarn || bc.Policy.Block != board.ActionDeny || bc.NotesPerMinute != 5 {
