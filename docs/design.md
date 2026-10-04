@@ -64,15 +64,15 @@ sessions that ended or went gone last, and up to twice as many between sweeps. T
 (20,000) sessions: an event from a new session it has no room for is answered without storing anything, its edits judged
 as a check judges them (a reservation still refuses; what would refuse once, a bump or a question to an agent that
 cannot ask, warns instead, since nothing remembers it was said), and its session start says its teammates will not hear
-of its work; the repository's stats count such hooks (`unstored`). Each sweep makes room by dropping the sessions not
-live that went silent longest, down to nine tenths of the bound. Past `max_dormant_claims` (20,000) claims with no live
-session, each sweep forgets up to 200 of those quiet longest that hold no intent, announced in one `claim.forgotten` per
-repository that names no claim. A footprint counts each file's path and area, and 96 bytes more, against two budgets,
-and then each directory added whole the same way: 512 KB for one claim (2000 files of a large monorepo's paths take
-about 350 KB) and 32 MB for all of one member's claims, a fleet's included. A footprint keeps the files its budgets
-take, the first in the order the client sent them, which puts first the files it would least want left out, and is
-marked truncated. Stats are kept for at most 1024 repositories: a new one takes the place of the repository with no
-claims counted in longest ago.
+of its work; the repository's stats count such hooks (`unstored`). Each sweep makes room by dropping the sessions that
+ended or went gone, then those that stalled, that went silent longest, down to nine tenths of the bound. Past
+`max_dormant_claims` (20,000) claims with no live session, each sweep forgets up to 200 of those quiet longest that hold
+no intent, announced in one `claim.forgotten` per repository that names no claim. A footprint counts each file's path
+and area, and 96 bytes more, against two budgets, and then each directory added whole the same way: 512 KB for one claim
+(2000 files of a large monorepo's paths take about 350 KB) and 32 MB for all of one member's claims, a fleet's included.
+A footprint keeps the files its budgets take, the first in the order the client sent them, which puts first the files it
+would least want left out, and is marked truncated. Stats are kept for at most 1024 repositories: a new one takes the
+place of the repository with no claims counted in longest ago.
 
 The server's sweeper emits `session.stalled` and `session.gone` events once per transition, so the dashboard and the
 owner's next session see them. A webhook hears of them at most once a second, everything waiting in one message, so a

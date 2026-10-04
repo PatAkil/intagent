@@ -139,18 +139,26 @@ func (b *Board) warnOnce(v verdict, noAsk bool) verdict {
 // evictSessions drops, when the board holds more than nine tenths of
 // MaxSessions, the sessions not live that went silent longest, in keys'
 // order (by when each was last heard from), until it holds nine tenths:
-// so that a new agent finds room until the next sweep. It reports whether
-// it dropped any.
+// so that a new agent finds room until the next sweep. Those that ended or
+// are gone go first, and only then those that stalled, which the dashboard
+// shows and whose agents may yet come back. It reports whether it dropped
+// any.
 func (b *Board) evictSessions(now time.Time, keys []string) bool {
 	keep := b.cfg.MaxSessions - b.cfg.MaxSessions/10
 	dropped := false
-	for _, k := range keys {
-		if len(b.sessions) <= keep {
-			break
-		}
-		if s := b.sessions[k]; s != nil && !b.state(now, s).Live() {
-			b.detachSession(s)
-			dropped = true
+	for _, stalled := range []bool{false, true} {
+		for _, k := range keys {
+			if len(b.sessions) <= keep {
+				return dropped
+			}
+			s := b.sessions[k]
+			if s == nil {
+				continue
+			}
+			if st := b.state(now, s); !st.Live() && (st == StateStalled) == stalled {
+				b.detachSession(s)
+				dropped = true
+			}
 		}
 	}
 	return dropped

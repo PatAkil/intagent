@@ -459,3 +459,29 @@ func TestAHooksOwnFilesAreNotLetGoToMakeRoom(t *testing.T) {
 			len(c.Footprint), t11, kept, c.Footprint["a10.go"] != nil)
 	}
 }
+
+// A board at MaxSessions makes room from the sessions that ended or went
+// gone, the longest silent first, before it lets go of one that stalled,
+// which the dashboard shows and whose agent may yet come back.
+func TestAFullBoardMakesRoomFromEndedSessionsFirst(t *testing.T) {
+	h := newHarness(t, func(c *Config) { c.MaxSessions = 10 })
+	for i := range 4 { // agents that stall, heard from first
+		h.at(KindPrompt, "fleet", fmt.Sprint("s", i), fmt.Sprint("s", i))
+	}
+	h.advance(time.Minute)
+	for i := range 6 { // sessions that end, heard from later
+		h.at(KindPrompt, "bot", fmt.Sprint("e", i), fmt.Sprint("e", i))
+		h.at(KindSessionEnd, "bot", fmt.Sprint("e", i), fmt.Sprint("e", i))
+	}
+	h.advance(h.b.cfg.StallAfter + time.Minute)
+	h.b.Sweep(h.now)
+	stalled := 0
+	for _, s := range h.b.sessions {
+		if h.b.state(h.now, s) == StateStalled {
+			stalled++
+		}
+	}
+	if len(h.b.sessions) != 9 || stalled != 4 {
+		t.Fatalf("the board keeps %d sessions, %d of the 4 stalled; want 9, all 4", len(h.b.sessions), stalled)
+	}
+}
