@@ -131,3 +131,13 @@ func TestNewestFilesMatchesSortedFiles(t *testing.T) {
 		}
 	}
 }
+
+// sortedFiles lists a claim's files in newerFirst's order, as a view does.
+func sortedFiles(c *claim) []fileAt {
+	files := make([]fileAt, 0, len(c.Footprint))
+	for p, t := range c.Footprint {
+		files = append(files, fileAt{p, t})
+	}
+	slices.SortFunc(files, newerFirst)
+	return files
+}

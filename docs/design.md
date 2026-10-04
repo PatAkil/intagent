@@ -175,8 +175,10 @@ Reads of a repository's board are shared, because every open dashboard reloads i
 A request joins the build of the board that has not read the board yet, so no answer is older than its request (a
 read after a write sees the write), and each build is encoded and compressed once for all who joined it. Builds of
 one repository start at least 250 ms apart, or twice as long as the last one took to read the board, and one build
-reads at a time across the server, so a hook waits behind at most one read. Encoding takes no lock and runs outside
-that limit.
+reads at a time across the server, so a hook waits behind at most one read. A read holds the board's lock only while
+it copies the claims, files and sessions it shows; it orders the files and caps them once it has let go (on a
+repository of 300 claims at 2000 files each, 13 ms of a 310 ms read). Encoding takes no lock and runs outside that
+limit.
 
 The dashboard follows a repository through a server-sent event stream. Each activity is encoded once, and the server
 keeps the last 1024 publishes, up to 16 MB of them, in one ring that every stream reads at its own pace, so publishing

@@ -75,33 +75,36 @@ type RepoSummary struct {
 	Epoch string `json:"epoch,omitempty"`
 }
 
-// View returns a repository's claims, most recently active first.
+// View returns a repository's claims, most recently active first. It copies
+// what it shows while it holds the board's lock, and orders and caps it once
+// it has let go: on a large repository, ordering every claim's files was most
+// of the time hooks waited behind a view.
 func (b *Board) View(now time.Time, repo string) View {
 	repo = RepoID(repo)
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	v := View{Repo: repo, At: now, Policy: b.cfg.Policy, LastSeq: b.seq, Claims: []ClaimView{}, Recent: []Activity{}}
-	live := b.liveAt(now)
-	members := map[string]bool{}
+	v, claims := b.viewCopy(now, repo)
+	if viewCopied != nil {
+		viewCopied()
+	}
 	changedBy := map[string]int{} // how many claims changed each file
-	for c := range b.claimsIn(repo) {
-		for p := range c.Footprint {
-			changedBy[p]++
+	for _, c := range claims {
+		for _, f := range c.files {
+			changedBy[f.path]++
 		}
 	}
-	for c := range b.claimsIn(repo) {
-		members[c.Member] = true
-		cv := ClaimView{
-			ID: c.ID, Member: c.Member, Host: c.Host, Worktree: c.Worktree, Branch: c.Branch, Task: c.Task,
-			Active: live.claim(c.ID), Intents: append([]Intent{}, c.Intents...), Truncated: c.FootprintTruncated,
-			Sessions: b.sessionViews(now, c.ID), CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt, Files: []FileView{},
-		}
+	members := map[string]bool{}
+	for _, c := range claims {
+		members[c.view.Member] = true
+		cv := c.view
+		cv.Sessions = sessionViews(c.sessions)
 		for _, s := range cv.Sessions {
 			if s.State.Live() {
 				v.Sessions++
 			}
 		}
-		files := sortedFiles(c)
+		// Files are sorted with their touches beside them: a comparison that
+		// looked both up in the footprint cost most of a dashboard's view.
+		files := c.files
+		slices.SortFunc(files, newerFirst)
 		cv.FileCount = len(files)
 		if len(files) > maxViewFiles {
 			// A view goes to every dashboard on every refresh; the newest files
@@ -110,11 +113,6 @@ func (b *Board) View(now time.Time, repo string) View {
 		}
 		for _, f := range files {
 			cv.Files = append(cv.Files, FileView{Path: f.path, Area: f.t.Area, At: f.t.At, FromGit: f.t.FromGit})
-		}
-		for _, it := range c.Inbox {
-			if now.Sub(it.At) < inboxTTL && len(it.DeliveredTo) == 0 {
-				cv.Pending++
-			}
 		}
 		v.Claims = append(v.Claims, cv)
 	}
@@ -128,13 +126,65 @@ func (b *Board) View(now time.Time, repo string) View {
 		v.Members = append(v.Members, m)
 	}
 	sort.Strings(v.Members)
+	return v
+}
+
+// viewCopied, when set by a test, runs once View has let go of the lock.
+var viewCopied func()
+
+// claimCopy is what a view shows of a claim, copied under the lock: its
+// files with their touches, which are never changed once in a footprint,
+// and its sessions with their states.
+type claimCopy struct {
+	view     ClaimView
+	files    []fileAt
+	sessions []sessionCopy
+}
+
+type sessionCopy struct {
+	key  string
+	view SessionView
+}
+
+// viewCopy copies, under the lock, what View shows of a repository: the
+// view's own fields, and each claim's.
+func (b *Board) viewCopy(now time.Time, repo string) (View, []claimCopy) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	v := View{Repo: repo, At: now, Policy: b.cfg.Policy, LastSeq: b.seq, Claims: []ClaimView{}, Recent: []Activity{}}
+	live := b.liveAt(now)
+	var claims []claimCopy
+	for c := range b.claimsIn(repo) {
+		cc := claimCopy{
+			view: ClaimView{
+				ID: c.ID, Member: c.Member, Host: c.Host, Worktree: c.Worktree, Branch: c.Branch, Task: c.Task,
+				Active: live.claim(c.ID), Intents: append([]Intent{}, c.Intents...), Truncated: c.FootprintTruncated,
+				CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt, Files: []FileView{},
+			},
+			files:    make([]fileAt, 0, len(c.Footprint)),
+			sessions: make([]sessionCopy, 0, len(b.claimSessions[c.ID])),
+		}
+		for p, t := range c.Footprint {
+			cc.files = append(cc.files, fileAt{p, t})
+		}
+		for _, s := range b.claimSessions[c.ID] {
+			cc.sessions = append(cc.sessions, sessionCopy{key: s.Key, view: SessionView{ID: s.ID, Agent: s.Agent, State: b.state(now, s),
+				Tool: s.Tool, ToolSince: s.ToolSince, StartedAt: s.StartedAt, LastSeen: s.LastSeen}})
+		}
+		for _, it := range c.Inbox {
+			if now.Sub(it.At) < inboxTTL && len(it.DeliveredTo) == 0 {
+				cc.view.Pending++
+			}
+		}
+		claims = append(claims, cc)
+	}
 	for _, a := range b.recent {
 		if a.Repo == repo {
 			v.Recent = append(v.Recent, a)
 		}
 	}
 	v.Stats = b.statsFor(repo)
-	return v
+	return v, claims
 }
 
 // Repos lists every repository with claims, most recently active first.
@@ -173,21 +223,16 @@ func (b *Board) Repos(now time.Time) []RepoSummary {
 
 // sessionViews shows a claim's sessions, the most recently seen first, and
 // those seen at the same moment by key.
-func (b *Board) sessionViews(now time.Time, id string) []SessionView {
-	ss := make([]*session, 0, len(b.claimSessions[id]))
-	for _, s := range b.claimSessions[id] {
-		ss = append(ss, s)
-	}
-	slices.SortFunc(ss, func(x, y *session) int {
-		if c := y.LastSeen.Compare(x.LastSeen); c != 0 {
+func sessionViews(ss []sessionCopy) []SessionView {
+	slices.SortFunc(ss, func(x, y sessionCopy) int {
+		if c := y.view.LastSeen.Compare(x.view.LastSeen); c != 0 {
 			return c
 		}
-		return strings.Compare(x.Key, y.Key)
+		return strings.Compare(x.key, y.key)
 	})
-	out := make([]SessionView, 0, len(ss))
-	for _, s := range ss {
-		out = append(out, SessionView{ID: s.ID, Agent: s.Agent, State: b.state(now, s), Tool: s.Tool, ToolSince: s.ToolSince,
-			StartedAt: s.StartedAt, LastSeen: s.LastSeen})
+	out := make([]SessionView, len(ss))
+	for i, s := range ss {
+		out[i] = s.view
 	}
 	return out
 }
@@ -228,8 +273,7 @@ func (v View) Text() string { return renderView(v) }
 
 // capFiles keeps a claim's newest files and, past the cap, up to as many
 // again that another claim also changed: the dashboard finds hot spots in the
-// files a view lists. Every claim's files are capped while the board is
-// locked, so this does no more than a map lookup per file.
+// files a view lists. It does no more than a map lookup per file.
 func capFiles(files []fileAt, changedBy map[string]int) []fileAt {
 	out := files[:maxViewFiles:maxViewFiles]
 	for _, f := range files[maxViewFiles:] {

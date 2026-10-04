@@ -250,3 +250,32 @@ func BenchmarkScaleView(b *testing.B) {
 		}
 	}
 }
+
+// How long a view of the busy repository holds the board's lock: the old
+// View, in oracle_test.go, held it throughout; View now holds it while it
+// copies (viewCopy).
+func BenchmarkScaleViewLock(b *testing.B) {
+	for _, tc := range []struct {
+		name string
+		sh   shape
+	}{
+		{"mixed", targetShape(filesMixed, 50)},
+		{"cap", cappedShape()},
+	} {
+		sb := boardOf(b, tc.sh)
+		for _, v := range []struct {
+			name   string
+			locked func()
+		}{
+			{"old", func() { sb.oldView(sb.now, scaleRepo(0)) }},
+			{"new", func() { sb.viewCopy(sb.now, scaleRepo(0)) }},
+		} {
+			b.Run(tc.name+"/"+v.name, func(b *testing.B) {
+				b.ReportAllocs()
+				for range b.N {
+					v.locked()
+				}
+			})
+		}
+	}
+}

@@ -250,7 +250,7 @@ func newerFirst(a, b fileAt) int {
 	return strings.Compare(a.path, b.path)
 }
 
-// newestFiles is the first n of a claim's files in sortedFiles' order.
+// newestFiles is the first n of a claim's files in newerFirst's order.
 func newestFiles(c *claim, n int) []string {
 	top := make([]fileAt, 0, n)
 	for p, t := range c.Footprint {
@@ -261,18 +261,6 @@ func newestFiles(c *claim, n int) []string {
 		out[i] = f.path
 	}
 	return out
-}
-
-// sortedFiles lists a claim's files in newerFirst's order. It sorts the
-// files with their touches beside them: a comparison that looked both up in
-// the footprint cost most of a dashboard's view.
-func sortedFiles(c *claim) []fileAt {
-	files := make([]fileAt, 0, len(c.Footprint))
-	for p, t := range c.Footprint {
-		files = append(files, fileAt{p, t})
-	}
-	slices.SortFunc(files, newerFirst)
-	return files
 }
 
 // relevance ranks claim o for a greeting of a session of claim c: o
