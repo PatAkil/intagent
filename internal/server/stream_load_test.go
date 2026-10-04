@@ -6,6 +6,7 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -133,50 +134,140 @@ func (f *streamLoad) hook(r *rand.Rand, active float64) bool {
 	return post
 }
 
-// activityRate runs writers goroutines sending hooks as fast as they can for
-// d, a share active of which record an activity, and returns how many of
-// those were answered per second.
-func (f *streamLoad) activityRate(writers int, d time.Duration, active float64) float64 {
-	var done atomic.Int64
-	stop := time.Now().Add(d)
-	start := time.Now()
+// burst sends n activity hooks from writers goroutines at once, each from a
+// random session, and returns the activities they recorded.
+func (f *streamLoad) burst(tb testing.TB, n, writers int) []board.Activity {
+	tb.Helper()
+	before := f.s.board.Since("", 0)
+	last := before[len(before)-1].Seq
 	var wg sync.WaitGroup
 	for w := range writers {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			r := rand.New(rand.NewPCG(uint64(w), 7))
-			for time.Now().Before(stop) {
-				if f.hook(r, active) {
-					done.Add(1)
-				}
+			for range n / writers {
+				f.hook(r, 1)
 			}
 		}()
 	}
 	wg.Wait()
-	return float64(done.Load()) / time.Since(start).Seconds()
+	acts := f.s.board.Since(loadRepo, last)
+	if len(acts) != n/writers*writers {
+		tb.Fatalf("%d hooks recorded %d activities", n/writers*writers, len(acts))
+	}
+	return acts
+}
+
+// mallocs counts the heap allocations every goroutine makes while fn runs.
+func mallocs(fn func()) uint64 {
+	var m0, m1 runtime.MemStats
+	runtime.ReadMemStats(&m0)
+	fn()
+	runtime.ReadMemStats(&m1)
+	return m1.Mallocs - m0.Mallocs
+}
+
+// waitForBytes waits until every writer has received want bytes.
+func waitForBytes(tb testing.TB, writers []*discardWriter, want int64) {
+	tb.Helper()
+	for deadline := time.Now().Add(20 * time.Second); ; time.Sleep(time.Millisecond) {
+		behind := 0
+		for _, w := range writers {
+			if w.bytes.Load() < want {
+				behind++
+			}
+		}
+		if behind == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			tb.Fatalf("%d of %d streams have not received their %d bytes", behind, len(writers), want)
+		}
+	}
+}
+
+// flushes counts the flushes of every writer.
+func flushes(writers []*discardWriter) (n int64) {
+	for _, w := range writers {
+		n += w.flushes.Load()
+	}
+	return n
 }
 
 // Dashboards watching the busy repository must not slow down the hooks that
 // feed them. Each writer hands its activities to the streams on its way out
 // of the board's lock, and the next writer waits for that while it holds the
-// lock, so a costly hand-over or a CPU busy writing to streams holds up every
-// hook. With 300 streams and 70% of hooks recording an activity, those hooks
-// ran at 0.17-0.24 of their rate without streams.
+// lock, so a hand-over that costs something per stream, or a CPU kept busy
+// writing to streams, holds up every hook: with 300 streams and 70% of hooks
+// recording an activity, those hooks ran at 0.10-0.24 of their rate without
+// streams. The work that did it is counted here rather than timed, so a slow
+// or shared machine cannot fail the test. Each stream encoded each activity
+// itself, 5 allocations a time (8 with the race detector), where it now takes
+// frames encoded once, 0.2; and it flushed each activity, where it now
+// flushes at most once per streamLinger. BenchmarkActivityHooks times the
+// hooks themselves.
 func TestStreamsDoNotHoldUpTheBoard(t *testing.T) {
+	const streams, n, writers = 300, 200, 8
 	f := newStreamLoad(t, 30, 10, 20)
-	const writers, active = 8, 0.7
-	d := 300 * time.Millisecond
-	var alone, watched float64
-	for range 2 { // the best of two, each way, on a machine shared with others
-		alone = max(alone, f.activityRate(writers, d, active))
-		_, stop := f.openStreams(t, 300)
-		watched = max(watched, f.activityRate(writers, d, active))
-		stop()
+	alone := mallocs(func() { f.burst(t, n, writers) })
+
+	ws, stop := f.openStreams(t, streams)
+	defer stop()
+	prelude := int64(len("retry: 3000\n: connected\n\n"))
+	waitForBytes(t, ws, prelude)
+	flushed := flushes(ws)
+	var acts []board.Activity
+	start := time.Now()
+	watched := mallocs(func() {
+		acts = f.burst(t, n, writers)
+		want := prelude
+		for _, a := range acts {
+			want += int64(len(oldFrame(a)))
+		}
+		waitForBytes(t, ws, want)
+	})
+	took := time.Since(start)
+	flushed = flushes(ws) - flushed
+
+	perDelivery := (float64(watched) - float64(alone)) / float64(streams*len(acts))
+	t.Logf("%d activities to %d streams in %s: %d allocations, %d without streams (%.2f more per delivery); %d flushes",
+		len(acts), streams, took.Round(time.Millisecond), watched, alone, perDelivery, flushed)
+	if perDelivery >= 1 {
+		t.Errorf("the streams made %.2f allocations each per activity; want less than 1, as they take frames encoded once", perDelivery)
 	}
-	t.Logf("activity hooks/s: %.0f without streams, %.0f with 300 (%.2fx)", alone, watched, watched/alone)
-	if watched < 0.5*alone {
-		t.Fatalf("with 300 streams, activity hooks ran at %.2f of their rate without streams; want at least 0.5", watched/alone)
+	// One flush per stream for its first wake-up, then at most one per
+	// streamLinger, and one more should a keep-alive fall in the burst.
+	if limit := int64(streams) * (2 + int64(took/streamLinger)); flushed > limit {
+		t.Errorf("%d streams flushed %d times for %d activities in %s; want at most %d, one per stream per %s",
+			streams, flushed, len(acts), took.Round(time.Millisecond), limit, streamLinger)
+	}
+}
+
+// BenchmarkActivityHooks times hooks sent from parallel writers, 70% of
+// which record an activity, without streams and with 300 on their
+// repository. The two should take about as long; with 300 streams, before
+// frames and the linger, the hooks took up to ten times as long, and less
+// only as streams fell behind and were dropped.
+//
+//	go test ./internal/server -run '^$' -bench ActivityHooks -cpu 4
+func BenchmarkActivityHooks(b *testing.B) {
+	for _, n := range []int{0, 300} {
+		b.Run(fmt.Sprintf("streams=%d", n), func(b *testing.B) {
+			f := newStreamLoad(b, 30, 10, 20)
+			if n > 0 {
+				_, stop := f.openStreams(b, n)
+				defer stop()
+			}
+			var seed atomic.Uint64
+			b.ResetTimer()
+			b.RunParallel(func(pb *testing.PB) {
+				r := rand.New(rand.NewPCG(seed.Add(1), 7))
+				for pb.Next() {
+					f.hook(r, 0.7)
+				}
+			})
+		})
 	}
 }
 
