@@ -7,8 +7,11 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
+	"runtime"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -32,7 +35,13 @@ func (a *App) serve(ctx context.Context, args []string) error {
 	maxStreams := fs.Int("max-streams", 500, "dashboards connected at once, in all (0 for none); more are refused until one closes")
 	memberStreams := fs.Int("max-member-streams", 20, "dashboards one member may have connected at once (0 for none)")
 	publicStreams := fs.Int("max-public-streams", 100, "dashboards connected at once without a token, with --public-read (0 for none)")
+	memLimit := fs.String("memory-limit", "", "a soft limit on the server's memory, such as 1536MiB or 2GiB; by default 85% of its "+
+		"container's limit, unless GOMEMLIMIT is set; off sets none")
 	if err := parse(fs, args); err != nil {
+		return err
+	}
+	limit, limitFrom, err := memoryLimit(*memLimit, os.Getenv, cgroupRoot())
+	if err != nil {
 		return err
 	}
 	var streams server.StreamLimits
@@ -66,6 +75,10 @@ func (a *App) serve(ctx context.Context, args []string) error {
 		return fmt.Errorf("--log-level: %w", err)
 	}
 	logger := slog.New(slog.NewTextHandler(a.Err, &slog.HandlerOptions{Level: lvl}))
+	if limit > 0 {
+		debug.SetMemoryLimit(limit)
+		logger.Info("memory limit set", "limit_mib", limit>>20, "from", limitFrom)
+	}
 	loaded := teamStamp(*cfgPath) // before reading, so a change while starting is not missed
 	fc, err := server.LoadFileConfig(*cfgPath)
 	if errors.Is(err, os.ErrNotExist) {
@@ -288,4 +301,12 @@ func (a *App) setSharePrompts(on bool) error {
 		fmt.Fprintln(a.Out, "Prompts stay private: a session's task comes only from the intents its agent declares.")
 	}
 	return nil
+}
+
+// cgroupRoot is the file system that holds the process's cgroup, on Linux.
+func cgroupRoot() fs.FS {
+	if runtime.GOOS != "linux" {
+		return nil
+	}
+	return os.DirFS("/")
 }

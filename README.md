@@ -109,6 +109,7 @@ runs on another machine.
 | `--max-streams` | 500 | Dashboards connected at once, in all; 0 allows none. |
 | `--max-member-streams` | 20 | Dashboards one member may have connected at once; 0 allows none. |
 | `--max-public-streams` | 100 | Dashboards connected without a token, with `--public-read`; 0 allows none. |
+| `--memory-limit` | 85% of the container's | A soft limit on the server's memory (`1536MiB`, `2GiB`), at which Go collects garbage harder; by default 85% of the memory limit of its cgroup, unless `GOMEMLIMIT` is set; `off` sets none. |
 | `--log-level` | `info` | `debug`, `info`, `warn` or `error`. |
 
 A client has 15 seconds to send a request and 16 KB for its headers, and an answer that makes no progress for 15
