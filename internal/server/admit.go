@@ -90,7 +90,10 @@ type admission struct {
 // loadLog counts the large requests the server answers for load rather than
 // handle (a large edit let through unchecked, another large body turned
 // away), and logs them at most once a period: a line for each would flood
-// the log when the server is busiest. A line counts those since the last.
+// the log when the server is busiest. A line counts those since the last:
+// the first is written at once, and the next once the period has passed,
+// by the next of them or by the load watcher's tick (flush), whichever
+// comes first, so that the end of a burst is not left out of the log.
 type loadLog struct {
 	mu                 sync.Mutex
 	unchecked, refused int
@@ -106,6 +109,19 @@ func (l *loadLog) note(now time.Time, unchecked bool, log *slog.Logger) {
 	} else {
 		l.refused++
 	}
+	l.logIfDue(now, log)
+}
+
+// flush logs those counted since the last line, if the period has passed.
+func (l *loadLog) flush(now time.Time, log *slog.Logger) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.unchecked+l.refused > 0 {
+		l.logIfDue(now, log)
+	}
+}
+
+func (l *loadLog) logIfDue(now time.Time, log *slog.Logger) {
 	if !l.last.IsZero() && now.Sub(l.last) < l.period {
 		return
 	}

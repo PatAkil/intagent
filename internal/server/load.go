@@ -179,8 +179,9 @@ func (s *Server) watchLoad(ctx context.Context) {
 
 // checkLoad logs and announces a change of state: to the dashboards, whose
 // streams each take one encoding of it whatever their repository, and to the
-// webhook.
+// webhook. It also logs the large requests answered for load that are due.
 func (s *Server) checkLoad(now time.Time) {
+	s.admit.shed.flush(now, s.log)
 	st, lasted, changed := s.answers.tick(now)
 	if !changed {
 		return

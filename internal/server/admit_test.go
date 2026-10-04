@@ -538,16 +538,26 @@ func TestLoadAnswersAreLoggedInSummary(t *testing.T) {
 		<-ts.admit.large
 	}
 	summary := "WARN too busy for large requests: large edits let through unchecked, and other large bodies turned away"
-	// The first is logged at once, and the next minute's line counts the rest:
-	// 9 more edits and the minute's own, 10 bodies over budget and 5 with no slot.
+	// The first is logged at once, and the rest a minute later, though no
+	// more come: 9 more edits, 10 bodies over budget and 5 with no slot.
+	// Before, they waited for the next large request answered for load,
+	// days later perhaps, and counted as that one's minute.
 	if n, warns, errs := logs.count(summary), logs.count("WARN"), logs.count("ERROR"); n != 1 || warns != 1 || errs != 0 {
 		t.Fatalf("%d summary lines, %d warnings and %d errors for 25 large requests answered for load in a minute:\n%s", n, warns, errs,
 			strings.Join(logs.lines, "\n"))
 	}
+	ts.checkLoad(ts.Server.clock()) // the load watcher's tick, within the minute
+	if n := logs.count(summary); n != 1 {
+		t.Fatalf("%d summary lines within the minute", n)
+	}
 	ts.passes(time.Minute)
-	ts.admit.byteCap = 1
-	ts.post(t, "/v1/hook", "bob", edit)
-	if n := logs.count(summary + " unchecked=10 turned_away=15"); n != 1 {
-		t.Fatalf("the next minute's line does not count those since the first:\n%s", strings.Join(logs.lines, "\n"))
+	ts.checkLoad(ts.Server.clock())
+	if n := logs.count(summary + " unchecked=9 turned_away=15"); n != 1 {
+		t.Fatalf("the minute's end did not log those since the first:\n%s", strings.Join(logs.lines, "\n"))
+	}
+	ts.passes(time.Minute)
+	ts.checkLoad(ts.Server.clock())
+	if n := logs.count(summary); n != 2 {
+		t.Fatalf("%d summary lines once nothing more was answered for load, want 2", n)
 	}
 }
