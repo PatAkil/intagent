@@ -39,19 +39,31 @@ func refusedErr() error {
 
 // Only a connection the server did not take is tried again: a reset or a
 // timeout may come after the server decided the request, and a bump it
-// spent must not be asked for twice.
+// spent must not be asked for twice. A name that does not resolve and a
+// network that cannot be reached are not tried again either: a restart
+// does not cause them, and a laptop away from the team's network would
+// wait out every hook's time.
 func TestOnlyRefusedConnectionsAreRetried(t *testing.T) {
 	timeout := &url.Error{Op: "Post", URL: "x", Err: &net.OpError{Op: "dial", Net: "tcp", Err: os.ErrDeadlineExceeded}}
 	reset := &url.Error{Op: "Post", URL: "x", Err: &net.OpError{Op: "read", Net: "tcp",
 		Err: &os.SyscallError{Syscall: "read", Err: syscall.ECONNRESET}}}
+	noHost := &url.Error{Op: "Post", URL: "x", Err: &net.OpError{Op: "dial", Net: "tcp",
+		Err: &net.DNSError{Err: "no such host", Name: "intagent.example", IsNotFound: true}}}
+	unreachable := &url.Error{Op: "Post", URL: "x", Err: &net.OpError{Op: "dial", Net: "tcp",
+		Err: &os.SyscallError{Syscall: "connect", Err: syscall.ENETUNREACH}}}
+	windows := &url.Error{Op: "Post", URL: "x", Err: &net.OpError{Op: "dial", Net: "tcp",
+		Err: &os.SyscallError{Syscall: "connectex", Err: wsaeconnrefused}}}
 	for _, c := range []struct {
 		name string
 		err  error
 		want bool
 	}{
 		{"refused", refusedErr(), true},
+		{"refused on Windows", windows, true},
 		{"dial timeout", timeout, false},
 		{"reset", reset, false},
+		{"no such host", noHost, false},
+		{"network unreachable", unreachable, false},
 		{"answered", &client.APIError{Status: http.StatusServiceUnavailable}, false},
 		{"none", nil, false},
 	} {
@@ -171,7 +183,10 @@ func TestHookReachesAServerThatComesBack(t *testing.T) {
 
 // Once this machine's hooks have been refused for 10 seconds, the server is
 // taken for down: a hook tries once, and goes ahead at once, rather than
-// spend seconds on every edit. A minute without a refusal forgets it.
+// spend seconds on every edit. It stays down until it answers, whatever it
+// says, however long between hooks: before, a minute without a refusal
+// forgot it, and each edit made a minute or more apart waited out its
+// time again.
 func TestServerDownStampTriesOnce(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	stamp := downStamp("http://example.test")
@@ -182,14 +197,23 @@ func TestServerDownStampTriesOnce(t *testing.T) {
 	if !serverDown(stamp, now.Add(11*time.Second)) {
 		t.Fatal("not down after 11 seconds of refusals")
 	}
-	if serverDown(stamp, now.Add(2*time.Minute)) {
-		t.Fatal("still down after two minutes without a refusal")
+	if !serverDown(stamp, now.Add(2*time.Hour)) {
+		t.Fatal("not down after two hours of refusals, the last two hours ago")
 	}
 	longDown(t, "http://example.test")
 	clock, _ := fakePauses(t)
 	tries := 0
 	if err := sendRetrying(context.Background(), stamp, clock, func() error { tries++; return refusedErr() }); !refused(err) || tries != 1 {
 		t.Fatalf("a server down: %d tries", tries)
+	}
+	for _, answer := range []error{&client.APIError{Status: http.StatusUnauthorized}, nil} {
+		longDown(t, "http://example.test")
+		if err := sendRetrying(context.Background(), stamp, clock, func() error { return answer }); !errors.Is(err, answer) {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(stamp); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("the answer %v left the server down: %v", answer, err)
+		}
 	}
 }
 
