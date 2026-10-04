@@ -105,8 +105,8 @@ type notifier struct {
 
 	mu      sync.Mutex
 	pending []*pendingItem
-	// counted holds, by kind, what came while the queue was full.
-	counted map[board.ActivityKind]int
+	// counted holds what came while the queue was full.
+	counted counts
 	// alerts holds each session's stalled and gone items, queued or being
 	// sent, so its recovery can cancel them or follow them.
 	alerts map[string][]*pendingItem
@@ -179,13 +179,10 @@ func (n *notifier) enqueue(acts []board.Activity) {
 			}
 			continue
 		}
-		if len(n.counted) == 0 {
+		if n.counted.empty() {
 			n.log.Warn("webhook queue full; counting activities without listing them", "queued", len(n.pending))
 		}
-		if n.counted == nil {
-			n.counted = map[board.ActivityKind]int{}
-		}
-		n.counted[a.Kind]++
+		n.counted.add(a)
 	}
 	n.mu.Unlock()
 	if queued {
@@ -222,7 +219,7 @@ func (n *notifier) recover(a board.Activity) bool {
 	if len(n.pending) < maxPending {
 		n.pending = append(n.pending, &pendingItem{act: a})
 	} else {
-		n.counted = addCount(n.counted, a.Kind, 1)
+		n.counted.add(a)
 	}
 	return true
 }
@@ -272,7 +269,7 @@ func (n *notifier) run(ctx context.Context) {
 // deliver is lost with the process, and logged.
 func (n *notifier) finalFlush() {
 	items, counted := n.take()
-	if len(items) == 0 && len(counted) == 0 {
+	if len(items) == 0 && counted.empty() {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), finalFlushTime)
@@ -312,13 +309,13 @@ func (n *notifier) waitForTurn(ctx context.Context) bool {
 func (n *notifier) nextSend() (time.Time, bool) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	return n.notBefore, len(n.pending) > 0 || len(n.counted) > 0
+	return n.notBefore, len(n.pending) > 0 || !n.counted.empty()
 }
 
 // take empties the queue into one message's worth, leaving out stalls and
 // gones whose agent has been heard from since: "looks stuck" about an agent
 // that is back is noise.
-func (n *notifier) take() ([]*pendingItem, map[board.ActivityKind]int) {
+func (n *notifier) take() ([]*pendingItem, counts) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	var back []*pendingItem
@@ -333,7 +330,7 @@ func (n *notifier) take() ([]*pendingItem, map[board.ActivityKind]int) {
 	n.settle(back, false)
 	items = append(items, n.pending...)
 	counted := n.counted
-	n.pending, n.counted = nil, nil
+	n.pending, n.counted = nil, counts{}
 	return items, counted
 }
 
@@ -341,7 +338,7 @@ func (n *notifier) take() ([]*pendingItem, map[board.ActivityKind]int) {
 // came since. An activity posted maxAttempts times is dropped instead, and so
 // are the counts once maxAttempts posts carrying them failed. It returns how
 // many activities it dropped.
-func (n *notifier) giveBack(items []*pendingItem, counted map[board.ActivityKind]int, attempted bool) int {
+func (n *notifier) giveBack(items []*pendingItem, counted counts, attempted bool) int {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	var gone []*pendingItem
@@ -355,35 +352,71 @@ func (n *notifier) giveBack(items []*pendingItem, counted map[board.ActivityKind
 			return false
 		})
 		dropped = len(gone)
-		if len(counted) > 0 {
+		if !counted.empty() {
 			if n.countedTries++; n.countedTries >= maxAttempts {
-				for _, c := range counted {
-					dropped += c
-				}
-				counted, n.countedTries = nil, 0
+				dropped += counted.total()
+				counted, n.countedTries = counts{}, 0
 			}
 		}
 	}
 	items = append(items, n.pending...)
 	over := items[min(len(items), maxPending):]
 	for _, it := range over {
-		counted = addCount(counted, it.act.Kind, 1)
+		counted.add(it.act)
 	}
 	n.pending = items[:min(len(items), maxPending)]
-	for k, c := range n.counted {
-		counted = addCount(counted, k, c)
-	}
+	counted.merge(n.counted)
 	n.counted = counted
 	n.settle(append(gone, over...), false)
 	return dropped
 }
 
-func addCount(m map[board.ActivityKind]int, k board.ActivityKind, c int) map[board.ActivityKind]int {
-	if m == nil {
-		m = map[board.ActivityKind]int{}
+// counts is what the queue could not hold: how many of each kind, never
+// listed, and the lowest and highest of their seqs, by which the message
+// that carries them is keyed.
+type counts struct {
+	kinds  map[board.ActivityKind]int
+	lo, hi uint64
+}
+
+func (c *counts) add(a board.Activity) {
+	if c.kinds == nil {
+		c.kinds = map[board.ActivityKind]int{}
 	}
-	m[k] += c
-	return m
+	c.kinds[a.Kind]++
+	c.cover(a.Seq, a.Seq)
+}
+
+func (c *counts) merge(o counts) {
+	if o.empty() {
+		return
+	}
+	if c.kinds == nil {
+		c.kinds = map[board.ActivityKind]int{}
+	}
+	for k, v := range o.kinds {
+		c.kinds[k] += v
+	}
+	c.cover(o.lo, o.hi)
+}
+
+// cover widens the range of seqs to take in lo to hi. Seqs start at 1, so a
+// lo of 0 means no range yet.
+func (c *counts) cover(lo, hi uint64) {
+	if c.lo == 0 || lo < c.lo {
+		c.lo = lo
+	}
+	c.hi = max(c.hi, hi)
+}
+
+func (c counts) empty() bool { return len(c.kinds) == 0 }
+
+func (c counts) total() int {
+	t := 0
+	for _, v := range c.kinds {
+		t += v
+	}
+	return t
 }
 
 // flush posts everything queued as one message, and handles the answer: a
@@ -391,7 +424,7 @@ func addCount(m map[board.ActivityKind]int, k board.ActivityKind, c int) map[boa
 // off, and any other refusal drops the message.
 func (n *notifier) flush(ctx context.Context) {
 	items, counted := n.take()
-	if len(items) == 0 && len(counted) == 0 {
+	if len(items) == 0 && counted.empty() {
 		return
 	}
 	n.notBefore = n.now().Add(n.pace)
@@ -570,6 +603,8 @@ func (m message) payload() ([]byte, error) {
 	p := batchPayload{Text: m.text, Count: m.count, Activities: m.acts[:min(len(m.acts), maxPayloadActivities)]}
 	if len(m.acts) > 0 {
 		p.Activity = &m.acts[0]
+	} else {
+		p.Activities = []board.Activity{} // a list, if an empty one, when only counts are left
 	}
 	p.More = m.count - len(p.Activities)
 	return json.Marshal(p)
@@ -581,8 +616,8 @@ func (m message) payload() ([]byte, error) {
 // it happened: a group of up to maxGroupLines is told line by line, a larger
 // one is summed up in a line, and a kind spread over more repositories than
 // that is summed up in one line for all of them.
-func compose(items []*pendingItem, counted map[board.ActivityKind]int) message {
-	if len(items) == 1 && len(counted) == 0 {
+func compose(items []*pendingItem, counted counts) message {
+	if len(items) == 1 && counted.empty() {
 		a := items[0].act
 		return message{text: slackText.Replace(describeActivity(a)), acts: []board.Activity{a}, count: 1, key: strconv.FormatUint(a.Seq, 10)}
 	}
@@ -624,27 +659,31 @@ func compose(items []*pendingItem, counted map[board.ActivityKind]int) message {
 	if n, what := tally(unlisted); n > 0 {
 		lines = append(lines, fmt.Sprintf("intagent: and %d more, not listed here: %s.", n, what))
 	}
-	n, what := tally(counted)
+	n, what := tally(counted.kinds)
 	if n > 0 {
-		lines = append(lines, fmt.Sprintf("intagent: %d more came while the webhook was behind, too many to list: %s.", n, what))
+		line := fmt.Sprintf("intagent: %d more came while the webhook was behind, too many to list: %s.", n, what)
+		if counted.kinds[board.ActivitySessionStalled] > 0 || counted.kinds[board.ActivitySessionGone] > 0 {
+			// Only a listed alert is withdrawn when its agent reports again.
+			line += " Some of these agents may have reported again since; the dashboard shows which."
+		}
+		lines = append(lines, line)
 	}
 	m.text = strings.Join(lines, "\n")
 	m.count = len(items) + n
-	m.key = batchKey(m.acts, m.count)
+	m.key = batchKey(m.acts, counted, m.count)
 	return m
 }
 
-// batchKey names a message by the activities it covers, so a retry of the
-// same message carries the same key and one that grew does not.
-func batchKey(acts []board.Activity, count int) string {
-	var lo, hi uint64
-	for i, a := range acts {
-		if i == 0 || a.Seq < lo {
-			lo = a.Seq
-		}
-		hi = max(hi, a.Seq)
+// batchKey names a message by the activities it covers, listed or counted:
+// the lowest and highest of their seqs, and how many. A retry of the same
+// message carries the same key; one that grew or shrank does not, nor does
+// any other message.
+func batchKey(acts []board.Activity, counted counts, count int) string {
+	span := counts{lo: counted.lo, hi: counted.hi}
+	for _, a := range acts {
+		span.cover(a.Seq, a.Seq)
 	}
-	return fmt.Sprintf("%d-%d-%d", lo, hi, count)
+	return fmt.Sprintf("%d-%d-%d", span.lo, span.hi, count)
 }
 
 // group is the activities of one kind in one repository, in the order they

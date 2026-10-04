@@ -218,14 +218,19 @@ func TestWebhookBatchMessage(t *testing.T) {
 	}
 	add(board.Activity{Kind: board.ActivitySessionGone, Repo: "github.com/acme/web", Member: "erin", Agent: board.AgentCursor, Text: "silent for 2h"})
 	add(stall("frank", "github.com/acme/web", "f1"))
-	m := compose(items, map[board.ActivityKind]int{board.ActivitySessionStalled: 3, board.ActivityConflict: 1})
+	var counted counts
+	for i, kind := range []board.ActivityKind{board.ActivitySessionStalled, board.ActivityConflict, board.ActivitySessionStalled, board.ActivitySessionStalled} {
+		counted.add(board.Activity{Seq: uint64(10 + i), Kind: kind})
+	}
+	m := compose(items, counted)
 
 	want := strings.Join([]string{
 		"intagent: 6 collisions in github.com/acme/mono, between 09:30:06 and 09:30:11 UTC: 5 edits refused, 1 reserved file changed without a check. Members: bob (3), carol (2), dave. Files: svc/x.go (6).",
 		"intagent: alice's claude-code agent in github.com/acme/web looks stuck: silent for 10m.",
 		"intagent: frank's claude-code agent in github.com/acme/web looks stuck: silent for 10m.",
 		"intagent: erin's cursor agent in github.com/acme/web stopped reporting (silent for 2h) without ending its session.",
-		"intagent: 4 more came while the webhook was behind, too many to list: 1 collision, 3 stuck agents.",
+		"intagent: 4 more came while the webhook was behind, too many to list: 1 collision, 3 stuck agents. " +
+			"Some of these agents may have reported again since; the dashboard shows which.",
 	}, "\n")
 	if m.text != want {
 		t.Errorf("text\n%s\nwant\n%s", m.text, want)
@@ -239,8 +244,46 @@ func TestWebhookBatchMessage(t *testing.T) {
 	for _, a := range p.Activities {
 		order += fmt.Sprint(a.Seq, " ")
 	}
-	if p.Count != 13 || p.More != 4 || order != "2 3 4 5 6 7 1 9 8 " || p.Activity == nil || p.Activity.Seq != 2 || m.key != "1-9-13" {
+	if p.Count != 13 || p.More != 4 || order != "2 3 4 5 6 7 1 9 8 " || p.Activity == nil || p.Activity.Seq != 2 || m.key != "1-13-13" {
 		t.Errorf("count %d, more %d, activities %s, first %+v, key %s", p.Count, p.More, order, p.Activity, m.key)
+	}
+}
+
+// A message left with only counts, as when every alert it listed was withdrawn
+// while the endpoint failed, still lists its activities, if none, and has a
+// key of its own; it does not say that the agents it counts are still stuck.
+func TestWebhookCountsOnlyMessage(t *testing.T) {
+	count := func(kind board.ActivityKind, seqs ...uint64) counts {
+		var c counts
+		for _, seq := range seqs {
+			c.add(board.Activity{Seq: seq, Kind: kind})
+		}
+		return c
+	}
+	keys := map[string]string{}
+	for _, c := range []struct {
+		counted counts
+		want    string
+	}{
+		{count(board.ActivitySessionStalled, 5001, 5002, 5003),
+			`{"text":"intagent: 3 more came while the webhook was behind, too many to list: 3 stuck agents. ` +
+				`Some of these agents may have reported again since; the dashboard shows which.","count":3,"activities":[],"more":3}`},
+		{count(board.ActivitySessionStalled, 9001, 9002, 9003), ""},
+		{count(board.ActivityConflict, 9101, 9102, 9103),
+			`{"text":"intagent: 3 more came while the webhook was behind, too many to list: 3 collisions.","count":3,"activities":[],"more":3}`},
+	} {
+		m := compose(nil, c.counted)
+		body, err := m.payload()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.want != "" && string(body) != c.want {
+			t.Errorf("payload\n%s\nwant\n%s", body, c.want)
+		}
+		if other, ok := keys[m.key]; ok {
+			t.Errorf("Idempotency-Key %q on two messages:\n%s\n%s", m.key, other, body)
+		}
+		keys[m.key] = string(body)
 	}
 }
 
@@ -281,7 +324,7 @@ func TestWebhookMessageIsBounded(t *testing.T) {
 			a.Seq = uint64(i + 1)
 			items = append(items, &pendingItem{act: a})
 		}
-		m := compose(items, nil)
+		m := compose(items, counts{})
 		lines := strings.Split(m.text, "\n")
 		if len(lines) > maxMessageLines || len(m.text) > maxMessageText || m.count != c.n || strings.ContainsAny(m.text, "<>") {
 			t.Fatalf("%s: %d lines, %d bytes, count %d:\n%.300s", c.name, len(lines), len(m.text), m.count, m.text)
@@ -308,7 +351,7 @@ func TestWebhookReusesItsConnection(t *testing.T) {
 	for i := range 20 {
 		a := stall("alice", repo, "a1")
 		a.Seq = uint64(i + 1)
-		if ans := n.post(context.Background(), compose([]*pendingItem{{act: a}}, nil)); ans.err != nil {
+		if ans := n.post(context.Background(), compose([]*pendingItem{{act: a}}, counts{})); ans.err != nil {
 			t.Fatal(ans.err)
 		}
 	}

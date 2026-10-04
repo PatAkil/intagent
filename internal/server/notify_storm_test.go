@@ -257,11 +257,7 @@ func (n *notifier) held() int {
 func (n *notifier) queued() int {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	c := len(n.pending)
-	for _, v := range n.counted {
-		c += v
-	}
-	return c
+	return len(n.pending) + n.counted.total()
 }
 
 // logRecorder keeps what the notifier logs.
@@ -570,7 +566,7 @@ func TestWebhookHungEndpointKeepsMemoryBounded(t *testing.T) {
 		}
 		s.at(stormStart.Add(time.Duration(sweep)*15*time.Second), acts...)
 		s.n.mu.Lock()
-		pending, capacity, kinds, held := len(s.n.pending), cap(s.n.pending), len(s.n.counted), len(s.n.alerts)
+		pending, capacity, kinds, held := len(s.n.pending), cap(s.n.pending), len(s.n.counted.kinds), len(s.n.alerts)
 		s.n.mu.Unlock()
 		if pending > maxPending || capacity > 2*maxPending || kinds > 1 || held > maxPending {
 			t.Fatalf("after sweep %d: %d queued (capacity %d), %d kinds counted, %d sessions held", sweep, pending, capacity, kinds, held)
@@ -693,6 +689,28 @@ func TestWebhookDropsAStallWhoseAgentIsBack(t *testing.T) {
 		t.Errorf("sent\n%s\nwant\n%s", got, want)
 	}
 	s.coverage(2)
+}
+
+// A blip larger than the queue while the endpoint fails: the 5,000 stalls
+// listed are withdrawn as their agents report again, but the 300 only counted
+// cannot be, so the one message left says they may be back.
+func TestWebhookOverflowedStallsMayBeBack(t *testing.T) {
+	ep := &fakeEndpoint{fail: 3}
+	s := newStorm(t, ep, WebhookConfig{})
+	var stalls, back []board.Activity
+	for i := range maxPending + 300 {
+		stalls = append(stalls, stall(fmt.Sprintf("m%04d", i), repo, "s"))
+		back = append(back, recovery(fmt.Sprintf("m%04d", i), repo, "s"))
+	}
+	s.at(stormStart, stalls...)
+	s.at(stormStart.Add(2*time.Second), back...)
+	s.until(stormStart.Add(time.Minute))
+	want := "intagent: 300 more came while the webhook was behind, too many to list: 300 stuck agents. " +
+		"Some of these agents may have reported again since; the dashboard shows which."
+	if len(ep.delivered) != 1 || ep.delivered[0].text != want || ep.delivered[0].key != "5001-5300-300" {
+		t.Errorf("delivered %+v\nwant one message keyed 5001-5300-300: %s", ep.delivered, want)
+	}
+	s.coverage(300)
 }
 
 // With session.recovered subscribed, a person who was told an agent looked
