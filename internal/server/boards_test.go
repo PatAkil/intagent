@@ -335,6 +335,48 @@ func TestBoardEntriesAreBounded(t *testing.T) {
 	}
 }
 
+// An entry stays while a build of it runs, however long ago that build
+// started: when a request for another repository prunes the entries, later
+// requests for this one still queue behind the build and keep their spacing.
+func TestBoardEntryStaysWhileItBuilds(t *testing.T) {
+	ts := newTestServer(t)
+	var p fakePacing
+	p.install(ts.boards)
+	read, release := make(chan struct{}), make(chan struct{})
+	free := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(free)
+	var calls atomic.Int64
+	ts.boards.wrapView(func(view func(string) board.View) func(string) board.View {
+		return func(r string) board.View {
+			if r == repo && calls.Add(1) == 1 {
+				p.advance(time.Second) // past the entry's gap, while it builds
+				close(read)
+				<-release
+			}
+			return view(r)
+		}
+	})
+	done := make(chan struct{}, 3)
+	get := func(r string) {
+		ts.do(t, http.MethodGet, "/v1/board?repo="+r, "bob", nil, nil)
+		done <- struct{}{}
+	}
+	go get(repo)
+	<-read
+	go get("github.com/acme/other")
+	waitFor(t, "the other repository's build to wait", func() bool { return ts.boards.waiting("github.com/acme/other") == 1 })
+	go get(repo)
+	waitFor(t, "the repository's next build to wait", func() bool { return ts.boards.waiting(repo) == 1 })
+	free()
+	for range 3 {
+		<-done
+	}
+	// The first build read for 1 s, so the next starts 2 s after it did.
+	if got, want := p.sleeps(), fmt.Sprint([]time.Duration{time.Second}); got != want {
+		t.Fatalf("slept %v, want %v", got, want)
+	}
+}
+
 func TestBoardAnswerEncodings(t *testing.T) {
 	ts := newTestServer(t)
 	ts.do(t, "POST", "/v1/hook", "alice", hookEv(board.KindPostEdit, "alice", "a1", "x/y.go"), nil)
