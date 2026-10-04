@@ -587,7 +587,7 @@ func (tr *transcriptRun) restore(i int) {
 		panic(err)
 	}
 	tr.b = tr.newBoard()
-	err = tr.b.Restore(bytes.NewReader(data))
+	err = tr.b.Restore(bytes.NewReader(data), tr.now)
 	tr.line(i, "restore -> err=%v claims=%d sessions=%d", err, len(tr.b.claims), len(tr.b.sessions))
 	tr.did = append(tr.did, outcome("restore", err, len(tr.b.claims)))
 }

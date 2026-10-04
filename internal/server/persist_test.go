@@ -303,7 +303,7 @@ func TestServeAbandonsASaveInFlight(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = f.Close() }()
-	if err := restored.Restore(f); err != nil {
+	if err := restored.Restore(f, ts.now()); err != nil {
 		t.Fatal(err)
 	}
 	if v := restored.View(ts.now(), repo); len(v.Claims) != 2 {
@@ -428,7 +428,7 @@ func TestDamagedSnapshotIsSetAside(t *testing.T) {
 		t.Fatalf("a damaged snapshot with a good previous one: %v", err)
 	}
 	want := board.New(board.DefaultConfig())
-	if err := want.Restore(bytes.NewReader(prev)); err != nil {
+	if err := want.Restore(bytes.NewReader(prev), ts.now()); err != nil {
 		t.Fatal(err)
 	}
 	if got, w := jsonView(s.Board().View(ts.now(), repo)), jsonView(want.View(ts.now(), repo)); got != w {

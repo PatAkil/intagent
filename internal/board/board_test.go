@@ -1074,7 +1074,7 @@ func TestSnapshotRoundTrip(t *testing.T) {
 		t.Fatalf("Snapshot: %v (version %d)", err, version)
 	}
 	restored := New(DefaultConfig())
-	if err := restored.Restore(bytes.NewReader(data)); err != nil {
+	if err := restored.Restore(bytes.NewReader(data), h.now); err != nil {
 		t.Fatal(err)
 	}
 	ev := HookEvent{Kind: KindPreEdit, Member: "bob", Agent: AgentCodex, SessionID: "b1", Where: whereOf("bob"), Paths: refs("services/payments/retry.go")}
@@ -1084,16 +1084,16 @@ func TestSnapshotRoundTrip(t *testing.T) {
 	}
 	// A board started with a shorter feed keeps the newest of the snapshot's.
 	short := New(Config{KeepActivities: 2})
-	if err := short.Restore(bytes.NewReader(data)); err != nil {
+	if err := short.Restore(bytes.NewReader(data), h.now); err != nil {
 		t.Fatal(err)
 	}
 	if v := short.View(h.now, repo); len(v.Recent) != 2 || v.Recent[1].Seq != v.LastSeq {
 		t.Fatalf("restored feed = %+v (last seq %d)", v.Recent, v.LastSeq)
 	}
-	if err := restored.Restore(strings.NewReader(`{"format":99}`)); err == nil {
+	if err := restored.Restore(strings.NewReader(`{"format":99}`), h.now); err == nil {
 		t.Fatal("restored an unknown format")
 	}
-	if err := restored.Restore(strings.NewReader(`not json`)); err == nil {
+	if err := restored.Restore(strings.NewReader(`not json`), h.now); err == nil {
 		t.Fatal("restored garbage")
 	}
 }

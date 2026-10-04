@@ -491,6 +491,7 @@ func BenchmarkScaleRestore(b *testing.B) {
 		}); err != nil {
 			b.Fatal(err)
 		}
+		now := sb.now
 		sb = nil
 		for _, v := range []struct {
 			name    string
@@ -501,7 +502,7 @@ func BenchmarkScaleRestore(b *testing.B) {
 				if err != nil {
 					return err
 				}
-				return New(DefaultConfig()).Restore(bytes.NewReader(data))
+				return New(DefaultConfig()).Restore(bytes.NewReader(data), now)
 			}},
 			{"streamed", func() error {
 				f, err := os.Open(path)
@@ -509,7 +510,7 @@ func BenchmarkScaleRestore(b *testing.B) {
 					return err
 				}
 				defer func() { _ = f.Close() }()
-				return New(DefaultConfig()).Restore(f)
+				return New(DefaultConfig()).Restore(f, now)
 			}},
 		} {
 			b.Run(tc.name+"/"+v.name, func(b *testing.B) {

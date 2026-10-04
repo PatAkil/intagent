@@ -214,15 +214,23 @@ func (s *session) clone() *session {
 	return &d
 }
 
-// Restore replaces the board's contents with a snapshot read from r, and
-// rebuilds what is derived from them. It drops the intents whose patterns
-// the board no longer accepts (glob.CleanPattern), and logs each.
-func (b *Board) Restore(r io.Reader) error {
+// Restore replaces the board's contents with a snapshot read from r at now,
+// and rebuilds what is derived from them. It drops the intents whose
+// patterns the board no longer accepts (glob.CleanPattern), and logs each.
+//
+// The time between the snapshot and now is not counted as silence: a
+// server that was down heard from nobody, and its sessions are as live, or
+// as stalled, as they were when it was saved. So the agents still at work
+// are not announced as stalled by the first sweep, and keep their
+// reservations; one that truly died before the outage is announced stalled
+// stall_after later than it would have been.
+func (b *Board) Restore(r io.Reader, now time.Time) error {
 	s, err := readSnapshot(r)
 	if err != nil {
 		return err
 	}
 	s.shareSessionKeys()
+	s.creditDowntime(now)
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.claims = map[string]*claim{}
@@ -409,6 +417,31 @@ func readDelim(dec *json.Decoder, want json.Delim) error {
 		return fmt.Errorf("found %v where %v belongs", tok, want)
 	}
 	return nil
+}
+
+// creditDowntime moves the times sessions were last heard from, and went
+// into tools, on by the time since the snapshot was saved, but never past
+// now. A snapshot that does not say when it was saved, or a clock that went
+// back, moves nothing.
+func (s *snapshot) creditDowntime(now time.Time) {
+	down := now.Sub(s.Saved)
+	if s.Saved.IsZero() || down <= 0 {
+		return
+	}
+	later := func(t time.Time) time.Time {
+		if t.IsZero() {
+			return t
+		}
+		if t = t.Add(down); t.After(now) {
+			return now
+		}
+		return t
+	}
+	for _, x := range s.Sessions {
+		if x != nil {
+			x.LastSeen, x.ToolSince = later(x.LastSeen), later(x.ToolSince)
+		}
+	}
 }
 
 // shareSessionKeys leaves the touches found by git without the session

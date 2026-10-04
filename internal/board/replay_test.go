@@ -29,7 +29,7 @@ func seqs(acts []Activity) []uint64 {
 func restored(t *testing.T, data []byte, keep int) *Board {
 	t.Helper()
 	b := New(Config{KeepActivities: keep})
-	if err := b.Restore(bytes.NewReader(data)); err != nil {
+	if err := b.Restore(bytes.NewReader(data), t0); err != nil {
 		t.Fatal(err)
 	}
 	return b

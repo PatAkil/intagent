@@ -63,7 +63,13 @@ The server's sweeper emits `session.stalled` and `session.gone` events once per 
 owner's next session see them. A webhook hears of them at most once a second, everything waiting in one message, so a
 network blip that stalls hundreds of agents at once reads as one summary rather than hundreds of alarms. A session that
 was waiting for its person when it turned gone is marked `idle`: it is not stuck, and the webhook leaves it out unless
-the team asks for it (`"webhook": {"idle": true}`).
+the team asks for it (`"webhook": {"idle": true}`). A session is announced `session.recovered` only when it reports
+again after a stall or gone was announced: one back before the sweeper noticed has recovered from nothing.
+
+The time the server was down does not count as its agents' silence: a restored board moves each session's last report,
+and the start of the tool it is in, on by the time since the snapshot was saved, never past the restart. Agents still at
+work are not announced stalled by the first sweep, and their exclusive intents keep refusing. The cost is that an agent
+that died just before the outage holds its reservation for up to `stall_after` after the restart.
 
 ## Awareness and conflicts
 

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -102,7 +103,7 @@ func shareFootprintsUnderLoad(t *testing.T, forget string) {
 			t.Fatal(err)
 		}
 		if i%10 == 9 {
-			if err := h.b.Restore(bytes.NewReader(data)); err != nil {
+			if err := h.b.Restore(bytes.NewReader(data), t0); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -164,7 +165,7 @@ func TestWriteSnapshotMatchesMarshal(t *testing.T) {
 			t.Fatalf("%s: the snapshot differs (version %d, want %d):\n got %.600s\nwant %.600s", name, version, wantVersion, got, want)
 		}
 		restored := New(DefaultConfig())
-		if err := restored.Restore(bytes.NewReader(got)); err != nil {
+		if err := restored.Restore(bytes.NewReader(got), t0); err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
 		again, _, err := restored.Snapshot(t0)
@@ -300,7 +301,7 @@ func TestRestoreReadsInPieces(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := &readSizes{r: bytes.NewReader(data)}
-	if err := New(DefaultConfig()).Restore(r); err != nil {
+	if err := New(DefaultConfig()).Restore(r, t0); err != nil {
 		t.Fatal(err)
 	}
 	t.Logf("a snapshot of %d bytes restored in reads of at most %d", len(data), r.largest)
@@ -357,7 +358,7 @@ func TestRestoreSharesSessionKeys(t *testing.T) {
 		`"sessions":[{"key":%q,"id":"a1","member":"alice","agent":"codex","claim_id":"c1","last_seen":"2026-10-02T09:00:00Z","phase":"working"}]}`,
 		repo, key, key, key, key)
 	b := New(DefaultConfig())
-	if err := b.Restore(strings.NewReader(old)); err != nil {
+	if err := b.Restore(strings.NewReader(old), t0); err != nil {
 		t.Fatal(err)
 	}
 	fp := b.claims["c1"].Footprint
@@ -386,7 +387,7 @@ func TestRestoreTellsDamageFromOtherErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 	b := New(DefaultConfig())
-	if err := b.Restore(bytes.NewReader(data)); err != nil {
+	if err := b.Restore(bytes.NewReader(data), h.now); err != nil {
 		t.Fatal(err)
 	}
 	broken := errors.New("input/output error")
@@ -404,7 +405,7 @@ func TestRestoreTellsDamageFromOtherErrors(t *testing.T) {
 		{"newer", strings.NewReader(`{"format":2,"claims":"anything"}`), false},
 		{"unreadable", io.MultiReader(bytes.NewReader(data[:100]), failingReader{broken}), false},
 	} {
-		err := b.Restore(c.r)
+		err := b.Restore(c.r, h.now)
 		if err == nil || errors.Is(err, ErrCorruptSnapshot) != c.corrupt {
 			t.Errorf("%s: %v, want corrupt %t", c.name, err, c.corrupt)
 		}
@@ -420,3 +421,67 @@ func TestRestoreTellsDamageFromOtherErrors(t *testing.T) {
 type failingReader struct{ err error }
 
 func (f failingReader) Read([]byte) (int, error) { return 0, f.err }
+
+// A board restored 50 minutes after its snapshot does not count the outage
+// as its agents' silence: the first sweep announces nobody, and a working
+// agent's reservation still refuses a teammate's edit. An agent that never
+// comes back is announced stalled once stall_after has passed since the
+// restore. Before, the first sweep announced every working session, and
+// their reservations only bumped a teammate's edit, once.
+func TestRestoreCreditsTheDowntime(t *testing.T) {
+	h := newHarness(t)
+	h.hook(KindPrompt, "alice", "a1")
+	h.declare("alice", ModeExclusive, "retry", "svc/**")
+	data, _, err := h.b.Snapshot(h.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var acts []Activity
+	b := New(DefaultConfig(), WithNotify(func(a []Activity) { acts = append(acts, a...) }))
+	restart := h.now.Add(50 * time.Minute)
+	if err := b.Restore(bytes.NewReader(data), restart); err != nil {
+		t.Fatal(err)
+	}
+	b.Sweep(restart.Add(15 * time.Second))
+	res, err := b.Hook(restart.Add(20*time.Second), HookEvent{Kind: KindPreEdit, Member: "bob", Agent: AgentCodex, SessionID: "b1",
+		Where: whereOf("bob"), Paths: refs("svc/a.go")})
+	if err != nil || res.Decision != DecisionRefuse || len(res.Conflicts) == 0 || res.Conflicts[0].Severity != SeverityBlock {
+		t.Fatalf("bob's edit inside alice's reservation after the restart: %s %v %+v", res.Decision, err, res.Conflicts)
+	}
+	stall := DefaultConfig().StallAfter
+	b.Sweep(restart.Add(stall - time.Second))
+	for _, a := range acts {
+		if a.Kind == ActivitySessionStalled || a.Kind == ActivitySessionGone {
+			t.Fatalf("announced %s %s before stall_after had passed since the restart", a.Member, a.Kind)
+		}
+	}
+	b.Sweep(restart.Add(stall + time.Second))
+	if n := len(slices.DeleteFunc(acts, func(a Activity) bool { return a.Kind != ActivitySessionStalled })); n != 1 {
+		t.Fatalf("%d stalls announced once stall_after had passed, want alice's", n)
+	}
+}
+
+// The credit for downtime moves a session's times by the time since the
+// snapshot, never past the restore; it moves nothing when the snapshot does
+// not say when it was saved, or the clock went back.
+func TestDowntimeCreditBounds(t *testing.T) {
+	saved := t0.Add(time.Hour)
+	for _, c := range []struct {
+		name            string
+		saved, now      time.Time
+		seen, toolSince time.Time
+		wantSeen        time.Time
+		wantTool        time.Time
+	}{
+		{"downtime", saved, saved.Add(time.Hour), t0, t0.Add(10 * time.Minute), t0.Add(time.Hour), t0.Add(70 * time.Minute)},
+		{"not past now", saved, saved.Add(time.Minute), saved.Add(5 * time.Minute), time.Time{}, saved.Add(time.Minute), time.Time{}},
+		{"no saved time", time.Time{}, saved, t0, t0, t0, t0},
+		{"clock went back", saved, saved.Add(-time.Hour), t0, t0, t0, t0},
+	} {
+		s := snapshot{Saved: c.saved, Sessions: []*session{{Key: "k", LastSeen: c.seen, ToolSince: c.toolSince}, nil}}
+		s.creditDowntime(c.now)
+		if x := s.Sessions[0]; !x.LastSeen.Equal(c.wantSeen) || !x.ToolSince.Equal(c.wantTool) {
+			t.Errorf("%s: last seen %s, in tools since %s; want %s and %s", c.name, x.LastSeen, x.ToolSince, c.wantSeen, c.wantTool)
+		}
+	}
+}

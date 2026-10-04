@@ -199,7 +199,7 @@ func (s *Server) restoreFrom(path string) error {
 		return err
 	}
 	defer func() { _ = f.Close() }()
-	return s.board.Restore(f)
+	return s.board.Restore(f, s.now())
 }
 
 // removeTemps removes the temporary files a save killed halfway left in the
