@@ -75,6 +75,9 @@ type Server struct {
 	closeOnce  sync.Once
 	// uiKey signs dashboard sessions, so a session cookie is never a token.
 	uiKey []byte
+	// epoch names this process to readers. A dashboard that sees it change
+	// knows the server restarted, and its event numbers may have started over.
+	epoch string
 	// boards shares board answers among the requests that ask at once.
 	boards *boardBuilds
 }
@@ -128,6 +131,11 @@ func New(o Options) (*Server, error) {
 	if err := s.load(); err != nil {
 		return nil, err
 	}
+	epoch, err := randomKey()
+	if err != nil {
+		return nil, err
+	}
+	s.epoch = hex.EncodeToString(epoch[:8])
 	s.boards = newBoardBuilds(s.boardView, s.log)
 	key, err := loadUIKey(s.dataDir)
 	if err != nil {
@@ -474,7 +482,9 @@ func (s *Server) handleBoard(w http.ResponseWriter, r *http.Request) {
 
 // boardView is the view a board build reads.
 func (s *Server) boardView(repo string) board.View {
-	return s.board.View(s.now(), repo)
+	v := s.board.View(s.now(), repo)
+	v.Epoch = s.epoch
+	return v
 }
 
 // writeBoard sends a shared board answer, compressed when the client takes
@@ -502,7 +512,11 @@ func writeBoard(w http.ResponseWriter, r *http.Request, b *boardBuild) {
 }
 
 func (s *Server) handleRepos(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, s.board.Repos(s.now()))
+	repos := s.board.Repos(s.now())
+	for i := range repos {
+		repos[i].Epoch = s.epoch
+	}
+	writeJSON(w, http.StatusOK, repos)
 }
 
 // acceptsGzip reports whether an Accept-Encoding header allows gzip: named

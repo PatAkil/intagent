@@ -57,6 +57,9 @@ type View struct {
 	LastSeq  uint64      `json:"last_seq"`
 	Members  []string    `json:"members"`
 	Sessions int         `json:"live_sessions"`
+	// Epoch names the server process that answered, set by the server. When it
+	// changes, the server restarted and event numbers may have started over.
+	Epoch string `json:"epoch,omitempty"`
 }
 
 // RepoSummary is one line of the repository list.
@@ -66,6 +69,8 @@ type RepoSummary struct {
 	ActiveClaims int       `json:"active_claims"`
 	LiveSessions int       `json:"live_sessions"`
 	UpdatedAt    time.Time `json:"updated_at"`
+	// Epoch is View.Epoch, for readers of the list.
+	Epoch string `json:"epoch,omitempty"`
 }
 
 // View returns a repository's claims, most recently active first.

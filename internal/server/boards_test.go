@@ -446,7 +446,7 @@ func TestBoardETag(t *testing.T) {
 }
 
 func TestBoardETagIgnoresOnlyWhenAndSeq(t *testing.T) {
-	v := board.View{Repo: repo, At: time.Unix(100, 5), LastSeq: 7, Claims: []board.ClaimView{{ID: "c_1", Member: "alice"}}}
+	v := board.View{Repo: repo, At: time.Unix(100, 5), LastSeq: 7, Claims: []board.ClaimView{{ID: "c_1", Member: "alice"}}, Epoch: "e1"}
 	tag := func(v board.View) string {
 		b, _ := json.Marshal(v)
 		return boardETag(append(b, '\n'))
@@ -463,6 +463,7 @@ func TestBoardETagIgnoresOnlyWhenAndSeq(t *testing.T) {
 	for name, change := range map[string]func(*board.View){
 		"claims":   func(v *board.View) { v.Claims = []board.ClaimView{{ID: "c_1", Member: "bob"}} },
 		"sessions": func(v *board.View) { v.Sessions = 1 },
+		"epoch":    func(v *board.View) { v.Epoch = "e2" },
 		"repo":     func(v *board.View) { v.Repo = "github.com/acme/other" },
 	} {
 		w := v
@@ -494,5 +495,19 @@ func TestEtagMatch(t *testing.T) {
 		if got := etagMatch(c.header, c.tag); got != c.want {
 			t.Errorf("etagMatch(%q, %q) = %v", c.header, c.tag, got)
 		}
+	}
+}
+
+func TestEpoch(t *testing.T) {
+	ts := newTestServer(t)
+	ts.do(t, "POST", "/v1/hook", "alice", hookEv(board.KindPostEdit, "alice", "a1", "x/y.go"), nil)
+	v, _ := ts.getBoard(t, "bob")
+	var repos []board.RepoSummary
+	ts.do(t, http.MethodGet, "/v1/repos", "bob", nil, &repos)
+	if v.Epoch == "" || len(repos) != 1 || repos[0].Epoch != v.Epoch {
+		t.Fatalf("epochs: view %q, repos %+v", v.Epoch, repos)
+	}
+	if again := newTestServer(t); again.epoch == v.Epoch {
+		t.Fatal("two server processes share an epoch")
 	}
 }

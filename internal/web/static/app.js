@@ -49,6 +49,7 @@
     inflight: false,
     again: false,
     skew: 0,
+    epoch: '', // the server process the board came from
     boardError: '',
     timers: [],
   };
@@ -519,6 +520,9 @@
       return;
     }
     S.repos = Array.isArray(repos) ? repos.filter((r) => r && typeof r.repo === 'string') : [];
+    // A new server process: the board's next answer starts the feed over.
+    const epoch = (S.repos.find((r) => typeof r.epoch === 'string' && r.epoch) || {}).epoch;
+    if (epoch && S.epoch && epoch !== S.epoch && S.repo) refreshBoard();
     if (!S.repo) {
       const saved = storeGet(STORE_KEY);
       const pick = S.repos.some((r) => r.repo === saved) ? saved : (S.repos[0] && S.repos[0].repo);
@@ -572,6 +576,9 @@
     if (S.inflight) { S.again = true; return; }
     S.inflight = true;
     const repo = S.repo;
+    // Every event seen so far happened before this request, so the board it
+    // gets back counts at least this far.
+    const seenSeq = S.feed.size ? Math.max(...S.feed.keys()) : 0;
     try {
       const v = await getJSON('/v1/board?repo=' + encodeURIComponent(repo));
       if (repo !== S.repo) return;
@@ -579,12 +586,7 @@
       if (Number.isFinite(at)) S.skew = at - Date.now();
       S.view = normalise(v);
       S.lastOk = Date.now();
-      // A server restarted without its snapshot numbers events from 1 again:
-      // start the feed and the stream over rather than skip the new events.
-      const maxSeq = S.feed.size ? Math.max(...S.feed.keys()) : 0;
-      const reused = S.view.recent.some((a) => a && S.feed.has(a.seq) &&
-        (S.feed.get(a.seq).at !== a.at || S.feed.get(a.seq).kind !== a.kind));
-      if (S.view.last_seq < maxSeq || reused) {
+      if (restarted(S.view, seenSeq)) {
         S.feed = new Map();
         S.fresh.clear();
         connectStream();
@@ -605,6 +607,20 @@
       S.inflight = false;
       if (S.again) { S.again = false; scheduleRefresh(); }
     }
+  }
+
+  // A restarted server may number its events from 1 again: the feed and the
+  // stream then start over rather than skip the new events. The server names
+  // its process with an epoch; an older server has its numbers checked instead.
+  function restarted(v, seenSeq) {
+    if (v.epoch) {
+      const was = S.epoch;
+      S.epoch = v.epoch;
+      return was !== '' && was !== v.epoch;
+    }
+    const reused = v.recent.some((a) => a && S.feed.has(a.seq) &&
+      (S.feed.get(a.seq).at !== a.at || S.feed.get(a.seq).kind !== a.kind));
+    return v.last_seq < seenSeq || reused;
   }
 
   const arr = (x) => (Array.isArray(x) ? x : []);
@@ -638,6 +654,7 @@
       members: arr(v.members),
       live_sessions: Number(v.live_sessions) || 0,
       last_seq: Number(v.last_seq) || 0,
+      epoch: typeof v.epoch === 'string' ? v.epoch : '',
     };
   }
 
