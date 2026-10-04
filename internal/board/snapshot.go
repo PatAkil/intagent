@@ -18,6 +18,16 @@ type snapshot struct {
 	Sessions []*session        `json:"sessions"`
 	Recent   []Activity        `json:"recent"`
 	Stats    map[string]*Stats `json:"stats,omitempty"`
+	// Dropped is nil in a snapshot from a server that did not keep it.
+	Dropped *droppedMarks `json:"dropped,omitempty"`
+}
+
+// droppedMarks are what the board's feed has let go of, as Board keeps them,
+// so a replay after a restart can still tell a dashboard it missed nothing.
+type droppedMarks struct {
+	Repos map[string]uint64 `json:"repos,omitempty"`
+	All   uint64            `json:"all,omitempty"`
+	Floor uint64            `json:"floor,omitempty"`
 }
 
 // Snapshot serialises the board for persistence. The state is copied under
@@ -25,7 +35,8 @@ type snapshot struct {
 // while it is written.
 func (b *Board) Snapshot(now time.Time) ([]byte, uint64, error) {
 	b.mu.Lock()
-	s := snapshot{Format: snapshotFormat, Saved: now, Seq: b.seq, Recent: slices.Clone(b.recent), Stats: map[string]*Stats{}}
+	s := snapshot{Format: snapshotFormat, Saved: now, Seq: b.seq, Recent: slices.Clone(b.recent), Stats: map[string]*Stats{},
+		Dropped: &droppedMarks{Repos: maps.Clone(b.dropped), All: b.droppedAll, Floor: b.droppedFloor}}
 	for repo, st := range b.stats {
 		c := *st
 		s.Stats[repo] = &c
@@ -101,16 +112,23 @@ func (b *Board) Restore(data []byte) error {
 	}
 	b.seq = s.Seq
 	b.recent = s.Recent
-	if over := len(b.recent) - b.cfg.KeepActivities; over > 0 {
-		b.recent = b.recent[over:] // the feed is kept shorter now
-	}
-	// What the feed let go of before the snapshot is not known by repository.
 	b.dropped = map[string]uint64{}
-	b.droppedFloor = b.seq
-	if len(b.recent) > 0 {
-		b.droppedFloor = b.recent[0].Seq - 1
+	if d := s.Dropped; d != nil {
+		maps.Copy(b.dropped, d.Repos)
+		b.droppedAll, b.droppedFloor = d.All, d.Floor
+	} else {
+		// What the feed let go of before this snapshot is not known by
+		// repository: every activity before the feed's first, in any.
+		b.droppedFloor = b.seq
+		if len(b.recent) > 0 {
+			b.droppedFloor = b.recent[0].Seq - 1
+		}
+		b.droppedAll = b.droppedFloor
 	}
-	b.droppedAll = b.droppedFloor
+	if over := len(b.recent) - b.cfg.KeepActivities; over > 0 {
+		b.letGo(b.recent[:over]) // the feed is kept shorter now
+		b.recent = b.recent[over:]
+	}
 	b.stats = s.Stats
 	if b.stats == nil {
 		b.stats = map[string]*Stats{}
