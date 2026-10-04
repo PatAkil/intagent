@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -329,6 +330,42 @@ func TestWebhookKeysTheServersOwnNews(t *testing.T) {
 	}
 	if m := compose([]*pendingItem{{act: refused}}, counts{}); m.key != "5" {
 		t.Errorf("an activity with a seq is keyed %q, want 5", m.key)
+	}
+}
+
+// The server's own news, about no repository or member, is summed up and
+// counted in words of its own when there is too much of it to list, as an
+// endpoint that answers 429 for minutes can make it.
+func TestWebhookSumsUpTheServersOwnNews(t *testing.T) {
+	at := time.Date(2026, 10, 2, 9, 30, 5, 0, time.UTC)
+	var items []*pendingItem
+	for i := range 12 {
+		a := board.Activity{At: at.Add(time.Duration(i) * time.Minute), Kind: board.ActivityServerDegraded,
+			Text: fmt.Sprintf("%d of 100 edits in the last minute went ahead unchecked", 10+i)}
+		if i%2 == 1 {
+			a.Kind, a.Text = board.ActivityServerRecovered, "after 1m"
+		}
+		items = append(items, &pendingItem{act: a})
+	}
+	var counted counts
+	counted.add(board.Activity{Kind: board.ActivityServerRecovered})
+	counted.add(board.Activity{Kind: board.ActivityServerDegraded})
+	counted.add(board.Activity{Kind: board.ActivityServerDegraded})
+	want := strings.Join([]string{
+		"intagent: the team server fell behind 6 times, between 09:30:05 and 09:40:05 UTC, and agents went ahead without " +
+			"a check while it was; the last time, 20 of 100 edits in the last minute went ahead unchecked.",
+		"intagent: the team server caught up 6 times, between 09:31:05 and 09:41:05 UTC, and answers agents in time again.",
+		"intagent: 3 more came while the webhook was behind, too many to list: 2 times the server fell behind, " +
+			"1 time the server caught up.",
+	}, "\n")
+	// However they were queued: the news has no seq to order it by.
+	reversed := slices.Clone(items)
+	slices.Reverse(reversed)
+	rotated := append(slices.Clone(items[5:]), items[:5]...)
+	for i, items := range [][]*pendingItem{items, reversed, rotated} {
+		if m := compose(items, counted); m.text != want {
+			t.Fatalf("order %d: text\n%s\nwant\n%s", i, m.text, want)
+		}
 	}
 }
 

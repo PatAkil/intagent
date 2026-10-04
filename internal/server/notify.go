@@ -731,11 +731,13 @@ func groupActivities(items []*pendingItem) []*group {
 		}
 		g.acts = append(g.acts, it.act)
 	}
+	// The server's own news has no seq: it goes by its time.
+	order := func(x, y board.Activity) int { return cmp.Or(cmp.Compare(x.Seq, y.Seq), x.At.Compare(y.At)) }
 	for _, g := range out {
-		slices.SortFunc(g.acts, func(x, y board.Activity) int { return cmp.Compare(x.Seq, y.Seq) })
+		slices.SortFunc(g.acts, order)
 	}
 	slices.SortFunc(out, func(x, y *group) int {
-		return cmp.Or(cmp.Compare(urgency(x.kind), urgency(y.kind)), cmp.Compare(x.acts[0].Seq, y.acts[0].Seq))
+		return cmp.Or(cmp.Compare(urgency(x.kind), urgency(y.kind)), order(x.acts[0], y.acts[0]))
 	})
 	return out
 }
@@ -760,6 +762,14 @@ const correlated = " This many at once is usually the network or the server, not
 // where, when and whose.
 func summarise(kind board.ActivityKind, acts []board.Activity) string {
 	n, when := len(acts), span(acts)
+	// The server's own news is about no repository or member.
+	switch kind {
+	case board.ActivityServerDegraded:
+		return fmt.Sprintf("intagent: the team server fell behind %d times, %s, and agents went ahead without a check "+
+			"while it was; the last time, %s.", n, when, latest(acts).Text)
+	case board.ActivityServerRecovered:
+		return fmt.Sprintf("intagent: the team server caught up %d times, %s, and answers agents in time again.", n, when)
+	}
 	where := "in " + acts[0].Repo
 	who := " Members: " + most(acts, func(a board.Activity) string { return a.Member }) + "."
 	if repos := distinct(acts, func(a board.Activity) string { return a.Repo }); repos > 1 {
@@ -784,6 +794,17 @@ func summarise(kind board.ActivityKind, acts []board.Activity) string {
 		return line
 	}
 	return fmt.Sprintf("intagent: %d %s %s, %s.%s", n, kind, where, when, who)
+}
+
+// latest is the activity that happened last.
+func latest(acts []board.Activity) board.Activity {
+	last := acts[0]
+	for _, a := range acts[1:] {
+		if a.At.After(last.At) {
+			last = a
+		}
+	}
+	return last
 }
 
 func firstPath(a board.Activity) string {
@@ -904,6 +925,10 @@ func kindCount(k board.ActivityKind, c int) string {
 		return plural(c, "collision", "collisions")
 	case board.ActivitySessionRecovered:
 		return plural(c, "agent reporting again", "agents reporting again")
+	case board.ActivityServerDegraded:
+		return plural(c, "time the server fell behind", "times the server fell behind")
+	case board.ActivityServerRecovered:
+		return plural(c, "time the server caught up", "times the server caught up")
 	}
 	return fmt.Sprintf("%d %s", c, k)
 }
