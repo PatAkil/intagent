@@ -106,9 +106,9 @@ func (c Config) WithDefaults() Config {
 
 const (
 	maxTaskLen   = 200
+	maxPrompt    = 8 << 10 // the part of a prompt's first line the board reads
 	maxNoteLen   = 600
 	maxBranchLen = 120
-	maxPaths     = 200
 	maxIntents   = 50
 	maxInbox     = 50
 	inboxTTL     = 24 * time.Hour
@@ -116,6 +116,21 @@ const (
 	noteWindow   = time.Minute
 	idLen        = 8 // characters of an ID after its prefix
 )
+
+// maxShownPaths bounds the paths an activity lists, since the feed, the
+// snapshot and every stream carry them; MorePaths counts the rest.
+const maxShownPaths = 200
+
+// maxCheckPaths bounds the paths of one edit, or one check, compared with
+// teammates' work. Each path costs a pass over the repository's claims and,
+// for its area, over each claim's files, all under the board's lock: on a
+// repository of 300 claims of 50 files, 200 paths hold it for 75 ms and 2000
+// for 750 ms, with ten times the conflicts in the answer. It can rise to
+// MaxFootprint once a claim's areas are indexed and answers are bounded.
+// Past it, an edit's agent is told what was not checked, and a check is
+// refused. It may exceed maxShownPaths: an edit's activity lists the paths
+// that decided its answer first.
+const maxCheckPaths = 200
 
 // Board holds every claim and session the server knows about.
 type Board struct {
@@ -219,6 +234,9 @@ func (b *Board) unlock() {
 func (b *Board) record(a Activity) {
 	b.seq++
 	a.Seq = b.seq
+	if over := len(a.Paths) - maxShownPaths; over > 0 {
+		a.Paths, a.MorePaths = slices.Clone(a.Paths[:maxShownPaths]), a.MorePaths+over
+	}
 	b.recent = append(b.recent, a)
 	if over := len(b.recent) - b.cfg.KeepActivities; over > 0 {
 		// Slice past the oldest rather than copy the feed: append moves it to
@@ -265,10 +283,9 @@ func cleanWhere(w Where) (Where, error) {
 	return w, nil
 }
 
-func cleanPaths(in []PathRef) ([]PathRef, error) {
-	if len(in) > maxPaths {
-		in = in[:maxPaths]
-	}
+// cleanPaths keeps the valid, distinct paths among the first limit.
+func cleanPaths(in []PathRef, limit int) ([]PathRef, error) {
+	in = in[:min(len(in), limit)]
 	out := make([]PathRef, 0, len(in))
 	seen := map[string]bool{}
 	var first error
@@ -413,7 +430,8 @@ func (b *Board) liveSessions(now time.Time) map[string]bool {
 // other event is recorded without delivering anything.
 func (b *Board) Hook(now time.Time, ev HookEvent) (HookResult, error) {
 	allow := HookResult{Decision: DecisionAllow}
-	ev, err := ev.clean()
+	named := len(ev.Paths)
+	ev, err := ev.clean(b.cfg.MaxFootprint) // the config never changes after New
 	if err != nil {
 		return allow, err
 	}
@@ -460,6 +478,11 @@ func (b *Board) Hook(now time.Time, ev HookEvent) (HookResult, error) {
 		var spent []string
 		res, spent = b.decide(now, c, s, ev.Paths, ev.NoAsk)
 		res.ClaimID = c.ID
+		if len(ev.Paths) > maxCheckPaths || named > b.cfg.MaxFootprint {
+			res.Context = joinBlocks(res.Context, fmt.Sprintf("[intagent] This edit names %d files; intagent checked only "+
+				"the first %d against teammates' work. Check the others with the intagent check_paths tool, %d at a time, "+
+				"or tell your user.", named, min(len(ev.Paths), maxCheckPaths), maxCheckPaths))
+		}
 		if res.Decision == DecisionRefuse || (res.Decision == DecisionAsk && ev.NoAsk) {
 			// The edit does not run, so no tool end will follow it. (An ask that
 			// the person answers runs, or not, and the agent reports either.)
@@ -508,8 +531,9 @@ func (b *Board) Hook(now time.Time, ev HookEvent) (HookResult, error) {
 }
 
 // clean validates an event, before anything is created for it, and bounds
-// its fields.
-func (ev HookEvent) clean() (HookEvent, error) {
+// its fields. It runs before the board's lock is taken, so that how much a
+// client sends does not decide how long others wait for the lock.
+func (ev HookEvent) clean(maxFootprint int) (HookEvent, error) {
 	w, err := cleanWhere(ev.Where)
 	if err != nil {
 		return ev, err
@@ -527,7 +551,18 @@ func (ev HookEvent) clean() (HookEvent, error) {
 		// not bring a dormant claim back to life.
 		return ev, fmt.Errorf("%w: unknown event kind %q", ErrInvalid, ev.Kind)
 	}
-	ev.Paths, err = cleanPaths(ev.Paths)
+	if fp := ev.Footprint; fp != nil {
+		// A copy, so that the caller's is left as it was, with every field
+		// clean does not know of kept.
+		cut := *fp
+		cut.Files = cleanFootprint(fp.Files, maxFootprint)
+		cut.Truncated = fp.Truncated || len(fp.Files) > len(cut.Files)
+		ev.Footprint = &cut
+	}
+	ev.Prompt = PromptLine(ev.Prompt)
+	// A post_edit's paths join the claim's files, as many as it keeps; a
+	// pre_edit's first maxCheckPaths are checked.
+	ev.Paths, err = cleanPaths(ev.Paths, maxFootprint)
 	return ev, err
 }
 
@@ -607,6 +642,16 @@ func (c *claim) taskFromIntent() bool {
 	return false
 }
 
+// PromptLine is the part of a prompt the board reads, of which a task is the
+// first maxTaskLen characters: its first line, up to 8 KB. Clients send no
+// more, so that a prompt with a log pasted into it stays a small request.
+func PromptLine(prompt string) string {
+	if prompt = firstLine(prompt); len(prompt) > maxPrompt {
+		prompt = prompt[:maxPrompt]
+	}
+	return prompt
+}
+
 func firstLine(s string) string {
 	s = strings.TrimSpace(s)
 	if i := strings.IndexAny(s, "\r\n"); i >= 0 {
@@ -615,12 +660,13 @@ func firstLine(s string) string {
 	return s
 }
 
-// reconcile replaces a claim's footprint with what git reports.
+// reconcile replaces a claim's footprint with what git reports, as
+// HookEvent.clean left it.
 func (b *Board) reconcile(now time.Time, c *claim, s *session, fp *Footprint) {
 	if fp == nil {
 		return
 	}
-	files := cleanFootprint(fp.Files, b.cfg.MaxFootprint)
+	files := fp.Files
 	next := make(map[string]*touch, len(files))
 	var added []PathRef
 	for _, f := range files {
@@ -641,7 +687,7 @@ func (b *Board) reconcile(now time.Time, c *claim, s *session, fp *Footprint) {
 		}
 	}
 	c.Footprint = next
-	c.FootprintTruncated = fp.Truncated || len(fp.Files) > len(files)
+	c.FootprintTruncated = fp.Truncated
 	if len(added) > 0 || removed > 0 {
 		b.record(Activity{At: now, Kind: ActivityFootprintReconciled, Repo: c.Repo, Member: c.Member, ClaimID: c.ID, Session: s.ID, Agent: s.Agent,
 			Text: fmt.Sprintf("%d changed files (+%d, -%d)", len(next), len(added), removed)})
@@ -652,19 +698,23 @@ func (b *Board) reconcile(now time.Time, c *claim, s *session, fp *Footprint) {
 	}
 }
 
+// cleanFootprint keeps the valid, distinct paths among the first limit
+// entries. Duplicates and invalid paths count toward the limit: a client
+// sends neither, and they must not make the work longer.
 func cleanFootprint(in []PathRef, limit int) []PathRef {
-	out := make([]PathRef, 0, min(len(in), limit))
-	seen := map[string]bool{}
+	in = in[:min(len(in), limit)]
+	out := make([]PathRef, 0, len(in))
+	seen := make(map[string]bool, len(in))
 	for _, f := range in {
-		if len(out) >= limit {
-			break
-		}
 		p, err := glob.CleanPath(f.Path)
 		if err != nil || seen[p] {
 			continue
 		}
 		seen[p] = true
-		area, _ := glob.CleanPath(f.Area)
+		area := ""
+		if f.Area != "" {
+			area, _ = glob.CleanPath(f.Area)
+		}
 		out = append(out, PathRef{Path: p, Area: area})
 	}
 	return out
@@ -1090,7 +1140,8 @@ func (v verdict) acted() []Conflict {
 }
 
 // decide answers an agent about to write, and counts and announces the edit
-// if it runs into a collision this session has not been told about. It also
+// if it runs into a collision this session has not been told about. It checks
+// the first maxCheckPaths paths, and the announcement names them all. It also
 // returns the one-time answers the check spent, the bumps it showed and the
 // questions an agent that cannot ask is told to put, which a refusal the
 // agent never hears gives back.
@@ -1098,7 +1149,7 @@ func (b *Board) decide(now time.Time, c *claim, s *session, paths []PathRef, noA
 	if s.Acked == nil {
 		s.Acked = map[string]bool{}
 	}
-	v := b.judge(now, c, s, paths, noAsk)
+	v := b.judge(now, c, s, paths[:min(len(paths), maxCheckPaths)], noAsk)
 	res := b.answer(now, s, v)
 	spent := v.bumpKeys
 	if res.Decision == DecisionAsk {
@@ -1136,8 +1187,31 @@ func (b *Board) announce(now time.Time, c *claim, s *session, paths []PathRef, d
 		}
 	}
 	b.record(Activity{At: now, Kind: ActivityConflict, Repo: c.Repo, Member: c.Member, ClaimID: c.ID, Session: s.ID, Agent: s.Agent,
-		Paths: pathsOf(paths), Severity: top.Severity, Decision: d, Also: also,
+		Paths: decidedFirst(paths, acted), Severity: top.Severity, Decision: d, Also: also,
 		Text: fmt.Sprintf("%s → %s (%s)", top.Path, top.Member, top.Why)})
+}
+
+// decidedFirst names an edit's paths for its activity. When there are more
+// than an activity lists, those of the conflicts that decided the answer come
+// first, so that the files it lists include the ones it was about.
+func decidedFirst(paths []PathRef, acted []Conflict) []string {
+	names := pathsOf(paths)
+	if len(names) <= maxShownPaths {
+		return names
+	}
+	decided := make(map[string]bool, len(acted))
+	for _, cf := range acted {
+		decided[cf.Path] = true
+	}
+	out := make([]string, 0, len(names))
+	for _, first := range []bool{true, false} {
+		for _, p := range names {
+			if decided[p] == first {
+				out = append(out, p)
+			}
+		}
+	}
+	return out
 }
 
 // judge applies the policy to the conflicts on every path being written. A
@@ -1566,7 +1640,12 @@ func (b *Board) Check(now time.Time, r CheckRequest) ([]Conflict, error) {
 	if err != nil {
 		return nil, err
 	}
-	paths, err := cleanPaths(r.Paths)
+	// Checked in full, or not at all: a check that left paths out would
+	// pass them unsaid.
+	if len(r.Paths) > maxCheckPaths {
+		return nil, fmt.Errorf("%w: %d paths; check at most %d at a time", ErrInvalid, len(r.Paths), maxCheckPaths)
+	}
+	paths, err := cleanPaths(r.Paths, maxCheckPaths)
 	if err != nil {
 		return nil, err
 	}

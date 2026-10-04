@@ -439,4 +439,7 @@ type Activity struct {
 	// Idle marks a session.gone whose agent had finished its turn and was
 	// waiting for its person: a session left open, not a stuck agent.
 	Idle bool `json:"idle,omitempty"`
+	// MorePaths counts the paths the event named beyond those Paths lists,
+	// which are at most 200.
+	MorePaths int `json:"more_paths,omitempty"`
 }

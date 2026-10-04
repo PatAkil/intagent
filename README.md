@@ -92,7 +92,11 @@ docker run -d --name intagent -p 7400:7400 -v intagent:/data intagent
 
 Open `http://<server>:7400/` for the live dashboard and sign in with any member's token. Beyond a trusted
 network, serve HTTPS: `--tls-cert cert.pem --tls-key key.pem`, or a reverse proxy that terminates TLS and sets
-`X-Forwarded-Proto: https`. The server keeps up to 500 dashboards connected at once, 20 per member and 100 without a
+`X-Forwarded-Proto: https`. Use an ECDSA P-256 certificate: every hook opens a new connection, and an RSA
+certificate's handshake costs the server about three times as much CPU (about 1.5 ms, or 1.5 cores at 1000 hooks a
+second). To keep an RSA certificate for old browsers, give both pairs, `--tls-cert ec.pem --tls-key ec.key --tls-cert
+rsa.pem --tls-key rsa.key`; intagent's clients get the ECDSA one. A proxy takes that cost off the server only if it
+runs on another machine. The server keeps up to 500 dashboards connected at once, 20 per member and 100 without a
 token; `--max-streams`, `--max-member-streams` and `--max-public-streams` change that, and 0 allows none.
 
 **Each repository, once** (one person; then commit the files it writes):

@@ -1408,12 +1408,14 @@
     return [strong(String(a.member || 'someone')), '’s ', a.agent ? agentName(String(a.agent)) + ' agent' : 'agent'];
   }
 
-  function pathList(paths, max) {
+  // more counts paths an activity named but does not list (more_paths).
+  function pathList(paths, max, more) {
     const ps = arr(paths).map(String);
     if (!ps.length) return 'files';
     const lim = max || 2;
     const out = joinNodes(ps.slice(0, lim).map(pathNode), ', ');
-    if (ps.length > lim) out.push(' and ' + (ps.length - lim) + ' more');
+    const rest = Math.max(0, ps.length - lim) + (Number(more) || 0);
+    if (rest > 0) out.push(' and ' + rest + ' more');
     return out;
   }
 
@@ -1433,7 +1435,7 @@
       case 'session.stalled': return [actor(a), ' has stalled', text ? ': ' + text : ''];
       case 'session.gone': return [actor(a), ' is gone', text ? ': ' + text : '', '. Its files still count; its exclusive intents stop blocking.'];
       case 'session.recovered': return [actor(a), ' is responding again'];
-      case 'file.changed': return [actor(a), ' changed ', pathList(a.paths)];
+      case 'file.changed': return [actor(a), ' changed ', pathList(a.paths, 2, a.more_paths)];
       case 'footprint.reconciled': return [m, '’s changes were reconciled with git: ', text];
       case 'intent.declared': {
         const mm = /^(exclusive|shared): ?(.*)$/.exec(text);
@@ -1521,7 +1523,8 @@
     const paths = arr(a.paths).map(String);
     const path = parsed ? parsed.path : paths[0] || 'a file';
     const out = [actor(a), o.verb, pathNode(path)];
-    if (paths.length > 1) out.push(' and ' + (paths.length - 1) + ' more');
+    const more = paths.length - 1 + (Number(a.more_paths) || 0);
+    if (more > 0) out.push(' and ' + more + ' more');
     if (parsed) out.push(' (', reasonNodes(parsed.member, parsed.why, parsed.path), ')');
     else if (a.text) out.push(': ' + String(a.text));
     for (const x of arr(a.also)) out.push('; also ', String(x));

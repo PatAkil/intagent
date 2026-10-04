@@ -192,7 +192,7 @@ All endpoints take and return JSON and require `Authorization: Bearer <token>`, 
 | `POST /v1/hook` | hooks | One normalised lifecycle event in, a decision and context out. |
 | `POST /v1/intents` | MCP, CLI | Declare intents for a claim. Returns overlaps. |
 | `POST /v1/intents/release` | MCP, CLI | Release some or all intents. |
-| `POST /v1/check` | MCP, CLI, guard | Who else claims or touched these paths. Read-only. |
+| `POST /v1/check` | MCP, CLI, guard | Who else claims or touched these paths, up to 200 (more is a 400). Read-only. |
 | `POST /v1/notes` | MCP, CLI | Send a note to a claim or a member. |
 | `GET /v1/board` | CLI, dashboard | Every claim and session in a repo, with derived states. Gzip when the client takes it, and a weak `ETag` for `If-None-Match`. Its `epoch` changes when the server restarts, and `server` is there while agents' edits go ahead unchecked (below). With `format=text`, the board as text; adding `limit`, `host` and `worktree` gives an agent at most `limit` claims (16 KB), those sharing files or areas with its own first, as the MCP `team_board` tool shows them. |
 | `GET /v1/repos` | dashboard | The repositories with claims, each with the server's `epoch`. |
@@ -234,7 +234,9 @@ state flip every second. It says so in `/healthz`, on the dashboard (a `status` 
 - The dashboard exchanges a member's token for a read-only session cookie: an HMAC of the token's hash under a key
   kept in the data directory (`ui.key`, mode 0600), never the token itself.
 - `intagent serve --tls-cert --tls-key` serves HTTPS directly; behind a proxy, `X-Forwarded-Proto: https` marks the
-  cookie `Secure`.
+  cookie `Secure`. Each hook is a new process and a new connection, so with TLS each pays for a full handshake: ECDSA
+  certificates go first, a server with only an RSA one says at startup what that costs, and a handshake not finished
+  2 seconds after its connection was accepted is abandoned, since its hook has already failed open.
 - All member-supplied text is stripped of control and formatting characters (bidi overrides, zero-width), collapsed
   to one line and length-capped on the server, and quoted and framed as teammate data when rendered into an agent's
   context. Paths and patterns, which are shown unquoted, are rejected if they hold control, formatting or line
@@ -242,7 +244,29 @@ state flip every second. It says so in `/healthz`, on the dashboard (a `status` 
   no spaces, quotes or angle brackets.
 - Webhook messages escape `&`, `<` and `>`, which Slack reads as mentions and links.
 - Notes are rate-limited per member.
-- Request bodies are capped. Paths are validated.
+- Request bodies are capped at 1 MB. Paths are validated. A body over 16 KB (a footprint, in practice) is charged to
+  its member's budget of 4 MB a second, with a burst of 32 MB for a fleet's session starts, from its `Content-Length`
+  before it is read (429 past it), and only as many are decoded and handled at once as the server has CPUs (503
+  after a second's wait). A pre_edit is never answered either way, since under `INTAGENT_FAIL=closed` its hook would
+  refuse the edit. Most are a few hundred bytes and not metered. One over 16 KB (about 200 paths: a codemod's patch)
+  draws on a budget of its own, which footprints do not spend, and when that budget or the wait for a slot runs out
+  the edit goes ahead unchecked and its agent is told so. The server knows a pre_edit by how its body starts,
+  `{"kind":"pre_edit"`, as intagent's clients write it, and refuses a body that starts so and turns out to be
+  another kind. Clients send only a prompt's first line, which is all the board reads. Footprints and prompts are cut
+  to size before the board's lock is taken: a footprint to its first 2000 entries, duplicates and invalid paths
+  included.
+- An edit is checked on the first 200 paths it names, and past that its agent is told how many were not checked; a
+  check of more than 200 paths is refused rather than cut short. Each path costs a pass over the repository's claims
+  and, for its area, over their files, under the board's lock: 200 paths on a repository of 300 claims of 50 files
+  hold it for 75 ms. A post_edit's paths, which only join the claim's files, are kept up to 2000, and an activity
+  lists 200 of them and counts the rest. Checks and declarations are paced per member and worktree, one at a time and
+  five a second with a burst of 20 (429 past that), since each holds the board's lock for as long as its paths and
+  patterns take; an orchestrator's agents, each in its own worktree, are paced apart. Hooks are never paced, since a
+  fleet's agents share one token.
+- A client has 15 seconds to send a whole request and 16 KB for its headers, and past 4096 open connections
+  (`serve --max-connections`) the server closes new ones as soon as it accepts them, so a client that sends slowly, or
+  opens many connections, with a token or without, cannot use up the server's file descriptors and memory. A hook
+  turned away fails open at once instead of waiting out its timeout.
 - An answer that makes no progress for 15 seconds is cut off, so a client that stops reading mid-answer (a laptop
   put to sleep) does not hold the server's memory; a slow client that keeps reading gets all of it.
 - The hook fails open with a short timeout. `INTAGENT_FAIL=closed` turns an unreachable server, an answer the server

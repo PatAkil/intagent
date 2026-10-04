@@ -146,7 +146,7 @@ func (a *App) handleHook(ctx context.Context, ad hook.Adapter, ev hook.Event) (h
 		LateContext: ev.LateContext, NoAsk: ev.NoAsk,
 	}
 	if ws.settings.SharePrompts {
-		hev.Prompt = ev.Prompt
+		hev.Prompt = board.PromptLine(ev.Prompt)
 	}
 	began := a.now()
 	if ev.Footprint && scanDue(ws.wt.Root, ev.Kind, began) {

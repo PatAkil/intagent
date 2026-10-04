@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -56,6 +57,12 @@ type Options struct {
 	Webhook WebhookConfig
 	// Streams caps the dashboard streams open at once.
 	Streams StreamLimits
+	// MaxConnections caps the connections open at once; more are closed as
+	// soon as they are accepted. Zero takes DefaultMaxConnections.
+	MaxConnections int
+	// TLS serves HTTPS with this configuration; nil serves HTTP. Serve adds
+	// TLS to the listener it is given, which must not have it already.
+	TLS *tls.Config
 }
 
 // Server serves one team's board.
@@ -87,17 +94,36 @@ type Server struct {
 	clock func() time.Time
 	// answers follows whether agents get their answers in time.
 	answers *answers
+	tls     *tls.Config
+	// maxConns, readTimeout and handshakeTimeout bound what clients can
+	// hold: connections, and the time to send a request or finish a TLS
+	// handshake.
+	maxConns         int
+	readTimeout      time.Duration
+	handshakeTimeout time.Duration
+	// admit meters what members ask of the server.
+	admit *admission
 }
 
 type memberHash struct {
 	name string
 	hash []byte
+	// session is the member's dashboard cookie, computed when the list is.
+	session [sha256.Size]byte
 }
 
 const (
 	maxBody     = 1 << 20
 	cookieName  = "intagent_session"
 	sseKeepAway = 20 * time.Second
+	// readTimeout is how long a client may take to send a whole request; a
+	// hook's is sent in milliseconds, and its client waits two seconds.
+	readTimeout = 15 * time.Second
+	// maxHeaderBytes is far above what intagent's clients and browsers send.
+	maxHeaderBytes = 16 << 10
+	// maxToken bounds a bearer token, far above the 51 bytes of a real one,
+	// so a request cannot make the server hash a megabyte to reject it.
+	maxToken = 256
 )
 
 // New builds a server and restores its board from DataDir.
@@ -125,6 +151,18 @@ func New(o Options) (*Server, error) {
 	if s.sweepEvery <= 0 {
 		s.sweepEvery = 15 * time.Second
 	}
+	s.tls, s.maxConns, s.readTimeout, s.handshakeTimeout = o.TLS, o.MaxConnections, readTimeout, handshakeTimeout
+	if s.maxConns <= 0 {
+		s.maxConns = DefaultMaxConnections
+	}
+	s.admit = newAdmission()
+	// The key comes first: SetMembers computes each member's dashboard cookie
+	// with it.
+	key, err := loadUIKey(s.dataDir)
+	if err != nil {
+		return nil, err
+	}
+	s.uiKey = key
 	if err := s.SetMembers(o.Members); err != nil {
 		return nil, err
 	}
@@ -146,11 +184,6 @@ func New(o Options) (*Server, error) {
 	}
 	s.epoch = hex.EncodeToString(epoch[:8])
 	s.boards = newBoardBuilds(s.boardView, s.boardLoad, s.log)
-	key, err := loadUIKey(s.dataDir)
-	if err != nil {
-		return nil, err
-	}
-	s.uiKey = key
 	return s, nil
 }
 
@@ -183,26 +216,36 @@ func randomKey() ([]byte, error) {
 	return key, nil
 }
 
-// session is a member's dashboard cookie: a MAC of their token's hash. It
+// sessionMAC is a member's dashboard cookie: a MAC of their token's hash. It
 // grants reading only, ends when the token is rotated, and cannot be used as a
 // token or derived from the team file.
-func (s *Server) session(m memberHash) string {
-	mac := hmac.New(sha256.New, s.uiKey)
+func sessionMAC(key, tokenHash []byte) [sha256.Size]byte {
+	mac := hmac.New(sha256.New, key)
 	mac.Write([]byte("intagent dashboard session\x00"))
-	mac.Write(m.hash)
-	return hex.EncodeToString(mac.Sum(nil))
+	mac.Write(tokenHash)
+	var out [sha256.Size]byte
+	mac.Sum(out[:0])
+	return out
 }
 
-// sessionMember finds the member a dashboard cookie belongs to.
+// session returns a member's dashboard cookie.
+func (s *Server) session(m memberHash) string { return hex.EncodeToString(m.session[:]) }
+
+// sessionMember finds the member a dashboard cookie belongs to. It compares
+// with every member's cookie, computed when the list was, in constant time:
+// anyone who can reach the server can send a cookie, so checking one must not
+// cost a MAC per member.
 func (s *Server) sessionMember(cookie string) (memberHash, bool) {
-	got, err := hex.DecodeString(cookie)
-	if err != nil || len(got) != sha256.Size {
+	var got [sha256.Size]byte
+	if len(cookie) != hex.EncodedLen(len(got)) {
+		return memberHash{}, false
+	}
+	if _, err := hex.Decode(got[:], []byte(cookie)); err != nil {
 		return memberHash{}, false
 	}
 	var found memberHash
 	for _, m := range *s.members.Load() {
-		want, _ := hex.DecodeString(s.session(m))
-		if hmac.Equal(got, want) {
+		if subtle.ConstantTimeCompare(got[:], m.session[:]) == 1 {
 			found = m
 		}
 	}
@@ -212,13 +255,17 @@ func (s *Server) sessionMember(cookie string) (memberHash, bool) {
 // SetMembers replaces who may use the server: new members can sign in, and a
 // removed or rotated token stops working at once.
 func (s *Server) SetMembers(ms []Member) error {
+	if len(s.uiKey) == 0 {
+		// A cookie computed without the key could be made from the team file.
+		return errors.New("the dashboard key must be loaded before the members")
+	}
 	list := make([]memberHash, 0, len(ms))
 	for _, m := range ms {
 		h, err := hex.DecodeString(m.TokenSHA256)
 		if err != nil || !ValidMemberName(m.Name) {
 			return fmt.Errorf("member %q is not valid", m.Name)
 		}
-		list = append(list, memberHash{name: m.Name, hash: h})
+		list = append(list, memberHash{name: m.Name, hash: h, session: sessionMAC(s.uiKey, h)})
 	}
 	if len(list) == 0 {
 		return errors.New("no members configured: add one with 'intagent token add <name>'")
@@ -251,11 +298,15 @@ func (s *Server) admits(who memberHash) bool {
 // Board exposes the board, for tests and embedding.
 func (s *Server) Board() *board.Board { return s.board }
 
+// hookRoute is the route of hook events, whose large bodies are metered by
+// kind.
+const hookRoute = "POST /v1/hook"
+
 // Handler returns the server's routes.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealth)
-	mux.Handle("POST /v1/hook", s.write(s.handleHook))
+	mux.Handle(hookRoute, s.write(s.handleHook))
 	mux.Handle("POST /v1/intents", s.write(s.handleDeclare))
 	mux.Handle("POST /v1/intents/release", s.write(s.handleRelease))
 	mux.Handle("POST /v1/check", s.write(s.handleCheck))
@@ -273,7 +324,8 @@ func (s *Server) Handler() http.Handler {
 }
 
 // Serve runs the server on ln until ctx is cancelled, then shuts down cleanly,
-// writes a final snapshot and sends the webhook what is still waiting.
+// writes a final snapshot and sends the webhook what is still waiting. With
+// Options.TLS, it serves HTTPS on ln.
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	srv := &http.Server{
 		Handler:           s.Handler(),
@@ -283,6 +335,16 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 		// for them, and a hook whose context ended would be taken for one
 		// whose agent had stopped waiting.
 		BaseContext: func(net.Listener) context.Context { return context.WithoutCancel(ctx) },
+		// A body sent a byte at a time, with a token or without one, would
+		// otherwise hold its connection for as long as it keeps sending.
+		ReadTimeout:    s.readTimeout,
+		MaxHeaderBytes: maxHeaderBytes,
+	}
+	// The limit counts TCP connections, below TLS, so that the HTTP server
+	// still sees each TLS connection as one, for HTTP/2.
+	ln = newLimitListener(ln, s.maxConns, s.log)
+	if s.tls != nil {
+		ln = &tlsListener{Listener: ln, config: s.tls, timeout: s.handshakeTimeout}
 	}
 	srv.RegisterOnShutdown(func() { s.closeOnce.Do(func() { close(s.closing) }) })
 	maintainCtx, stopMaintain := context.WithCancel(context.WithoutCancel(ctx))
@@ -338,7 +400,7 @@ func authorityFrom(r *http.Request) memberHash {
 
 // authenticate resolves a token to a member, comparing in constant time.
 func (s *Server) authenticate(token string) (memberHash, bool) {
-	if token == "" {
+	if token == "" || len(token) > maxToken {
 		return memberHash{}, false
 	}
 	got, _ := hex.DecodeString(HashToken(token))
@@ -359,7 +421,8 @@ func bearer(r *http.Request) string {
 	return ""
 }
 
-// write admits only bearer tokens, so a browser cookie can never cause a write.
+// write admits only bearer tokens, so a browser cookie can never cause a write,
+// and meters large bodies.
 func (s *Server) write(h http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		who, ok := s.authenticate(bearer(r))
@@ -367,9 +430,21 @@ func (s *Server) write(h http.HandlerFunc) http.Handler {
 			writeError(w, http.StatusUnauthorized, "missing or unknown token")
 			return
 		}
-		h(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, who)))
+		release, edit, ok := s.admitBody(w, r, who.name)
+		if !ok {
+			return
+		}
+		defer release()
+		ctx := context.WithValue(r.Context(), ctxKey{}, who)
+		if edit {
+			ctx = context.WithValue(ctx, editKey{}, true)
+		}
+		h(w, r.WithContext(ctx))
 	})
 }
+
+// editKey marks a request whose body was admitted as a pre_edit's.
+type editKey struct{}
 
 // read admits a bearer token or the dashboard cookie, or anyone with PublicRead.
 func (s *Server) read(h http.HandlerFunc) http.Handler {
@@ -443,6 +518,12 @@ func (s *Server) handleHook(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &ev) {
 		return
 	}
+	if edit, _ := r.Context().Value(editKey{}).(bool); edit && ev.Kind != board.KindPreEdit {
+		// It started as a pre_edit, and so drew on the budget for edits, but
+		// a later field gave it another kind.
+		writeError(w, http.StatusBadRequest, "invalid JSON body: it starts as a pre_edit and is not one")
+		return
+	}
 	ev.Member = memberFrom(r)
 	ev.Late = caller.late
 	if ev.Kind == board.KindPreEdit {
@@ -472,6 +553,11 @@ func (s *Server) handleDeclare(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Member = memberFrom(r)
+	release, ok := s.admitCall(w, req.Member, req.Where)
+	if !ok {
+		return
+	}
+	defer release()
 	res, err := s.board.Declare(s.now(), req)
 	if err != nil {
 		writeBoardError(w, err)
@@ -500,6 +586,11 @@ func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Member = memberFrom(r)
+	release, ok := s.admitCall(w, req.Member, req.Where)
+	if !ok {
+		return
+	}
+	defer release()
 	now := s.now()
 	cs, err := s.board.Check(now, req)
 	if err != nil {
@@ -675,6 +766,9 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "streaming unsupported")
 		return
 	}
+	// A stream reads nothing after its request, so the time limit on reading
+	// one does not apply to it.
+	_ = http.NewResponseController(w).SetReadDeadline(time.Time{})
 	repo := board.RepoID(r.URL.Query().Get("repo"))
 	who := authorityFrom(r)
 	sub, ok := s.hub.subscribe(repo, who)
