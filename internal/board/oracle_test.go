@@ -791,8 +791,9 @@ func (b *Board) oldRecord(a Activity) {
 }
 
 // oldSweep is Sweep as it was: for every claim with nothing left, it
-// searched every session for one still attached to it. It marks idle gones
-// as Sweep does now, since what is compared is how claims are found.
+// searched every session for one still attached to it. It marks idle gones,
+// and tidies inboxes and alerts, as Sweep does now, since what is compared
+// is how claims are found.
 func (b *Board) oldSweep(now time.Time) {
 	changed := false
 	keys := make([]string, 0, len(b.sessions))
@@ -842,6 +843,7 @@ func (b *Board) oldSweep(now time.Time) {
 	slices.Sort(ids)
 	for _, id := range ids {
 		c := b.claims[id]
+		changed = b.tidy(now, c, live[c.ID]) || changed
 		if live[c.ID] {
 			continue
 		}
@@ -859,6 +861,7 @@ func (b *Board) oldSweep(now time.Time) {
 			delete(b.notes, m)
 		}
 	}
+	changed = b.pruneAlerts() || changed
 	if changed {
 		b.changed()
 	}

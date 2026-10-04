@@ -174,6 +174,10 @@ type Board struct {
 	dropped      map[string]uint64
 	droppedAll   uint64
 	droppedFloor uint64
+
+	// unpruned holds the repositories a claim was removed from since the
+	// last sweep, whose claims may remember alerts of it (pruneAlerts).
+	unpruned map[string]bool
 }
 
 // Option configures a Board.
@@ -208,6 +212,7 @@ func New(cfg Config, opts ...Option) *Board {
 		notes:         map[string][]time.Time{},
 		stats:         map[string]*Stats{},
 		dropped:       map[string]uint64{},
+		unpruned:      map[string]bool{},
 		newID:         randomID,
 		log:           slog.New(slog.DiscardHandler),
 	}
@@ -1110,6 +1115,7 @@ func (b *Board) releaseIfDone(now time.Time, c *claim) {
 
 func (b *Board) deleteClaim(now time.Time, c *claim, kind ActivityKind) {
 	b.removeClaim(c)
+	b.unpruned[c.Repo] = true
 	b.record(Activity{At: now, Kind: kind, Repo: c.Repo, Member: c.Member, ClaimID: c.ID, Text: c.Branch})
 }
 
@@ -2084,6 +2090,7 @@ func (b *Board) Sweep(now time.Time) {
 	slices.Sort(ids)
 	for _, id := range ids {
 		c := b.claims[id]
+		changed = b.tidy(now, c, live[c.ID]) || changed
 		if live[c.ID] {
 			continue
 		}
@@ -2101,9 +2108,92 @@ func (b *Board) Sweep(now time.Time) {
 			delete(b.notes, m)
 		}
 	}
+	changed = b.pruneAlerts() || changed
 	if changed {
 		b.changed()
 	}
+}
+
+// tidy drops what claim c keeps for nobody, and reports whether it dropped
+// anything: the inbox items no session can be shown any more, and, once it
+// no longer listens (listening), the alerts it remembers, which keep only
+// what it is no longer told from being told twice. Items are queued in time
+// order, so only the oldest is looked at when none has expired.
+func (b *Board) tidy(now time.Time, c *claim, live bool) bool {
+	tidied := false
+	if len(c.Inbox) > 0 && now.Sub(c.Inbox[0].At) >= inboxTTL {
+		c.Inbox = slices.DeleteFunc(c.Inbox, func(it InboxItem) bool { return now.Sub(it.At) >= inboxTTL })
+		if len(c.Inbox) == 0 {
+			c.Inbox = nil
+		}
+		tidied = true
+	}
+	if len(c.Alerted) > 0 && !live && now.Sub(c.UpdatedAt) > b.cfg.DormantFor {
+		c.Alerted, c.alertedShared = nil, false
+		tidied = true
+	}
+	return tidied
+}
+
+// pruneAlerts drops the alerts claims remember of claims no longer on the
+// board, in the repositories a claim was removed from since the last sweep:
+// a claim's ID is never used again, so nothing they would keep from being
+// told twice can come. A claim that lives for weeks otherwise keeps a key
+// for every short-lived claim that ever touched its files.
+func (b *Board) pruneAlerts() bool {
+	pruned := false
+	for repo := range b.unpruned {
+		for c := range b.claimsIn(repo) {
+			pruned = c.pruneAlerted(b.claims) || pruned
+		}
+	}
+	clear(b.unpruned)
+	return pruned
+}
+
+// pruneAlerted drops the claim's alerts of claims not in claims. It puts
+// what it keeps in a new map, which a snapshot may share, and which is no
+// larger than what it holds: a map does not shrink as keys are deleted.
+func (c *claim) pruneAlerted(claims map[string]*claim) bool {
+	dead := func(k string) bool {
+		id := alertedClaim(k)
+		return id != "" && claims[id] == nil
+	}
+	n := 0
+	for k := range c.Alerted {
+		if dead(k) {
+			n++
+		}
+	}
+	if n == 0 {
+		return false
+	}
+	var keep map[string]bool
+	if n < len(c.Alerted) {
+		keep = make(map[string]bool, len(c.Alerted)-n)
+		for k := range c.Alerted {
+			if !dead(k) {
+				keep[k] = true
+			}
+		}
+	}
+	c.Alerted, c.alertedShared = keep, false
+	return true
+}
+
+// alertedClaim is the claim an Alerted key names: alertOthers' touch|<claim>|
+// <path>, or uncheckedKey's unchecked|<action>|<claim>|...
+func alertedClaim(k string) string {
+	kind, rest, _ := strings.Cut(k, "|")
+	switch kind {
+	case "touch":
+	case "unchecked":
+		_, rest, _ = strings.Cut(rest, "|")
+	default:
+		return ""
+	}
+	id, _, _ := strings.Cut(rest, "|")
+	return id
 }
 
 func pathsOf(ps []PathRef) []string {

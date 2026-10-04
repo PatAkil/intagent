@@ -92,9 +92,11 @@ item, delivered at its agent's next hook. Inbox items (notes and alerts) are del
 `additionalContext` on `SessionStart`, `UserPromptSubmit` and `PostToolUse`. Only claims still listening are queued
 anything: those with a live session, or active within `dormant_for` (a day). A claim quiet for longer counts only as
 nearby work, so nothing is queued for it, nor remembered of what it would have been told; an agent that comes back to
-it hears of teammates' work from its greeting and its checks. A note to a member goes to their claims still listening,
-and to one none of whose claims listens, to the claim they were last active in, rather than to every worktree they
-left.
+it hears of teammates' work from its greeting and its checks, and may hear again of a change it heard of before it
+left. A note to a member goes to their claims still listening, and to one none of whose claims listens, to the claim
+they were last active in, rather than to every worktree they left. The sweeper drops inbox items a day old, which no
+session is shown any more, and the alerts a claim that no longer listens remembers having heard; and once a claim is
+removed, the alerts other claims remember of it, which nothing can match again since a claim's ID is never reused.
 
 Every acknowledgement is remembered per session, so an agent hears about a given overlap once, not on every edit.
 

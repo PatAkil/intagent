@@ -248,12 +248,15 @@ func (b *Board) RestoreAfter(r io.Reader, now, stopped time.Time) error {
 	b.sessions = map[string]*session{}
 	b.byRepo = map[string]*repoIndex{}
 	b.claimSessions = map[string]map[string]*session{}
+	b.unpruned = map[string]bool{}
 	for _, c := range s.Claims {
 		if c == nil || c.ID == "" {
 			continue
 		}
 		c.Intents = b.validIntents(c)
 		b.addClaim(c)
+		// A snapshot from an older server keeps alerts of claims it removed.
+		b.unpruned[c.Repo] = true
 	}
 	for _, x := range s.Sessions {
 		if x == nil || x.Key == "" {
