@@ -651,6 +651,13 @@ func (a *agent) hook(sid string, st step) board.HookResult {
 	var res board.HookResult
 	key := "hook " + string(st.kind)
 	start, took, err := a.rec.timed(a.hc, a.auth, *timeout, key, http.MethodPost, "/v1/hook", ev, &res)
+	var se statusError
+	if ev.Footprint != nil && errors.As(err, &se) && (se == http.StatusTooManyRequests || se == http.StatusServiceUnavailable) {
+		// The server would not take the footprint now, so intagent's hook sends
+		// the event again at once without it.
+		ev.Footprint = nil
+		_, _, _ = a.rec.timed(a.hc, a.auth, *timeout, key+" again without its footprint", http.MethodPost, "/v1/hook", ev, &res)
+	}
 	if err == nil && took <= hookLimit && res.Unchecked {
 		a.rec.answeredLate(key, start)
 	}
