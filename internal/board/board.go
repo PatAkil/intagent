@@ -727,7 +727,7 @@ func (b *Board) reportUnchecked(now time.Time, c *claim, s *session, added []Pat
 		}
 		// Once per file, reservation and policy: a new reservation, or a
 		// policy that now refuses what it only warned about, is news.
-		if k := fmt.Sprintf("unchecked|%s|%s|%s|%d|%s", action, cf.ClaimID, cf.Pattern, cf.Since.UnixNano(), p.Path); !c.Alerted[k] {
+		if k := uncheckedKey(action, cf); !c.Alerted[k] {
 			if c.Alerted == nil {
 				c.Alerted = map[string]bool{}
 			}

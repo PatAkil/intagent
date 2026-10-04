@@ -122,8 +122,9 @@ func (b *Board) recordUncheckedBreach(now time.Time, c *claim, s *session, told 
 }
 
 // uncheckedKey remembers in Alerted that an unchecked change to a file inside
-// a reservation was reported under a policy action. It is the key
-// reportUnchecked keeps, so a change is reported once whichever finds it.
+// a reservation was reported under a policy action. reportUnchecked and
+// recordUncheckedBreach both keep it, so a change is reported once whichever
+// finds it.
 func uncheckedKey(action Action, cf Conflict) string {
 	return fmt.Sprintf("unchecked|%s|%s|%s|%d|%s", action, cf.ClaimID, cf.Pattern, cf.Since.UnixNano(), cf.Path)
 }

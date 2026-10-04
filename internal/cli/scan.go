@@ -43,8 +43,8 @@ func scanDue(root string, kind board.Kind, now time.Time) bool {
 }
 
 // cacheDir is intagent's directory in the user's cache, where the hook log,
-// the stamps that pace scans and the index copies they keep live, or "" if
-// there is none.
+// the stamps that pace scans, the index copies they keep and the ledgers of
+// edits that went ahead unchecked live, or "" if there is none.
 func cacheDir() string {
 	dir, err := os.UserCacheDir()
 	if err != nil {

@@ -53,14 +53,15 @@ type uncheckedEdit struct {
 	Paths []string `json:"paths"`
 }
 
-// ledgerFile names the ledger of a session in a worktree.
+// ledgerFile names the ledger of a session in a worktree, in intagent's
+// cache directory beside the hook log and the scan stamps.
 func ledgerFile(root, session string) (string, bool) {
-	dir, err := os.UserCacheDir()
-	if err != nil {
+	dir := cacheDir()
+	if dir == "" {
 		return "", false
 	}
 	sum := sha256.Sum256([]byte(root + "\x00" + session))
-	return filepath.Join(dir, "intagent", ledgerPrefix+hex.EncodeToString(sum[:8])), true
+	return filepath.Join(dir, ledgerPrefix+hex.EncodeToString(sum[:8])), true
 }
 
 // unanswered reports whether err means the server did not answer: the
@@ -91,7 +92,7 @@ func noteUnchecked(root, session, id string, at time.Time, refs []board.PathRef)
 		e.Paths = append(e.Paths, r.Path)
 	}
 	line, err := json.Marshal(e)
-	if err != nil || os.MkdirAll(filepath.Dir(p), 0o700) != nil {
+	if err != nil {
 		return
 	}
 	f, err := os.OpenFile(p, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
