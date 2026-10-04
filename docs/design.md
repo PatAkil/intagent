@@ -106,6 +106,11 @@ worktree's real footprint:
 - `git diff --name-only <merge-base>` (committed and uncommitted changes);
 - `git ls-files --others --exclude-standard` (new files).
 
+The diff runs on a private copy of the index (`GIT_INDEX_FILE`): git diff writes back the index it refreshed, under
+`.git/index.lock`, even with `GIT_OPTIONAL_LOCKS=0`, and that lock refuses the person's and other agents' `git add` while
+it is held. Git out of time is stopped with SIGTERM, so it removes its lock files (Windows has no such signal: there it
+is killed, and the private index is what keeps the real one unlocked).
+
 The server replaces the claim's git-derived footprint with this list. Hook-recorded touches newer than the
 reconciliation stay. Once a branch is merged and the worktree is clean, the footprint is empty and the claim releases
 itself.

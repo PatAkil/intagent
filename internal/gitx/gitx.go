@@ -8,6 +8,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"net/url"
 	"os"
 	"os/exec"
@@ -34,17 +36,31 @@ type Worktree struct {
 // defaultTimeout bounds a git command when the caller set no deadline.
 const defaultTimeout = 10 * time.Second
 
+// stopDelay is how long git has to stop once its deadline has passed, and a
+// helper it started to let go of its output, before both are killed.
+const stopDelay = 200 * time.Millisecond
+
 // run executes git in dir and returns its stdout.
 func run(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	return runEnv(ctx, dir, nil, args...)
+}
+
+// runEnv is run with env added to git's environment.
+func runEnv(ctx context.Context, dir string, env []string, args ...string) ([]byte, error) {
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, defaultTimeout)
 		defer cancel()
 	}
 	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.WaitDelay = time.Second // a helper git started may hold the output open after git is killed
+	// At the deadline git is asked to stop rather than killed: it removes its
+	// lock files as it stops, while a git killed as it rewrites the index
+	// leaves .git/index.lock behind, and that refuses every later git add and
+	// commit in the worktree until someone deletes it.
+	cmd.Cancel = func() error { return terminate(cmd.Process) }
+	cmd.WaitDelay = stopDelay
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0", "LC_ALL=C")
+	cmd.Env = append(append(os.Environ(), "GIT_OPTIONAL_LOCKS=0", "LC_ALL=C"), env...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -174,14 +190,14 @@ func (w *Worktree) DefaultBranch(ctx context.Context) (string, error) {
 	return "", errors.New("no default branch found")
 }
 
-// Changes lists the files that differ from the default branch: committed
-// changes since the merge base, uncommitted changes, and untracked files. It
-// keeps at most limit paths and reports whether it dropped any.
+// Changes lists every file that differs from the default branch, sorted:
+// committed changes since the merge base, uncommitted changes, and untracked
+// files. It also returns the commit it compared with: the merge base, or
+// "HEAD" when there is no default branch to compare with.
 //
-// It scans the working tree once, with git status, so git's untracked cache
-// and fsmonitor apply; committed changes come from a tree-to-tree diff, which
-// does not touch the working tree at all.
-func (w *Worktree) Changes(ctx context.Context, limit int) ([]string, bool, error) {
+// The diff runs on a private copy of the index (see privateIndex), and git
+// ls-files honours GIT_OPTIONAL_LOCKS=0, so neither takes .git/index.lock.
+func (w *Worktree) Changes(ctx context.Context) ([]string, string, error) {
 	seen := map[string]bool{}
 	var files []string
 	add := func(list []byte) {
@@ -203,27 +219,91 @@ func (w *Worktree) Changes(ctx context.Context, limit int) ([]string, bool, erro
 	}
 	// The worktree against the base, committed or not: a change made on the
 	// branch and then undone is no change at all.
-	tracked, err := run(ctx, w.Root, "diff", "--name-only", "--no-renames", "-z", base, "--")
+	index, done := w.privateIndex(ctx)
+	defer done()
+	tracked, err := runEnv(ctx, w.Root, index, "diff", "--name-only", "--no-renames", "-z", base, "--")
 	if err != nil {
 		if base != "HEAD" {
-			return nil, false, err
+			return nil, "", err
 		}
 		// No commits yet: everything in the index is new.
 		if tracked, err = run(ctx, w.Root, "ls-files", "-z"); err != nil {
-			return nil, false, err
+			return nil, "", err
 		}
 	}
 	add(tracked)
 	untracked, err := run(ctx, w.Root, "ls-files", "--others", "--exclude-standard", "-z")
 	if err != nil {
-		return nil, false, err
+		return nil, "", err
 	}
 	add(untracked)
 	sort.Strings(files)
-	if limit > 0 && len(files) > limit {
-		return files[:limit], true, nil
+	return files, base, nil
+}
+
+// privateIndex copies the worktree's index into a temporary directory. It
+// returns the environment that points git at the copy, and a function that
+// removes the copy.
+//
+// git diff refreshes the index it reads: for a file whose timestamps changed
+// and whose content did not, as a formatter or code generator leaves files,
+// it writes the index back under index.lock, GIT_OPTIONAL_LOCKS=0
+// notwithstanding. On the real index that lock refuses the person's and
+// other agents' git add and commit while it is held, and outlives a git
+// stopped by force while holding it. On a copy, the lock and the rewrite are
+// intagent's alone, and the answer is the same. Without a copy, git reads
+// the real index.
+func (w *Worktree) privateIndex(ctx context.Context) ([]string, func()) {
+	none := func() {}
+	out, err := run(ctx, w.Root, "rev-parse", "--git-path", "index")
+	if err != nil {
+		return nil, none
 	}
-	return files, false, nil
+	src := strings.TrimSuffix(string(out), "\n")
+	if !filepath.IsAbs(src) {
+		src = filepath.Join(w.Root, src)
+	}
+	dir, err := os.MkdirTemp("", "intagent-index-")
+	if err != nil {
+		return nil, none
+	}
+	remove := func() { _ = os.RemoveAll(dir) } // a temporary directory; nothing to do if it cannot go
+	dst := filepath.Join(dir, "index")
+	// A worktree without an index reads as an empty one, and so does a copy
+	// that does not exist.
+	if err := copyFile(src, dst); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		remove()
+		return nil, none
+	}
+	return []string{"GIT_INDEX_FILE=" + dst}, remove
+}
+
+// copyFile copies src to dst, which must not exist, and gives dst src's
+// modification time: git trusts what an index records about a file only
+// when the file is older than the index, and must judge the copy as it would
+// the original.
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = in.Close() }() // read only
+	fi, err := in.Stat()
+	if err != nil {
+		return err
+	}
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		return err
+	}
+	if err := out.Close(); err != nil {
+		return err
+	}
+	return os.Chtimes(dst, fi.ModTime(), fi.ModTime())
 }
 
 // Staged lists the paths staged for the next commit.

@@ -151,9 +151,13 @@ func (w *workspace) ignored(rel string) bool {
 
 // footprint reports the worktree's changes against the default branch.
 func (w *workspace) footprint(ctx context.Context) (*board.Footprint, error) {
-	files, truncated, err := w.wt.Changes(ctx, maxFootprint)
+	files, _, err := w.wt.Changes(ctx)
 	if err != nil {
 		return nil, err
+	}
+	truncated := len(files) > maxFootprint
+	if truncated {
+		files = files[:maxFootprint]
 	}
 	fp := &board.Footprint{Files: make([]board.PathRef, 0, len(files)), Truncated: truncated}
 	for _, f := range files {
