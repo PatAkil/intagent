@@ -195,7 +195,9 @@ func TestHealthReportsUncheckedEdits(t *testing.T) {
 func TestDashboardHearsTheServerIsDegraded(t *testing.T) {
 	ts := newTestServer(t)
 	open := func() (*bufio.Reader, func()) {
-		ctx, cancel := context.WithCancel(context.Background())
+		// Bounded, so that a status that never comes fails the test rather
+		// than hang it until go test's own timeout.
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.url+"/v1/stream?repo="+repo, nil)
 		req.Header.Set("Authorization", "Bearer "+ts.tokens["bob"])
 		resp, err := http.DefaultClient.Do(req)
