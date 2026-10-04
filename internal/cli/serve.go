@@ -53,6 +53,11 @@ func (a *App) serve(ctx context.Context, args []string) error {
 			*l.field = -1 // in StreamLimits zero takes the default, and less allows none
 		}
 	}
+	if *maxConns < 1 {
+		// The server takes 0 as its default; on the command line it would read
+		// as no connections at all.
+		return errors.New("--max-connections must be at least 1")
+	}
 	if len(tlsCerts) != len(tlsKeys) {
 		return errors.New("--tls-cert and --tls-key go together")
 	}

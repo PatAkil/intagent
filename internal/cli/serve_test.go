@@ -100,3 +100,20 @@ func TestServeWithTwoCertificates(t *testing.T) {
 		t.Fatalf("the client got a %v certificate", alg)
 	}
 }
+
+// A connection limit below one is refused rather than read as the default,
+// as a stream cap of 0 would allow no dashboards.
+func TestServeRefusesAConnectionLimitBelowOne(t *testing.T) {
+	dir := t.TempDir()
+	for _, n := range []string{"0", "-1"} {
+		var errb safeBuffer
+		app := &App{In: strings.NewReader(""), Out: &errb, Err: &errb, Version: "test", Dir: dir}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second) // a server that starts stops
+		code := app.Run(ctx, []string{"serve", "--config", filepath.Join(dir, "team.json"), "--data", "", "--addr", "127.0.0.1:0",
+			"--max-connections", n})
+		cancel()
+		if code == 0 || !strings.Contains(errb.String(), "--max-connections must be at least 1") {
+			t.Errorf("--max-connections %s: %d %s", n, code, errb.String())
+		}
+	}
+}
