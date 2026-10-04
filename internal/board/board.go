@@ -745,7 +745,7 @@ func (b *Board) breachedReservation(c *claim, cf Conflict) bool {
 		return false // a plan, not a change
 	}
 	for _, in := range c.Intents {
-		if in.Mode == ModeExclusive && glob.Match(in.Pattern, cf.Path) && !t.At.Before(in.DeclaredAt) {
+		if in.Mode == ModeExclusive && match(in.Pattern, cf.Path) && !t.At.Before(in.DeclaredAt) {
 			return true
 		}
 	}
@@ -754,7 +754,7 @@ func (b *Board) breachedReservation(c *claim, cf Conflict) bool {
 
 func coveredByIntent(c *claim, path string) bool {
 	for _, in := range c.Intents {
-		if glob.Match(in.Pattern, path) {
+		if match(in.Pattern, path) {
 			return true
 		}
 	}
@@ -793,6 +793,9 @@ func (b *Board) conflictsFor(now time.Time, self *claim, selfSession string, p P
 	if self != nil {
 		repo = self.Repo
 	}
+	if trace != nil {
+		trace.conflictsFor++
+	}
 	var out []Conflict
 	for _, o := range b.claims {
 		if o.Repo != repo || (self != nil && o.ID == self.ID) {
@@ -817,6 +820,9 @@ func (b *Board) conflictsFor(now time.Time, self *claim, selfSession string, p P
 }
 
 func (b *Board) conflictWith(now time.Time, o *claim, p PathRef, active bool) (Conflict, bool) {
+	if trace != nil {
+		trace.conflictWith++
+	}
 	best := Conflict{Path: p.Path, Area: p.Area, ClaimID: o.ID, Member: o.Member, Branch: o.Branch, Task: o.Task, Active: active}
 	consider := func(sev Severity, why, pattern string, since time.Time) {
 		if sev > best.Severity {
@@ -824,7 +830,7 @@ func (b *Board) conflictWith(now time.Time, o *claim, p PathRef, active bool) (C
 		}
 	}
 	for _, in := range o.Intents {
-		if !glob.Match(in.Pattern, p.Path) {
+		if !match(in.Pattern, p.Path) {
 			continue
 		}
 		sev := SeverityOverlap
@@ -856,6 +862,10 @@ func (b *Board) conflictWith(now time.Time, o *claim, p PathRef, active bool) (C
 
 // workedInArea reports whether a claim changed or declared anything in area.
 func workedInArea(c *claim, area string) (time.Time, bool) {
+	if trace != nil {
+		trace.workedInArea++
+		trace.areaVisits += len(c.Footprint)
+	}
 	var latest time.Time
 	found := false
 	for _, t := range c.Footprint {
@@ -868,7 +878,7 @@ func workedInArea(c *claim, area string) (time.Time, bool) {
 		if dir == "" {
 			continue
 		}
-		if glob.Match(area, dir) || glob.Match(dir, area) {
+		if match(area, dir) || match(dir, area) {
 			if in.DeclaredAt.After(latest) {
 				latest = in.DeclaredAt
 			}
@@ -1224,7 +1234,7 @@ func (b *Board) exclusiveClash(self *claim, pattern string, live map[string]bool
 			continue
 		}
 		for _, in := range o.Intents {
-			if in.Mode == ModeExclusive && glob.Overlap(in.Pattern, pattern) {
+			if in.Mode == ModeExclusive && overlap(in.Pattern, pattern) {
 				return Conflict{Path: pattern, Severity: SeverityBlock, ClaimID: o.ID, Member: o.Member, Branch: o.Branch, Task: o.Task,
 					Why: "holds exclusive intent " + in.Pattern, Pattern: in.Pattern, Since: in.DeclaredAt, Active: true}, true
 			}
@@ -1255,7 +1265,7 @@ func (b *Board) intentOverlaps(c *claim, in Intent, live map[string]bool) []Conf
 		}
 		cf := Conflict{Path: in.Pattern, ClaimID: o.ID, Member: o.Member, Branch: o.Branch, Task: o.Task, Active: live[o.ID]}
 		for _, oi := range o.Intents {
-			if glob.Overlap(oi.Pattern, in.Pattern) {
+			if overlap(oi.Pattern, in.Pattern) {
 				sev := SeverityOverlap
 				if oi.Mode == ModeExclusive && cf.Active {
 					sev = SeverityBlock
@@ -1270,7 +1280,7 @@ func (b *Board) intentOverlaps(c *claim, in Intent, live map[string]bool) []Conf
 			var hit []string
 			var since time.Time
 			for p, t := range o.Footprint {
-				if glob.Match(in.Pattern, p) {
+				if match(in.Pattern, p) {
 					hit = append(hit, p)
 					if t.At.After(since) {
 						since = t.At
