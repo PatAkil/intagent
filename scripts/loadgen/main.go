@@ -53,8 +53,8 @@
 // The report gives p50, p95, p99 and max latency per endpoint and hook kind,
 // errors, requests over 2 s (a hook gives up then, and a pre_edit goes
 // unchecked), what pre_edits were told (an answer marked unchecked, from a
-// server that got to the edit after its agent stopped waiting, counts as
-// none), events per stream and their delivery lag, the gap and status events
+// server that got to the edit after its agent stopped waiting or was too
+// busy with large requests to check it, counts as none), events per stream and their delivery lag, the gap and status events
 // the streams carried, and the server's RSS and CPU from /proc (-pid or
 // -pidfile).
 package main
@@ -391,7 +391,8 @@ func (r *recorder) timed(hc *http.Client, auth func(*http.Request), limit time.D
 
 // answeredLate counts as unchecked a pre_edit answered in time but marked
 // unchecked: the server got to it after its agent would have stopped waiting,
-// and the agent's hook takes that answer as none.
+// or was too busy with large requests to check it, and the agent's hook takes
+// that answer as none.
 func (r *recorder) answeredLate(key string, start time.Time) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -625,7 +626,7 @@ func told(res board.HookResult) string {
 	}
 	switch {
 	case res.Unchecked:
-		return "nothing in time (answered unchecked: the server got to it too late)"
+		return "nothing in time (answered unchecked: the server got to it too late, or was too busy to check it)"
 	case res.Decision == "":
 		return "nothing (an error)"
 	case res.Decision == board.DecisionAllow && res.Context != "":

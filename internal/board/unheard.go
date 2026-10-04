@@ -49,8 +49,9 @@ func refuseTool(s *session, id string, spent []string) {
 
 // unansweredEdit handles a post_edit for a call the board did not see start,
 // or saw refused: the agent made the edit without hearing a check of it. Its
-// pre_edit never arrived, arrived after the agent stopped waiting, or was
-// answered with a refusal that did not reach the agent.
+// pre_edit never arrived, arrived after the agent stopped waiting, was let
+// through unchecked by a server too busy to check it, or was answered with a
+// refusal that did not reach the agent.
 //
 // What a refusal spent is unspent, and only that: the next attempt is
 // refused again and heard, while bumps the agent heard before stay spent. The
@@ -143,8 +144,8 @@ func renderUnanswered(now time.Time, cs []Conflict) string {
 		}
 		reserved = reserved || cf.Severity == SeverityBlock
 	}
-	lines := []string{fmt.Sprintf("%s Your edit of %s was not checked before it ran: the team server's answer did not reach your agent in time. "+
-		"Other work on it %s:", prefix, listPaths(paths, 3), dataNotice)}
+	lines := []string{fmt.Sprintf("%s Your edit of %s was not checked before it ran: the team server was too busy to check it, "+
+		"or its answer did not reach your agent in time. Other work on it %s:", prefix, listPaths(paths, 3), dataNotice)}
 	for i, cf := range cs {
 		if i == 4 {
 			lines = append(lines, fmt.Sprintf("- and %d more.", len(cs)-4))

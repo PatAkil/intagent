@@ -166,7 +166,7 @@ func (a *App) handleHook(ctx context.Context, ad hook.Adapter, ev hook.Event) (h
 	defer cancel()
 	res, err := sendHook(ctx, ws, hev, began)
 	if err == nil && res.Unchecked && ev.Kind == board.KindPreEdit {
-		err = errAnsweredLate
+		err = errUnchecked
 	}
 	switch {
 	case client.IsUnauthorized(err):

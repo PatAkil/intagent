@@ -42,9 +42,10 @@ const (
 	tellPaths = 5
 )
 
-// errAnsweredLate is the server answering a pre_edit it did not check,
-// because the agent would have stopped waiting by the time it did.
-var errAnsweredLate = errors.New("the server got to the edit too late to check it")
+// errUnchecked is the server answering a pre_edit it did not check: it got
+// to the edit after its agent would have stopped waiting, or was too busy
+// with large requests to check it (board.HookResult.Unchecked).
+var errUnchecked = errors.New("the server was too busy to check the edit in time")
 
 // uncheckedEdit is one line of a ledger.
 type uncheckedEdit struct {
@@ -194,6 +195,6 @@ func renderUnchecked(edits []uncheckedEdit, url string) string {
 	if more := len(paths) - tellPaths; more > 0 {
 		named += fmt.Sprintf(" and %d more", more)
 	}
-	return fmt.Sprintf("[intagent] %s ahead without a check: the team's intagent server at %s did not answer in time. "+
+	return fmt.Sprintf("[intagent] %s ahead without a check: the team's intagent server at %s was too busy or did not answer in time. "+
 		"A teammate may be working on %s. Check %s with the intagent check_paths tool, or tell your user.", head, url, named, them)
 }

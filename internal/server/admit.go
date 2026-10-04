@@ -17,12 +17,17 @@ import (
 // megabyte costs up to 35 ms of CPU and 18 MB of garbage. Each member has a
 // budget of bytes for them, and only a few are decoded at once.
 //
-// A pre_edit is never refused for load: under INTAGENT_FAIL=closed its hook
-// would refuse the edit. Most are a few hundred bytes and not metered at all.
+// A pre_edit is never answered 429 or 503: its agent should hear that its
+// edit was not checked. Most are a few hundred bytes and not metered at all.
 // One that names a few hundred files, as a codemod's patch does, is over
 // largeBody and draws on a budget of its own, which the member's footprints
 // do not spend. When that budget or the wait for a slot runs out, the server
-// lets the edit through unchecked and tells its agent so.
+// answers the edit as one it got to too late: allow, marked unchecked, and
+// counted towards the server's being degraded. A hook under
+// INTAGENT_FAIL=closed refuses it, as it refuses any edit the server did not
+// check; any other lets it through, notes it, and tells its agent later. A
+// hook older than the mark lets it through, even under INTAGENT_FAIL=closed,
+// and its agent reads why in the answer's context.
 const (
 	largeBody       = 16 << 10
 	memberByteRate  = 4 << 20  // bytes a second, per member, for each budget
@@ -178,16 +183,16 @@ func startsPreEdit(r *http.Request) bool {
 	return bytes.Equal(head, preEditStart)
 }
 
-// uncheckedEdit answers a pre_edit the server is too busy to check: the edit
-// goes ahead, as it would if the hook had timed out, but its agent hears why.
-// It counts as a pre_edit that went ahead unchecked, as one answered too late
-// does, towards the server's being degraded.
+// uncheckedEdit answers a pre_edit the server is too busy to check as it
+// answers one it got to too late (board.HookResult.Unchecked), and counts it
+// the same towards the server's being degraded. Its context says why, for
+// clients older than the mark, which let the edit go ahead with the note.
 func (s *Server) uncheckedEdit(w http.ResponseWriter, r *http.Request, member, why string) {
 	c := s.hookWaiter(r)
 	s.answers.preEdits.add(c.arrived)
 	s.uncheckedCall(c)
 	s.log.Warn("pre_edit let through unchecked", "member", member, "why", why)
-	writeJSON(w, http.StatusOK, board.HookResult{Decision: board.DecisionAllow, Context: uncheckedEditNote})
+	writeJSON(w, http.StatusOK, board.HookResult{Decision: board.DecisionAllow, Unchecked: true, Context: uncheckedEditNote})
 }
 
 const uncheckedEditNote = "[intagent] This edit goes ahead without a check: the team's intagent server is too busy " +

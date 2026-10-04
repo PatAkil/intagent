@@ -345,8 +345,9 @@ type HookResult struct {
 	ClaimID   string     `json:"claim_id,omitempty"`
 	Conflicts []Conflict `json:"conflicts,omitempty"`
 	// Unchecked says the board did not get to the event before its agent
-	// stopped waiting: nothing was checked or recorded, and the decision is
-	// allow. A client that refuses edits it cannot check refuses this one.
+	// stopped waiting, or the server was too busy to check it (a large
+	// pre_edit under load): nothing was checked or recorded, and the decision
+	// is allow. A client that refuses edits it cannot check refuses this one.
 	Unchecked bool `json:"unchecked,omitempty"`
 	// CheckedAfter says the board checked a reported edit after it ran, as
 	// the agent had not heard its pre_edit answered. What the check found is

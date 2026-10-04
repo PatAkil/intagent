@@ -258,14 +258,17 @@ while degraded), in its log and, if asked, by webhook.
   a second's wait). The hook then sends its session start, stop or session end again at once without the footprint:
   the event is small and never metered, and lost, a stop would leave its session working, to be announced as stalled,
   and a session's end would leave it live, its reservations refusing teammates' edits, for hours. The footprint is
-  not recorded as sent, so the next scan sends it. A pre_edit is never answered 429 or 503, since under
-  `INTAGENT_FAIL=closed` its hook would refuse the edit. Most are a few hundred bytes and not metered. One over 16 KB
-  (about 200 paths: a codemod's patch) draws on a budget of its own, which footprints do not spend, and when that
-  budget or the wait for a slot runs out the edit goes ahead unchecked and its agent is told so. The server knows a
-  pre_edit by how its body starts, `{"kind":"pre_edit"`, as intagent's clients write it, and refuses a body that
-  starts so and turns out to be another kind. Clients send only a prompt's first line, which is all the board reads.
-  Footprints and prompts are cut to size before the board's lock is taken: a footprint to its first 2000 entries,
-  duplicates and invalid paths included.
+  not recorded as sent, so the next scan sends it. A pre_edit is never answered 429 or 503: its agent should hear
+  that its edit was not checked. Most are a few hundred bytes and not metered. One over 16 KB (about 200 paths: a
+  codemod's patch) draws on a budget of its own, which footprints do not spend, and when that budget or the wait for
+  a slot runs out the server answers it as a late one: an allow marked `unchecked`, counted towards being degraded.
+  Under `INTAGENT_FAIL=closed` the hook refuses it, as any edit the server did not check; otherwise the edit goes
+  ahead and its agent is told, from the ledger or by its `post_edit`'s check. The answer's context tells it at once
+  to the agent of a hook older than the mark, which lets the edit go ahead even under `INTAGENT_FAIL=closed`. The
+  server knows a pre_edit by how its body starts, `{"kind":"pre_edit"`, as intagent's clients write it, and refuses a
+  body that starts so and turns out to be another kind. Clients send only a prompt's first line, which is all the
+  board reads. Footprints and prompts are cut to size before the board's lock is taken: a footprint to its first 2000
+  entries, duplicates and invalid paths included.
 - An edit is checked on the first 200 paths it names, and past that its agent is told how many were not checked; a
   check of more than 200 paths is refused rather than cut short, and `intagent check`, the MCP `check_paths` tool and
   `intagent guard` send more in checks of 200. Each path costs a pass over the repository's claims
@@ -282,11 +285,12 @@ while degraded), in its log and, if asked, by webhook.
 - An answer that makes no progress for 15 seconds is cut off, so a client that stops reading mid-answer (a laptop
   put to sleep) does not hold the server's memory; a slow client that keeps reading gets all of it.
 - The hook fails open with a short timeout. `INTAGENT_FAIL=closed` turns an unreachable server, an answer the server
-  could not check in time, or a setup intagent cannot read, into a refusal of edits in enrolled repositories, for
-  teams that want it. A whole hook run, git included, has 8 seconds, and at a session's end 4 for Claude Code, Gemini
-  CLI and Cursor and 2 for other agents (less if `CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS` asks), under the timeouts
-  `init` gives the agents, which would otherwise kill it and let the edit through; git gets what the server request
-  leaves of that, and at least half, so a slow git cannot keep the event from the server.
+  could not check in time or was too busy to check, or a setup intagent cannot read, into a refusal of edits in
+  enrolled repositories, for teams that want it. A whole hook run, git included, has 8 seconds, and at a session's
+  end 4 for Claude Code, Gemini CLI and Cursor and 2 for other agents (less if
+  `CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS` asks), under the timeouts `init` gives the agents, which would otherwise
+  kill it and let the edit through; git gets what the server request leaves of that, and at least half, so a slow git
+  cannot keep the event from the server.
 
 ## What it deliberately does not do
 

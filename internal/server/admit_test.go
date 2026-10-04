@@ -85,11 +85,11 @@ func reservedEdit(t *testing.T, ts *testServer, n int) board.HookEvent {
 	return ev
 }
 
-// A pre_edit over largeBody is never answered 429 or 503, which its hook
-// would turn into a refused edit under INTAGENT_FAIL=closed. It draws on a
+// A pre_edit over largeBody is never answered 429 or 503. It draws on a
 // budget the member's footprints do not spend, and when that budget, or the
-// wait for a slot, runs out, the edit goes ahead unchecked and its agent is
-// told so.
+// wait for a slot, runs out, it is answered as one the server got to too
+// late: allow, marked unchecked, so that a hook under INTAGENT_FAIL=closed
+// refuses the edit and any other notes it, with a note for older hooks.
 func TestLargeEditsAreNeverRefusedForLoad(t *testing.T) {
 	ts := newTestServer(t)
 	edit := reservedEdit(t, ts, 300)
@@ -112,14 +112,14 @@ func TestLargeEditsAreNeverRefusedForLoad(t *testing.T) {
 	}
 	checked := func(what string) {
 		t.Helper()
-		if code, res := send(); code != http.StatusOK || len(res.Conflicts) == 0 || strings.Contains(res.Context, "without a check") {
+		if code, res := send(); code != http.StatusOK || len(res.Conflicts) == 0 || res.Unchecked || strings.Contains(res.Context, "without a check") {
 			t.Fatalf("%s: %d %+v", what, code, res)
 		}
 	}
 	unchecked := func(what string) {
 		t.Helper()
-		if code, res := send(); code != http.StatusOK || res.Decision != board.DecisionAllow || res.Context != uncheckedEditNote ||
-			len(res.Conflicts) != 0 {
+		if code, res := send(); code != http.StatusOK || res.Decision != board.DecisionAllow || !res.Unchecked ||
+			res.Context != uncheckedEditNote || len(res.Conflicts) != 0 {
 			t.Fatalf("%s: %d %+v", what, code, res)
 		}
 	}
@@ -153,7 +153,7 @@ func TestEditsLetThroughForLoadAreCounted(t *testing.T) {
 	unchecked := func(what string, want int64) {
 		t.Helper()
 		var res board.HookResult
-		if code := ts.do(t, "POST", "/v1/hook", "bob", edit, &res); code != http.StatusOK || res.Context != uncheckedEditNote {
+		if code := ts.do(t, "POST", "/v1/hook", "bob", edit, &res); code != http.StatusOK || !res.Unchecked || res.Context != uncheckedEditNote {
 			t.Fatalf("%s: %d %+v", what, code, res)
 		}
 		if load := ts.answers.status(ts.requestClock()); load.PreEdits60s != want || load.Unchecked60s != want {

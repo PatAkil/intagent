@@ -132,13 +132,13 @@ func TestRenderUnchecked(t *testing.T) {
 		want  string
 	}{
 		{[]uncheckedEdit{{At: at, Paths: []string{"a.go"}}},
-			"[intagent] An edit this session made at 14:02 went ahead without a check: the team's intagent server at https://ia.example did not answer in time. " +
+			"[intagent] An edit this session made at 14:02 went ahead without a check: the team's intagent server at https://ia.example was too busy or did not answer in time. " +
 				"A teammate may be working on a.go. Check it with the intagent check_paths tool, or tell your user."},
 		{[]uncheckedEdit{{At: at + 60, Paths: []string{"a.go"}}, {At: at, Paths: []string{"b.go", "a.go"}}},
-			"[intagent] 2 of this session's edits since 14:02 went ahead without a check: the team's intagent server at https://ia.example did not answer in time. " +
+			"[intagent] 2 of this session's edits since 14:02 went ahead without a check: the team's intagent server at https://ia.example was too busy or did not answer in time. " +
 				"A teammate may be working on a.go, b.go. Check them with the intagent check_paths tool, or tell your user."},
 		{[]uncheckedEdit{{At: at, Paths: []string{"1", "2", "3", "4", "5", "6", "7"}}},
-			"[intagent] An edit this session made at 14:02 went ahead without a check: the team's intagent server at https://ia.example did not answer in time. " +
+			"[intagent] An edit this session made at 14:02 went ahead without a check: the team's intagent server at https://ia.example was too busy or did not answer in time. " +
 				"A teammate may be working on 1, 2, 3, 4, 5 and 2 more. Check them with the intagent check_paths tool, or tell your user."},
 	} {
 		if got := renderUnchecked(tc.edits, "https://ia.example"); got != tc.want {
@@ -153,7 +153,7 @@ func TestUnanswered(t *testing.T) {
 		want bool
 	}{
 		{errors.New("dial tcp 127.0.0.1:1: connection refused"), true},
-		{errAnsweredLate, true},
+		{errUnchecked, true},
 		{&client.APIError{Status: http.StatusServiceUnavailable}, true},
 		{&client.APIError{Status: http.StatusBadGateway}, true},
 		{&client.APIError{Status: http.StatusBadRequest}, false},
@@ -203,7 +203,7 @@ func TestHookTellsTheEditsItCouldNotCheck(t *testing.T) {
 	t.Setenv("INTAGENT_TOKEN", "")
 	t.Setenv("INTAGENT_TIMEOUT", "")
 	_, ctx := run("UserPromptSubmit", map[string]any{"prompt": "next"})
-	for _, want := range []string{"2 of this session's edits since", "went ahead without a check", "at " + tm.url + " did not answer",
+	for _, want := range []string{"2 of this session's edits since", "went ahead without a check", "at " + tm.url + " was too busy or did not answer",
 		"README.md, svc/pay/retry.go", "check_paths"} {
 		if !strings.Contains(ctx, want) {
 			t.Errorf("missing %q in:\n%s", want, ctx)
@@ -311,29 +311,41 @@ func TestTellUncheckedLeavesOutTheEditTheServerChecked(t *testing.T) {
 	}
 }
 
-// A server that gets to an edit too late to check it says so; the hook then
-// does what it does when the server does not answer.
+// A server that did not check an edit says so, whether it got to the edit
+// too late or was too busy with large requests to check it; the hook then
+// does what it does when the server does not answer: under
+// INTAGENT_FAIL=closed it refuses the edit, and otherwise lets it through and
+// notes it in the ledger. The context the second answer carries is for older
+// hooks, which do not read the mark.
 func TestHookTreatsAnUncheckedAnswerAsNoAnswer(t *testing.T) {
 	tm := newTeam(t, "alice")
 	a := tm.clone("alice")
 	tm.enrol(map[string]string{"alice": a})
-	late := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"decision":"allow","unchecked":true}`))
-	}))
-	defer late.Close()
-	t.Setenv("INTAGENT_URL", late.URL)
-	t.Setenv("INTAGENT_TOKEN", tm.tokens["alice"])
-	ev := claudeEvent("a1", a, "PreToolUse", map[string]any{"tool_name": "Edit", "tool_input": map[string]any{"file_path": filepath.Join(a, "README.md")}})
-	if out, _, code := tm.as("alice", a, ev, "hook", "claude-code"); out != "" || code != 0 {
-		t.Fatalf("unchecked answer: %q %d", out, code)
-	}
-	if edits := claimUnchecked(a, "a1", time.Now()); len(edits) != 1 || edits[0].Paths[0] != "README.md" {
-		t.Fatalf("ledger: %+v", edits)
-	}
-	t.Setenv("INTAGENT_FAIL", "closed")
-	out, _, _ := tm.as("alice", a, ev, "hook", "claude-code")
-	if dec, reason, _ := decision(t, out); dec != "deny" || !strings.Contains(reason, "too late to check") {
-		t.Fatalf("fail-closed, unchecked answer: %q", out)
+	for i, tc := range []struct{ name, body string }{
+		{"answered too late", `{"decision":"allow","unchecked":true}`},
+		{"let through for load", `{"decision":"allow","context":"[intagent] This edit goes ahead without a check: the team's ` +
+			`intagent server is too busy with large requests to compare it with teammates' work.","unchecked":true}`},
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(tc.body))
+		}))
+		t.Setenv("INTAGENT_URL", srv.URL)
+		t.Setenv("INTAGENT_TOKEN", tm.tokens["alice"])
+		session := fmt.Sprintf("a%d", i)
+		ev := claudeEvent(session, a, "PreToolUse", map[string]any{"tool_name": "Edit", "tool_input": map[string]any{"file_path": filepath.Join(a, "README.md")}})
+		t.Setenv("INTAGENT_FAIL", "")
+		if out, _, code := tm.as("alice", a, ev, "hook", "claude-code"); out != "" || code != 0 {
+			t.Fatalf("%s: %q %d", tc.name, out, code)
+		}
+		if edits := claimUnchecked(a, session, time.Now()); len(edits) != 1 || edits[0].Paths[0] != "README.md" {
+			t.Fatalf("%s: ledger %+v", tc.name, edits)
+		}
+		t.Setenv("INTAGENT_FAIL", "closed")
+		out, _, _ := tm.as("alice", a, ev, "hook", "claude-code")
+		if dec, reason, _ := decision(t, out); dec != "deny" || !strings.Contains(reason, "too busy to check") {
+			t.Fatalf("%s, fail-closed: %q", tc.name, out)
+		}
+		srv.Close()
 	}
 }
 

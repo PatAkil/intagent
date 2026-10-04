@@ -237,8 +237,9 @@ A hook waits `INTAGENT_TIMEOUT` (2 s) for the server and then lets the edit thro
 waits, and the server does not decide anything for an agent that has gone ahead: no refusal is counted or announced for
 it, and a bump it never saw still stops its next edit of the file. What the agent did is recorded all the same, and what
 it has not heard yet waits for its next answer. An edit that names more than about 200 files is a large request: when
-its member has sent too many of those, or the server stays busy with other large requests for a second, it goes ahead
-unchecked and its agent is told so. The agent is then told which of its edits went ahead without a check: by the server
+its member has sent too many of those, or the server stays busy with other large requests for a second, the server
+answers it unchecked, as it answers an edit it got to too late, and the hook lets it through or, under
+`INTAGENT_FAIL=closed`, refuses it. The agent is then told which of its edits went ahead without a check: by the server
 when the edit is reported, with what a check finds then, and otherwise by the hook, from a ledger it keeps per worktree
 and session in the user cache directory (`~/.cache/intagent` on Linux) for a day, or until the session ends. The
 dashboard counts the edits the server got to too late beside the checked ones.
@@ -274,13 +275,15 @@ answers 503, with `"ok": false`, while degraded, for monitors that alert.
 | `intagent guard` | Pre-commit check against teammates' exclusive intents. |
 | `intagent hook [<agent>]` / `intagent mcp` | Called by agents; the hook recognises the agent from what it sends. |
 
-Environment: `INTAGENT_URL` and `INTAGENT_TOKEN` override the configuration, `INTAGENT_DISABLE=1` turns intagent
-off, `INTAGENT_FAIL=closed` refuses edits in enrolled repositories while intagent cannot check them (the server is
-unreachable, or the setup cannot be read; the default is to fail open), `INTAGENT_TIMEOUT` bounds each request
-(default `2s`). A whole hook run, git included, takes at most 8 seconds, and at a session's end 4 for Claude Code,
-Gemini CLI and Cursor and 2 for other agents (less if `CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS` asks), under the
-timeouts `intagent init` gives the agents, so a longer `INTAGENT_TIMEOUT` is cut short there. `intagent check`, the
-MCP `check_paths` tool and `intagent guard` send more than 200 paths in several checks.
+Environment: `INTAGENT_URL` and `INTAGENT_TOKEN` override the configuration, `INTAGENT_DISABLE=1` turns intagent off,
+`INTAGENT_FAIL=closed` refuses edits in enrolled repositories while intagent cannot check them (the server is
+unreachable or too busy to check them, or the setup cannot be read; the default is to fail open), `INTAGENT_TIMEOUT`
+bounds each request (default `2s`). A whole hook run, git included, takes at most 8 seconds, and at a session's end 4
+for Claude Code, Gemini CLI and Cursor and 2 for other agents (less if `CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS` asks),
+under the timeouts `intagent init` gives the agents, so a longer `INTAGENT_TIMEOUT` is cut short there.
+`intagent check`, the MCP `check_paths` tool and `intagent guard` send more than 200 paths in several checks. Under
+`INTAGENT_FAIL=closed`, a hook older than this release lets an edit the server is too busy to check go ahead, with a
+note to its agent.
 
 ## Security model
 
