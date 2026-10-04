@@ -428,3 +428,24 @@ func TestDirectoriesCountAgainstTheByteBudgets(t *testing.T) {
 	}
 	mustIndex(t, h.b, "the footprints")
 }
+
+// A hook that reports changes to files a full footprint holds, from git,
+// and to new ones keeps all of them, and makes room for the new ones from
+// the other files git found: before, the room could be made by letting go
+// of one of the hook's own files, which it then added back as new, past the
+// footprint's bound, and told teammates of again.
+func TestAHooksOwnFilesAreNotLetGoToMakeRoom(t *testing.T) {
+	h := newHarness(t, func(c *Config) { c.MaxFootprint = 12 })
+	var files []string
+	for i := range 12 {
+		files = append(files, fmt.Sprintf("a%02d.go", i))
+	}
+	h.scanAt("alice", "w", "a1", files...)
+	h.at(KindPostEdit, "alice", "w", "a1", "a11.go", "b.go")
+	c := h.claimIn("alice", "w")
+	t11, kept := c.Footprint["a11.go"], c.Footprint["b.go"] != nil
+	if len(c.Footprint) != 12 || t11 == nil || t11.FromGit || !kept || c.Footprint["a10.go"] != nil {
+		t.Fatalf("the footprint holds %d files; a11.go %+v, b.go %v, a10.go %v; want 12, both the hook's, a10.go let go",
+			len(c.Footprint), t11, kept, c.Footprint["a10.go"] != nil)
+	}
+}

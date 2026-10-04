@@ -979,23 +979,26 @@ func (b *Board) touch(now time.Time, c *claim, s *session, paths []PathRef) {
 		return
 	}
 	// A file an agent just wrote matters more than one git listed, which
-	// makes room for it if the footprint is full.
+	// makes room for it if the footprint is full; but not one the agent
+	// wrote too, which is the hook's first.
 	files, bytes := 0, 0
 	for _, p := range paths {
-		if _, ok := c.Footprint[p.Path]; !ok {
+		t, ok := c.Footprint[p.Path]
+		if !ok {
 			files, bytes = files+1, bytes+footprintCost(p.Path, &touch{Area: p.Area})
+			continue
 		}
+		area := t.Area
+		if p.Area != "" {
+			area = p.Area
+		}
+		b.putTouch(c, p.Path, &touch{Area: area, At: now, Session: s.Key})
 	}
 	b.makeRoom(c, files, bytes)
 	var fresh []PathRef
 	for _, p := range paths {
-		if t, ok := c.Footprint[p.Path]; ok {
-			area := t.Area
-			if p.Area != "" {
-				area = p.Area
-			}
-			b.putTouch(c, p.Path, &touch{Area: area, At: now, Session: s.Key})
-			continue
+		if _, ok := c.Footprint[p.Path]; ok {
+			continue // the hook's already, above, or named twice
 		}
 		t := &touch{Area: p.Area, At: now, Session: s.Key}
 		if !b.hookFits(c, footprintCost(p.Path, t)) {
