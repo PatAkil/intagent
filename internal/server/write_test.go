@@ -2,6 +2,7 @@ package server
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -12,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/patakil/intagent/internal/board"
 )
 
 // slowConns caps the server's socket send buffers, so an answer of a few
@@ -23,51 +26,77 @@ func slowConns(ctx context.Context, c net.Conn) context.Context {
 	return ctx
 }
 
+// Answers bound how long they may go without progress, not how long they
+// take: a client that stops reading lets go of its handler, while one that
+// reads slowly but steadily gets everything, though the whole answer takes
+// several times writeTimeout. Each 64 KB piece reaches the slow client in
+// 20 to 60 ms, a fifth of writeTimeout or less; the whole answer takes at
+// least 3 MB at trickle's 3.2 MB/s, about 0.9 s. Both a writeJSON answer and
+// the shared board answer, written by writeBoard, are checked.
 func TestAnswersNeedProgressNotSpeed(t *testing.T) {
 	defer func(d time.Duration) { writeTimeout = d }(writeTimeout)
-	writeTimeout = time.Second
-	payload := map[string]string{"x": strings.Repeat("x", 2<<20)}
-	returned := make(chan struct{}, 1)
-	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		defer func() { returned <- struct{}{} }()
-		writeJSON(w, http.StatusOK, payload)
-	}))
-	srv.Config.ConnContext = slowConns
-	srv.Start()
-	defer srv.Close()
-	dial := func(readBuffer int) net.Conn {
-		c, err := net.Dial("tcp", srv.Listener.Addr().String())
-		if err != nil {
-			t.Fatal(err)
+	writeTimeout = 300 * time.Millisecond
+	big := strings.Repeat("x", 3<<20)
+	ts := newTestServer(t)
+	ts.boards.wrapView(func(view func(string) board.View) func(string) board.View {
+		return func(r string) board.View {
+			v := view(r)
+			v.Claims = []board.ClaimView{{ID: "c_1", Member: "alice", Task: big}}
+			return v
 		}
-		if readBuffer > 0 {
-			_ = c.(*net.TCPConn).SetReadBuffer(readBuffer)
-		}
-		fmt.Fprintf(c, "GET / HTTP/1.1\r\nHost: test\r\n\r\n")
-		return c
-	}
+	})
+	for _, c := range []struct {
+		name, path string
+		handler    http.Handler
+	}{
+		{"json", "/", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(w, http.StatusOK, map[string]string{"x": big})
+		})},
+		{"board", "/v1/board?repo=" + repo, ts.Handler()},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			returned := make(chan struct{}, 2)
+			srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				defer func() { returned <- struct{}{} }()
+				c.handler.ServeHTTP(w, r)
+			}))
+			srv.Config.ConnContext = slowConns
+			srv.Start()
+			defer srv.Close()
+			// The client's receive buffer is small too, so the reader, not
+			// the kernel, paces the writer.
+			dial := func() net.Conn {
+				conn, err := net.Dial("tcp", srv.Listener.Addr().String())
+				if err != nil {
+					t.Fatal(err)
+				}
+				_ = conn.(*net.TCPConn).SetReadBuffer(64 << 10)
+				fmt.Fprintf(conn, "GET %s HTTP/1.1\r\nHost: test\r\nAuthorization: Bearer %s\r\n\r\n", c.path, ts.tokens["bob"])
+				return conn
+			}
 
-	// A client that stops reading lets go of the handler.
-	stuck := dial(8 << 10)
-	defer func() { _ = stuck.Close() }()
-	select {
-	case <-returned:
-	case <-time.After(15 * time.Second):
-		t.Fatal("a client that reads nothing holds its handler")
-	}
+			stuck := dial()
+			defer func() { _ = stuck.Close() }()
+			select {
+			case <-returned:
+			case <-time.After(15 * time.Second):
+				t.Fatal("a client that reads nothing holds its handler")
+			}
 
-	// One that reads slowly but steadily gets the whole answer.
-	slow := dial(0)
-	defer func() { _ = slow.Close() }()
-	resp, err := http.ReadResponse(bufio.NewReaderSize(&trickle{r: slow}, 16<<10), nil)
-	if err != nil {
-		t.Fatal(err)
+			slow := dial()
+			defer func() { _ = slow.Close() }()
+			start := time.Now()
+			resp, err := http.ReadResponse(bufio.NewReaderSize(&trickle{r: slow}, 16<<10), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, err := io.ReadAll(resp.Body)
+			if err != nil || resp.StatusCode != http.StatusOK || !json.Valid(body) || !bytes.Contains(body, []byte(big)) {
+				t.Fatalf("slow client cut off after %v: %d, %v, %d bytes", time.Since(start), resp.StatusCode, err, len(body))
+			}
+			<-returned
+		})
 	}
-	var got map[string]string
-	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil || got["x"] != payload["x"] {
-		t.Fatalf("slow client: %v, %d bytes", err, len(got["x"]))
-	}
-	<-returned
 }
 
 // trickle reads at most 16 KB every 5 ms: about 3 MB/s, a 64 KB piece in 20 ms.
