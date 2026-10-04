@@ -11,11 +11,16 @@ import (
 )
 
 // streamRing is how many publishes the hub keeps for streams that have not
-// taken them yet. A stream takes everything new at most every streamLinger
-// plus the time its write takes, so it keeps up with several thousand
-// publishes a second; one that falls further behind is ended, and its
-// dashboard reconnects and catches up from the last event it saw.
-const streamRing = 1024
+// taken them yet, and streamRingBytes how many bytes of them. A stream takes
+// everything new at most every streamLinger plus the time its write takes,
+// so it keeps up with several thousand publishes a second; one that falls
+// further behind is ended, and its dashboard reconnects and catches up from
+// the last event it saw. The bytes bound what the ring holds when activities
+// are large: 1024 of 200 long paths each would be 200 MB.
+const (
+	streamRing      = 1024
+	streamRingBytes = 16 << 20
+)
 
 // StreamLimits caps the dashboard streams open at once. A stream counts until
 // its handler returns, so one stuck writing to a client that stopped reading
@@ -50,7 +55,9 @@ type hub struct {
 	limits StreamLimits
 	mu     sync.Mutex
 	ring   [streamRing][]frame
+	first  uint64        // the oldest publish the ring keeps, at ring[first%streamRing]
 	next   uint64        // publishes so far; the newest is ring[(next-1)%streamRing]
+	bytes  int           // the bytes of the publishes the ring keeps
 	wake   chan struct{} // closed at the next publish
 	subs   map[*subscriber]struct{}
 	open   map[string]int // streams whose handler has not returned, by member ("" for anonymous)
@@ -171,6 +178,8 @@ func (h *hub) end(s *subscriber) {
 }
 
 // unsubscribe removes a stream whose handler is returning, and frees its place.
+// The last one lets go of what the ring holds, which no stream will read: a
+// stream opened later starts after it.
 func (h *hub) unsubscribe(s *subscriber) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -178,6 +187,10 @@ func (h *hub) unsubscribe(s *subscriber) {
 	h.total--
 	if h.open[s.who.name]--; h.open[s.who.name] <= 0 {
 		delete(h.open, s.who.name)
+	}
+	if h.total == 0 {
+		clear(h.ring[:])
+		h.first, h.bytes = h.next, 0
 	}
 }
 
@@ -212,10 +225,33 @@ func (h *hub) send(frames []frame) {
 	if len(h.subs) == 0 {
 		return // a stream opened later starts after this
 	}
+	if h.next-h.first == streamRing {
+		h.dropOldest()
+	}
 	h.ring[h.next%streamRing] = frames
+	h.bytes += framesSize(frames)
 	h.next++
+	for h.bytes > streamRingBytes && h.next-h.first > 1 {
+		h.dropOldest()
+	}
 	close(h.wake)
 	h.wake = make(chan struct{})
+}
+
+// dropOldest lets go of the oldest publish the ring keeps; h.mu is held.
+func (h *hub) dropOldest() {
+	slot := &h.ring[h.first%streamRing]
+	h.bytes -= framesSize(*slot)
+	*slot = nil
+	h.first++
+}
+
+// framesSize is the bytes of the events in frames.
+func framesSize(frames []frame) (n int) {
+	for _, f := range frames {
+		n += len(f.data)
+	}
+	return n
 }
 
 // since appends to dst the publishes from pos on, and returns them with the
@@ -224,7 +260,7 @@ func (h *hub) send(frames []frame) {
 func (h *hub) since(pos uint64, dst [][]frame) (_ [][]frame, next uint64, wake <-chan struct{}, ok bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.next-pos > streamRing {
+	if pos < h.first {
 		return dst, h.next, h.wake, false
 	}
 	for ; pos < h.next; pos++ {

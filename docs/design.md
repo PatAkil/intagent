@@ -142,20 +142,21 @@ an atomic snapshot (write, fsync, rename) at most once a second and on shutdown.
 a few hundred sessions, which this handles with room to spare.
 
 The dashboard follows a repository through a server-sent event stream. Each activity is encoded once, and the server
-keeps the last 1024 publishes in one ring that every stream reads at its own pace, so publishing costs the same however
-many dashboards are open. A stream writes what is new in one write, then waits 100 ms before it takes more, so a burst
-wakes each stream ten times a second rather than once per activity. A stream that falls more than 1024 publishes behind
-is ended and catches up with `Last-Event-ID`. The board keeps the team's last 300 activities; when a reconnecting stream
-missed one it no longer keeps, the stream starts with `event: gap` and `data: {"after":N}`, and the dashboard marks the
-hole in its feed and reloads the board. The snapshot keeps, by repository, the newest activity the board let go of, so
-after a restart a dashboard is told of a gap only when it has one. A stream whose client takes no part of a write for 15
-seconds is ended, and on Linux the kernel gives up on a connection whose peer acknowledges nothing for a minute, so a
-dashboard that went away does not hold the server's memory. Streams are capped at 20 per member, 100 without a token on
-a board anyone may read, and 500 in all (`--max-member-streams`, `--max-public-streams`, `--max-streams`); a stream
-counts until its handler returns, and one over a cap is answered 429 with `Retry-After`, which the dashboard follows
-with its own backoff. A change to the team file ends only the streams opened with a token it removed or rotated, so
-adding a member disconnects nobody. When the server ends streams together, at shutdown say, each first tells its
-dashboard to reconnect after its own delay of 3 to 8 seconds, so they do not all come back and reload the board at once.
+keeps the last 1024 publishes, up to 16 MB of them, in one ring that every stream reads at its own pace, so publishing
+costs the same however many dashboards are open. A stream writes what is new in one write, then waits 100 ms before it
+takes more, so a burst wakes each stream ten times a second rather than once per activity. A stream that falls further
+behind than the ring keeps is ended and catches up with `Last-Event-ID`; when the last stream closes, the ring lets go
+of what it held. The board keeps the team's last 300 activities; when a reconnecting stream missed one it no longer
+keeps, the stream starts with `event: gap` and `data: {"after":N}`, and the dashboard marks the hole in its feed and
+reloads the board. The snapshot keeps, by repository, the newest activity the board let go of, so after a restart a
+dashboard is told of a gap only when it has one. A stream whose client takes no part of a write for 15 seconds is ended,
+and on Linux the kernel gives up on a connection whose peer acknowledges nothing for a minute, so a dashboard that went
+away does not hold the server's memory. Streams are capped at 20 per member, 100 without a token on a board anyone may
+read, and 500 in all (`--max-member-streams`, `--max-public-streams`, `--max-streams`); a stream counts until its
+handler returns, and one over a cap is answered 429 with `Retry-After`, which the dashboard follows with its own
+backoff. A change to the team file ends only the streams opened with a token it removed or rotated, so adding a member
+disconnects nobody. When the server ends streams together, at shutdown say, each first tells its dashboard to reconnect
+after its own delay of 3 to 8 seconds, so they do not all come back and reload the board at once.
 
 ## API
 

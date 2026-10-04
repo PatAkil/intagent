@@ -705,3 +705,83 @@ func TestHubKeepsTheLastStreamRingPublishes(t *testing.T) {
 		}
 	}
 }
+
+// ringBytes counts the bytes of every frame in the ring, whether or not the
+// hub counts the publish it is in as kept.
+func ringBytes(h *hub) (n int) {
+	for _, frames := range h.ring {
+		n += framesSize(frames)
+	}
+	return n
+}
+
+// largeActivity is an activity of 200 paths of about 1000 bytes each, as
+// large as a hook may make one: 200 KB as a stream sends it.
+func largeActivity(seq int) board.Activity {
+	a := board.Activity{Seq: uint64(seq), Kind: board.ActivityFileChanged, Repo: repo, Member: "alice"}
+	dir := strings.Repeat("d", 990)
+	for j := range 200 {
+		a.Paths = append(a.Paths, fmt.Sprintf("%s/%d/%d.go", dir, seq, j))
+	}
+	return a
+}
+
+// The ring keeps at most streamRingBytes of publishes besides the newest,
+// however few there are: 1024 large activities would have held 200 MB for
+// streams that had long taken them.
+func TestHubBoundsTheRingsBytes(t *testing.T) {
+	h := newHub(StreamLimits{})
+	h.subscribe(repo, memberHash{name: "bob"})
+	const n = 100 // 20 MB
+	for i := range n {
+		h.publish([]board.Activity{largeActivity(i + 1)})
+		if got := ringBytes(h); got != h.bytes {
+			t.Fatalf("after %d publishes the ring holds %d bytes, and the hub counts %d", i+1, got, h.bytes)
+		}
+	}
+	kept := int(h.next - h.first)
+	if h.bytes > streamRingBytes || kept == n {
+		t.Fatalf("%d large publishes: the ring keeps %d of them, %d bytes; want at most %d bytes", n, kept, h.bytes, streamRingBytes)
+	}
+	if _, _, _, ok := h.since(h.first-1, nil); ok {
+		t.Fatal("a stream behind what the ring keeps was given what it holds")
+	}
+	if batches, _, _, ok := h.since(h.first, nil); !ok || len(batches) != kept || batches[0][0].seq != h.first+1 {
+		t.Fatalf("a stream at the oldest publish kept: ok %v, %d publishes", ok, len(batches))
+	}
+
+	// One publish larger than the bound is still kept, alone.
+	f, _ := activityFrame(largeActivity(1))
+	var huge []board.Activity
+	for i := range streamRingBytes/len(f.data) + 1 {
+		huge = append(huge, largeActivity(n+1+i))
+	}
+	h.publish(huge)
+	if h.next-h.first != 1 || h.bytes != ringBytes(h) {
+		t.Fatalf("after a publish larger than the bound the ring keeps %d publishes, %d bytes (%d counted)", h.next-h.first, ringBytes(h), h.bytes)
+	}
+}
+
+// What the ring holds is let go of when the last stream closes, and not
+// before: no stream will read it, but one still open might.
+func TestHubLetsGoOfTheRingWithTheLastStream(t *testing.T) {
+	h := newHub(StreamLimits{})
+	a, _ := h.subscribe(repo, memberHash{name: "alice"})
+	b, _ := h.subscribe(repo, memberHash{name: "bob"})
+	for i := range 10 {
+		h.publish([]board.Activity{largeActivity(i + 1)})
+	}
+	h.unsubscribe(a)
+	if batches, _, _, ok := h.since(b.pos, nil); !ok || len(batches) != 10 {
+		t.Fatalf("with one stream still open: ok %v, %d publishes, want 10", ok, len(batches))
+	}
+	h.unsubscribe(b)
+	if held := ringBytes(h); held != 0 || h.bytes != 0 {
+		t.Fatalf("with no stream open the hub still holds %d bytes of activities (%d counted)", held, h.bytes)
+	}
+	c, _ := h.subscribe(repo, memberHash{name: "carol"})
+	h.publish([]board.Activity{largeActivity(11)})
+	if batches, _, _, ok := h.since(c.pos, nil); !ok || len(batches) != 1 || batches[0][0].seq != 11 {
+		t.Fatalf("a stream opened after: ok %v, %d publishes", ok, len(batches))
+	}
+}
