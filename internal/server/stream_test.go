@@ -2,8 +2,10 @@ package server
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"net"
@@ -498,6 +500,208 @@ func TestStreamSignalsAGapInItsReplay(t *testing.T) {
 		closeStream()
 		if got != c.want {
 			t.Errorf("after %s:\n%q\nwant\n%q", c.last, got, c.want)
+		}
+	}
+}
+
+// gatedWriter is a client that records what its stream writes. While held,
+// each write says so on waiting, then waits until the client is released.
+type gatedWriter struct {
+	*discardWriter
+	waiting chan struct{}
+	mu      sync.Mutex
+	out     bytes.Buffer
+	gate    chan struct{} // nil while released
+}
+
+func newGatedWriter() *gatedWriter {
+	return &gatedWriter{discardWriter: newDiscardWriter(), waiting: make(chan struct{})}
+}
+
+func (w *gatedWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	gate := w.gate
+	w.mu.Unlock()
+	if gate != nil {
+		w.waiting <- struct{}{}
+		<-gate
+	}
+	w.mu.Lock()
+	w.out.Write(p)
+	w.mu.Unlock()
+	return w.discardWriter.Write(p)
+}
+
+func (w *gatedWriter) hold() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.gate = make(chan struct{})
+}
+
+func (w *gatedWriter) release() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	close(w.gate)
+	w.gate = nil
+}
+
+func (w *gatedWriter) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.out.String()
+}
+
+// serveStream runs a stream for member through the server's handler into w,
+// and returns a channel closed when the handler returns. The stream ends
+// with the test.
+func (ts *testServer) serveStream(t *testing.T, w http.ResponseWriter, member, query string) <-chan struct{} {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodGet, "/v1/stream"+query, nil).WithContext(ctx)
+	req.Header.Set("Authorization", "Bearer "+ts.tokens[member])
+	done := make(chan struct{})
+	go func() { defer close(done); ts.Handler().ServeHTTP(w, req) }()
+	t.Cleanup(func() { cancel(); <-done })
+	return done
+}
+
+// A stream that falls more than streamRing publishes behind is ended, and
+// its dashboard reconnects and catches up from the last event it saw. It
+// must never be handed what newer publishes left in the ring in place of what
+// it missed: it would skip its mark past a thousand activities it never sent,
+// and its dashboard would neither reconnect nor show a gap.
+func TestStreamTooFarBehindIsEnded(t *testing.T) {
+	ts := newTestServer(t)
+	w := newGatedWriter()
+	done := ts.serveStream(t, w, "bob", "?repo="+repo)
+	prelude := "retry: 3000\n: connected\n\n"
+	for w.bytes.Load() < int64(len(prelude)) {
+		time.Sleep(time.Millisecond)
+	}
+	act := func(seq int) board.Activity {
+		return board.Activity{Seq: uint64(seq), At: ts.now(), Kind: board.ActivityFileChanged, Repo: repo, Member: "alice",
+			Paths: []string{fmt.Sprintf("x/f%d.go", seq)}}
+	}
+	w.hold()
+	ts.hub.publish([]board.Activity{act(1)})
+	<-w.waiting // the stream is writing 1 to a client that takes nothing
+	for seq := 2; seq <= streamRing+100; seq++ {
+		ts.hub.publish([]board.Activity{act(seq)})
+	}
+	w.release()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		got := w.String()
+		t.Fatalf("a stream %d publishes behind was not ended; it sent %d activities, the last ending %q",
+			streamRing+99, strings.Count(got, "event: activity"), got[max(0, len(got)-80):])
+	}
+	retry := reconnectDelay("bob", 1)
+	if got, want := w.String(), prelude+oldFrame(act(1))+fmt.Sprintf("retry: %d\n\n", retry); got != want {
+		t.Fatalf("the stream sent\n%q\nwant\n%q", got, want)
+	}
+}
+
+// A stream sends each activity once, though one replayed on reconnection can
+// also arrive live, and a repository's stream sends only that repository's.
+func TestStreamSendsEachActivityOnceAndOnlyItsRepository(t *testing.T) {
+	ts := newTestServer(t)
+	ts.do(t, "POST", "/v1/hook", "alice", hookEv(board.KindPostEdit, "alice", "a1", "x/y.go"), nil) // seqs 1-3
+	acts := ts.Board().Since("", 0)
+	r, closeStream := ts.rawStream(t, "bob", "?repo="+repo, http.Header{"Last-Event-Id": {"1"}})
+	defer closeStream()
+	if got, want := readBlocks(t, r, 3), "retry: 3000\n: connected\n\n"+oldFrame(acts[1])+oldFrame(acts[2]); got != want {
+		t.Fatalf("replay:\n%q\nwant\n%q", got, want)
+	}
+	// 3 again, as when it is published just after the stream subscribed;
+	// another repository's 4; then 5.
+	other := board.Activity{Seq: 4, At: ts.now(), Kind: board.ActivityNoteSent, Repo: "github.com/acme/other", Member: "bob"}
+	next := board.Activity{Seq: 5, At: ts.now(), Kind: board.ActivityNoteSent, Repo: repo, Member: "bob"}
+	ts.hub.publish([]board.Activity{acts[2]})
+	ts.hub.publish([]board.Activity{other})
+	ts.hub.publish([]board.Activity{next})
+	if got := readBlocks(t, r, 1); got != oldFrame(next) {
+		t.Fatalf("after the replay the stream sent\n%q\nwant\n%q", got, oldFrame(next))
+	}
+}
+
+// A stream writes a large catch-up a piece at a time, each with a deadline
+// of its own, so a client that reads it slowly but steadily gets all of it.
+func TestStreamWritesInPieces(t *testing.T) {
+	ts := newTestServer(t)
+	w := newDiscardWriter()
+	ts.serveStream(t, w, "bob", "?repo="+repo)
+	for !ts.subscribed(1) {
+		time.Sleep(time.Millisecond)
+	}
+	var acts []board.Activity
+	var want, largest int64
+	for i := range 2000 {
+		a := board.Activity{Seq: uint64(i + 1), At: ts.now(), Kind: board.ActivityFileChanged, Repo: repo, Member: "alice",
+			Paths: []string{fmt.Sprintf("x/f%d.go", i)}}
+		acts = append(acts, a)
+		want += int64(len(oldFrame(a)))
+		largest = max(largest, int64(len(oldFrame(a))))
+	}
+	ts.hub.publish(acts)
+	waitForBytes(t, []*discardWriter{w}, int64(len("retry: 3000\n: connected\n\n"))+want)
+	if got, limit := w.largest.Load(), streamPiece+largest; got >= limit {
+		t.Fatalf("%d bytes of activities went out in a write of %d; want writes under %d", want, got, limit)
+	}
+}
+
+// failingFlusher is a client whose flushes fail, as one whose write deadline
+// has passed.
+type failingFlusher struct{ *discardWriter }
+
+func (w failingFlusher) FlushError() error {
+	w.flushes.Add(1)
+	return errors.New("write deadline exceeded")
+}
+
+// A stream whose flush fails ends there: its client takes nothing more, and
+// the handler must not hold on to it until the next write fails as well.
+func TestStreamEndsWhenAFlushFails(t *testing.T) {
+	ts := newTestServer(t)
+	w := failingFlusher{newDiscardWriter()}
+	done := ts.serveStream(t, w, "bob", "")
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the stream went on after its flush failed")
+	}
+	if w.writes.Load() != 1 || w.flushes.Load() != 1 {
+		t.Fatalf("%d writes and %d flushes; want the stream ended after its first", w.writes.Load(), w.flushes.Load())
+	}
+}
+
+// The ring holds the last streamRing publishes, and no more: a stream that
+// many behind takes them all, and one further behind is told it cannot.
+func TestHubKeepsTheLastStreamRingPublishes(t *testing.T) {
+	for _, behind := range []int{1, streamRing - 1, streamRing, streamRing + 1, 2 * streamRing} {
+		h := newHub(StreamLimits{})
+		h.subscribe(repo, memberHash{name: "bob"})
+		for i := range 3*streamRing + 7 { // the ring wraps
+			h.publish([]board.Activity{{Seq: uint64(i + 1), Repo: repo}})
+		}
+		from := h.next - uint64(behind)
+		batches, next, _, ok := h.since(from, nil)
+		if want := behind <= streamRing; ok != want {
+			t.Fatalf("%d behind: ok %v, want %v", behind, ok, want)
+		}
+		if next != h.next {
+			t.Fatalf("%d behind: next %d, want %d", behind, next, h.next)
+		}
+		if !ok {
+			continue
+		}
+		if len(batches) != behind {
+			t.Fatalf("%d behind: %d publishes", behind, len(batches))
+		}
+		for i, b := range batches {
+			if want := from + uint64(i) + 1; len(b) != 1 || b[0].seq != want {
+				t.Fatalf("%d behind: publish %d holds %+v, want seq %d", behind, i, b, want)
+			}
 		}
 	}
 }

@@ -21,6 +21,7 @@ type discardWriter struct {
 	header  http.Header
 	bytes   atomic.Int64
 	writes  atomic.Int64
+	largest atomic.Int64 // the largest write
 	flushes atomic.Int64
 }
 
@@ -33,6 +34,11 @@ func (d *discardWriter) Flush()              { d.flushes.Add(1) }
 func (d *discardWriter) Write(p []byte) (int, error) {
 	d.bytes.Add(int64(len(p)))
 	d.writes.Add(1)
+	for n := int64(len(p)); ; {
+		if l := d.largest.Load(); n <= l || d.largest.CompareAndSwap(l, n) {
+			break
+		}
+	}
 	return len(p), nil
 }
 
