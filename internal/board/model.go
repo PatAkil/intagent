@@ -248,10 +248,16 @@ type session struct {
 	// Pending is context from before an edit, held for an agent that only
 	// reads context after a tool has run.
 	Pending string `json:"pending,omitempty"`
-	// refused holds the ids of the last few calls refused: a post_edit for
-	// one means the agent ran it without hearing the refusal. It is not
-	// saved; a restart forgets it.
-	refused []string
+	// refused holds the last few calls refused: a post_edit for one means
+	// the agent ran it without hearing the refusal. It is not saved; a
+	// restart forgets it.
+	refused []refusal
+}
+
+// refusal is a refused tool call, and the one-time answers its check spent.
+type refusal struct {
+	id    string
+	spent []string
 }
 
 func sessionKey(member string, agent Agent, id string) string {

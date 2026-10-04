@@ -248,6 +248,59 @@ func TestRefusalTheAgentDidNotHearIsUnspent(t *testing.T) {
 	}
 }
 
+// An unheard refusal gives back what it spent and nothing more. Alice heard
+// bob's bump on retry.go and edited it; a later patch of retry.go and a file
+// bob reserved is refused for the reservation alone, and she never hears it.
+// Her next edit of retry.go is still the retry of a bump she heard.
+func TestUnheardRefusalGivesBackOnlyWhatItSpent(t *testing.T) {
+	h := newHarness(t)
+	h.hook(KindPrompt, "bob", "b1")
+	h.edit("bob", "b1", "svc/pay/retry.go")
+	h.hook(KindPrompt, "alice", "a1")
+	if res := h.call(KindPreEdit, "alice", "a1", "t1", "svc/pay/retry.go"); res.Decision != DecisionRefuse {
+		t.Fatalf("first edit: %s, want the bump", res.Decision)
+	}
+	h.call(KindPreEdit, "alice", "a1", "t2", "svc/pay/retry.go")
+	h.call(KindPostEdit, "alice", "a1", "t2", "svc/pay/retry.go")
+	h.declare("bob", ModeExclusive, "Rewrite the guide", "docs/**")
+
+	if res := h.call(KindPreEdit, "alice", "a1", "t3", "svc/pay/retry.go", "docs/guide.md"); res.Decision != DecisionRefuse {
+		t.Fatalf("patch: %s", res.Decision)
+	}
+	h.call(KindPostEdit, "alice", "a1", "t3", "svc/pay/retry.go", "docs/guide.md")
+
+	if res := h.call(KindPreEdit, "alice", "a1", "t4", "svc/pay/retry.go"); res.Decision != DecisionAllow {
+		t.Fatalf("next edit of retry.go, whose bump she heard at t1: %s, want allow", res.Decision)
+	}
+}
+
+// An agent that cannot ask its person is told to; when it never hears that,
+// the question is given back, and its next attempt is told again.
+func TestUnheardQuestionIsAskedAgain(t *testing.T) {
+	h := newHarness(t, func(c *Config) { c.Policy.Overlap = ActionAsk })
+	h.hook(KindPrompt, "bob", "b1")
+	h.edit("bob", "b1", "svc/pay/retry.go")
+	codex := func(kind Kind, id string) HookResult {
+		t.Helper()
+		res, err := h.b.Hook(h.now, HookEvent{Kind: kind, Member: "alice", Agent: AgentCodex, SessionID: "a1", Where: whereOf("alice"),
+			Tool: "apply_patch", ToolUseID: id, Paths: refs("svc/pay/retry.go"), NoAsk: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+	if res := codex(KindPreEdit, "t1"); res.Decision != DecisionAsk {
+		t.Fatalf("first edit: %s, want the question", res.Decision)
+	}
+	codex(KindPostEdit, "t1")
+	if res := codex(KindPreEdit, "t2"); res.Decision != DecisionAsk {
+		t.Fatalf("next edit after the unheard question: %s, want it asked again", res.Decision)
+	}
+	if res := codex(KindPreEdit, "t3"); res.Decision != DecisionAllow {
+		t.Fatalf("retry of a question it heard: %s, want allowed", res.Decision)
+	}
+}
+
 // Refused calls are remembered while others are refused and end, a few at a
 // time.
 func TestRefusedCallsAreRememberedAFewAtATime(t *testing.T) {
@@ -263,7 +316,7 @@ func TestRefusedCallsAreRememberedAFewAtATime(t *testing.T) {
 		h.call(KindToolEnd, "alice", "a1", fmt.Sprintf("shell%d", i))
 	}
 	s := h.b.sessions[sessionKey("alice", AgentClaudeCode, "a1")]
-	if len(s.refused) != maxRefused || s.refused[0] != "t2" || s.refused[maxRefused-1] != fmt.Sprintf("t%d", maxRefused+1) {
+	if len(s.refused) != maxRefused || s.refused[0].id != "t2" || s.refused[maxRefused-1].id != fmt.Sprintf("t%d", maxRefused+1) {
 		t.Fatalf("refused calls remembered: %q", s.refused)
 	}
 }

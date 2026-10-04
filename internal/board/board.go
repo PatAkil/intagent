@@ -417,12 +417,13 @@ func (b *Board) Hook(now time.Time, ev HookEvent) (HookResult, error) {
 		startTool(now, s, ev.Tool, ev.ToolUseID)
 	case KindPreEdit:
 		startTool(now, s, ev.Tool, ev.ToolUseID)
-		res = b.decide(now, c, s, ev.Paths, ev.NoAsk)
+		var spent []string
+		res, spent = b.decide(now, c, s, ev.Paths, ev.NoAsk)
 		res.ClaimID = c.ID
 		if res.Decision == DecisionRefuse || (res.Decision == DecisionAsk && ev.NoAsk) {
 			// The edit does not run, so no tool end will follow it. (An ask that
 			// the person answers runs, or not, and the agent reports either.)
-			refuseTool(s, ev.ToolUseID)
+			refuseTool(s, ev.ToolUseID, spent)
 		} else if ev.LateContext && res.Context != "" {
 			s.Pending, res.Context = joinBlocks(s.Pending, res.Context), ""
 		}
@@ -932,8 +933,9 @@ func toldKey(cf Conflict) string { return "told|" + ackKey(cf) }
 type verdict struct {
 	all, refused, asked, warned []Conflict
 	// askKeys and warnKeys are acknowledged only if the answer shows them: a
-	// refusal of the same edit hides questions and warnings.
-	askKeys, warnKeys []string
+	// refusal of the same edit hides questions and warnings. bumpKeys are
+	// the bumps the check acknowledged.
+	askKeys, warnKeys, bumpKeys []string
 }
 
 // acted is what the agent is told about: refusals, else questions, else warnings.
@@ -948,13 +950,20 @@ func (v verdict) acted() []Conflict {
 }
 
 // decide answers an agent about to write, and counts and announces the edit
-// if it runs into a collision this session has not been told about.
-func (b *Board) decide(now time.Time, c *claim, s *session, paths []PathRef, noAsk bool) HookResult {
+// if it runs into a collision this session has not been told about. It also
+// returns the one-time answers the check spent, the bumps it showed and the
+// questions an agent that cannot ask is told to put, which a refusal the
+// agent never hears gives back.
+func (b *Board) decide(now time.Time, c *claim, s *session, paths []PathRef, noAsk bool) (HookResult, []string) {
 	if s.Acked == nil {
 		s.Acked = map[string]bool{}
 	}
 	v := b.judge(now, c, s, paths, noAsk)
 	res := b.answer(now, s, v)
+	spent := v.bumpKeys
+	if res.Decision == DecisionAsk {
+		spent = append(spent, v.askKeys...)
+	}
 	// A retry that meets the same conflicts again is checked, but it is not
 	// a new collision: counting it, or announcing it, would inflate both.
 	var fresh []Conflict
@@ -968,7 +977,7 @@ func (b *Board) decide(now time.Time, c *claim, s *session, paths []PathRef, noA
 	if len(fresh) > 0 {
 		b.announce(now, c, s, paths, res.Decision, v.acted(), fresh)
 	}
-	return res
+	return res, spent
 }
 
 // announce records a collision under the conflict that decided the answer,
@@ -1017,6 +1026,7 @@ func (b *Board) judge(now time.Time, c *claim, s *session, paths []PathRef, noAs
 			case action == ActionBump && !s.Acked[key]:
 				s.Acked[key] = true
 				v.refused = append(v.refused, cf)
+				v.bumpKeys = append(v.bumpKeys, key)
 			case action == ActionWarn && !s.Acked[key]:
 				v.warned = append(v.warned, cf)
 				v.warnKeys = append(v.warnKeys, key)

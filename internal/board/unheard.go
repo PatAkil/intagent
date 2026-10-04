@@ -33,14 +33,15 @@ func (b *Board) abandon(now time.Time, ev HookEvent) HookResult {
 	return HookResult{Decision: DecisionAllow, Unchecked: true}
 }
 
-// refuseTool ends a refused tool call and remembers it, among the session's
-// last few: a post_edit for it would mean the refusal never reached the agent.
-func refuseTool(s *session, id string) {
+// refuseTool ends a refused tool call and remembers it, and the one-time
+// answers its check spent, among the session's last few: a post_edit for it
+// would mean the refusal never reached the agent.
+func refuseTool(s *session, id string, spent []string) {
 	endTool(s, id)
 	if id == "" {
 		return
 	}
-	s.refused = append(s.refused, id)
+	s.refused = append(s.refused, refusal{id: id, spent: spent})
 	if over := len(s.refused) - maxRefused; over > 0 {
 		s.refused = slices.Delete(s.refused, 0, over)
 	}
@@ -51,16 +52,17 @@ func refuseTool(s *session, id string) {
 // pre_edit never arrived, arrived after the agent stopped waiting, or was
 // answered with a refusal that did not reach the agent.
 //
-// What a refusal spent is unspent, so the next attempt is refused again and
-// heard. The edit is then judged without acknowledging anything, and what the
-// agent would have been told is held for it, as information; a change inside
-// an active reservation is recorded as a breach.
+// What a refusal spent is unspent, and only that: the next attempt is
+// refused again and heard, while bumps the agent heard before stay spent. The
+// edit is then judged without acknowledging anything, and what the agent
+// would have been told is held for it, as information; a change inside an
+// active reservation is recorded as a breach.
 func (b *Board) unansweredEdit(now time.Time, c *claim, s *session, ev HookEvent) {
-	if i := slices.Index(s.refused, ev.ToolUseID); i >= 0 {
-		s.refused = slices.Delete(s.refused, i, i+1)
-		for _, k := range b.spentBy(now, c, s, ev.Paths) {
+	if i := slices.IndexFunc(s.refused, func(r refusal) bool { return r.id == ev.ToolUseID }); i >= 0 {
+		for _, k := range s.refused[i].spent {
 			delete(s.Acked, k)
 		}
+		s.refused = slices.Delete(s.refused, i, i+1)
 	}
 	told := b.wouldTell(now, c, s, ev.Paths)
 	if len(told) == 0 {
@@ -79,15 +81,6 @@ func (b *Board) wouldTell(now time.Time, c *claim, s *session, paths []PathRef) 
 		probe.Acked = map[string]bool{}
 	}
 	return b.judge(now, c, &probe, paths, true).acted()
-}
-
-// spentBy lists the acknowledgements a refusal of paths spends: the bumps
-// it shows, and the questions an agent that cannot ask is told to put.
-func (b *Board) spentBy(now time.Time, c *claim, s *session, paths []PathRef) []string {
-	probe := *s
-	probe.Acked = map[string]bool{}
-	v := b.judge(now, c, &probe, paths, true)
-	return append(slices.Collect(maps.Keys(probe.Acked)), v.askKeys...)
 }
 
 // recordUncheckedBreach records, once per file and reservation, an edit made
