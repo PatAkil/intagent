@@ -131,9 +131,10 @@ const maxShownPaths = 200
 // repository of 300 claims of 50 files, 200 paths hold it for 75 ms and 2000
 // for 750 ms, with ten times the conflicts in the answer. It can rise to
 // MaxFootprint once a claim's areas are indexed and answers are bounded.
-// Past it, an edit's agent is told what was not checked, and a check is
-// refused. It may exceed maxShownPaths: an edit's activity lists the paths
-// that decided its answer first.
+// Past it, an edit's agent is told what was not checked, and a check's
+// answer counts and names what it did not check. It may exceed
+// maxShownPaths: an edit's activity lists the paths that decided its answer
+// first.
 const maxCheckPaths = 200
 
 // Board holds every claim and session the server knows about.
@@ -1624,6 +1625,9 @@ type CheckRequest struct {
 type CheckResult struct {
 	Conflicts []Conflict `json:"conflicts"`
 	Text      string     `json:"text"`
+	// Unchecked counts the paths past the first maxCheckPaths, which were not
+	// checked; Text says so too.
+	Unchecked int `json:"unchecked,omitempty"`
 }
 
 // ReleaseResult is the answer to POST /v1/intents/release.
@@ -1641,33 +1645,43 @@ type Whoami struct {
 	Demo bool `json:"demo,omitempty"`
 }
 
-// Check lists conflicts for paths without changing anything.
-func (b *Board) Check(now time.Time, r CheckRequest) ([]Conflict, error) {
+// Check lists conflicts for paths without changing anything. It checks the
+// first maxCheckPaths of them, and its answer counts the rest and says how
+// to check them. intagent's clients send checks of maxCheckPaths; older ones
+// send every path in one and read only the conflicts, as they did when the
+// rest went unsaid, and a refusal would pass a whole commit unchecked.
+func (b *Board) Check(now time.Time, r CheckRequest) (CheckResult, error) {
 	w, err := cleanWhere(r.Where)
 	if err != nil {
-		return nil, err
-	}
-	// Checked in full, or not at all: a check that left paths out would
-	// pass them unsaid.
-	if len(r.Paths) > maxCheckPaths {
-		return nil, fmt.Errorf("%w: %d paths; check at most %d at a time", ErrInvalid, len(r.Paths), maxCheckPaths)
+		return CheckResult{}, err
 	}
 	paths, err := cleanPaths(r.Paths, maxCheckPaths)
 	if err != nil {
-		return nil, err
+		return CheckResult{}, err
 	}
+	cs := b.check(now, r.Member, w, paths)
+	res := CheckResult{Conflicts: cs, Text: RenderConflicts(now, cs), Unchecked: max(0, len(r.Paths)-maxCheckPaths)}
+	if res.Unchecked > 0 {
+		res.Text += fmt.Sprintf("\nintagent checked only the first %d of these %d paths. Check the other %d in other "+
+			"checks, %d at a time.", maxCheckPaths, len(r.Paths), res.Unchecked, maxCheckPaths)
+	}
+	return res, nil
+}
+
+// check lists the conflicts of paths, cleaned, for member's claim in w.
+func (b *Board) check(now time.Time, member string, w Where, paths []PathRef) []Conflict {
 	b.lock()
 	defer b.unlock()
-	self := b.findClaim(r.Member, w)
+	self := b.findClaim(member, w)
 	if self == nil {
-		self = &claim{Repo: w.Repo, Member: r.Member}
+		self = &claim{Repo: w.Repo, Member: member}
 	}
 	live, liveSess := b.liveClaims(now), b.liveSessions(now)
 	var out []Conflict
 	for _, p := range paths {
 		out = append(out, b.conflictsFor(now, self, "", p, live, liveSess)...)
 	}
-	return out, nil
+	return out
 }
 
 // NoteRequest sends a short note to another claim's agents.

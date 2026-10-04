@@ -595,15 +595,15 @@ func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
 	}
 	defer release()
 	now := s.now()
-	cs, err := s.board.Check(now, req)
+	res, err := s.board.Check(now, req)
 	if err != nil {
 		writeBoardError(w, err)
 		return
 	}
-	if cs == nil {
-		cs = []board.Conflict{}
+	if res.Conflicts == nil {
+		res.Conflicts = []board.Conflict{}
 	}
-	writeJSON(w, http.StatusOK, board.CheckResult{Conflicts: cs, Text: board.RenderConflicts(now, cs)})
+	writeJSON(w, http.StatusOK, res)
 }
 
 func (s *Server) handleNote(w http.ResponseWriter, r *http.Request) {

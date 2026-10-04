@@ -560,9 +560,9 @@ func (tr *transcriptRun) note(i int) {
 func (tr *transcriptRun) check(i int) {
 	sl := tr.slot()
 	paths := tr.files(1 + tr.rng.Intn(3))
-	cs, err := tr.b.Check(tr.now, CheckRequest{Member: sl.member, Where: sl.where, Paths: paths})
-	tr.line(i, "check %s %s -> err=%v %s text=%q", sl.where.Worktree, jsonOf(paths), err, jsonOf(cs), RenderConflicts(tr.now, cs))
-	tr.did = append(tr.did, outcome("check", err, len(cs)))
+	res, err := tr.b.Check(tr.now, CheckRequest{Member: sl.member, Where: sl.where, Paths: paths})
+	tr.line(i, "check %s %s -> err=%v %s text=%q", sl.where.Worktree, jsonOf(paths), err, jsonOf(res.Conflicts), res.Text)
+	tr.did = append(tr.did, outcome("check", err, len(res.Conflicts)))
 }
 
 // view writes what the dashboard and the CLI show: every repository's view,

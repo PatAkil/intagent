@@ -1030,17 +1030,18 @@ func TestCheckIsReadOnly(t *testing.T) {
 	h.hook(KindPrompt, "alice", "a1")
 	h.edit("alice", "a1", "a/b.go")
 	v := h.b.Version()
-	cs, err := h.b.Check(h.now, CheckRequest{Member: "bob", Where: whereOf("bob"), Paths: refs("a/b.go", "a/c.go", "z.go")})
+	res, err := h.b.Check(h.now, CheckRequest{Member: "bob", Where: whereOf("bob"), Paths: refs("a/b.go", "a/c.go", "z.go")})
 	if err != nil {
 		t.Fatal(err)
 	}
+	cs := res.Conflicts
 	if len(cs) != 2 || cs[0].Severity != SeverityOverlap || cs[1].Severity != SeverityNearby {
 		t.Fatalf("conflicts = %+v", cs)
 	}
 	if h.b.Version() != v || len(h.b.View(h.now, repo).Claims) != 1 {
 		t.Fatalf("Check changed the board")
 	}
-	mustContain(t, RenderConflicts(h.now, cs), "a/b.go:", "[overlap] alice's agent", "a/c.go:", "[nearby]")
+	mustContain(t, res.Text, "a/b.go:", "[overlap] alice's agent", "a/c.go:", "[nearby]")
 	// Bob was not acknowledged by the check: his first real edit is still bumped.
 	if res := h.hook(KindPreEdit, "bob", "b1", "a/b.go"); res.Decision != DecisionRefuse {
 		t.Fatalf("decision %s, want a bump", res.Decision)

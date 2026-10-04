@@ -1,7 +1,6 @@
 package board
 
 import (
-	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -32,22 +31,29 @@ func reservedBoard(t *testing.T, n, at int) (*Board, time.Time, []PathRef) {
 
 var bob = Where{Repo: "r", Host: "hb", Worktree: "/b"}
 
-// A check covers every path it names, up to maxCheckPaths, and refuses more
-// rather than leave some unchecked without saying so.
+// A check covers every path it names, up to maxCheckPaths. Past that it
+// checks the first maxCheckPaths, and its answer counts the others and says
+// so: an older guard sends a whole commit in one check, and refused, it
+// would let the commit through unchecked.
 func TestCheckCoversEveryPath(t *testing.T) {
-	for _, tc := range []struct{ n, at int }{{1, 0}, {maxCheckPaths, maxCheckPaths - 1}} {
+	for _, tc := range []struct{ n, at, conflicts, unchecked int }{
+		{1, 0, 1, 0},
+		{maxCheckPaths, maxCheckPaths - 1, 1, 0},
+		{maxCheckPaths + 50, maxCheckPaths - 1, 1, 50},
+		{maxCheckPaths + 50, maxCheckPaths, 0, 50},
+	} {
 		b, now, paths := reservedBoard(t, tc.n, tc.at)
-		cs, err := b.Check(now, CheckRequest{Member: "bob", Where: bob, Paths: paths})
+		res, err := b.Check(now, CheckRequest{Member: "bob", Where: bob, Paths: paths})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(cs) != 1 || cs[0].Severity != SeverityBlock {
-			t.Errorf("%d paths, the reserved one at %d: conflicts %+v", tc.n, tc.at, cs)
+		if len(res.Conflicts) != tc.conflicts || (tc.conflicts > 0 && res.Conflicts[0].Severity != SeverityBlock) || res.Unchecked != tc.unchecked {
+			t.Errorf("%d paths, the reserved one at %d: conflicts %+v, %d unchecked", tc.n, tc.at, res.Conflicts, res.Unchecked)
 		}
-	}
-	b, now, paths := reservedBoard(t, maxCheckPaths+1, 0)
-	if _, err := b.Check(now, CheckRequest{Member: "bob", Where: bob, Paths: paths}); !errors.Is(err, ErrInvalid) {
-		t.Fatalf("%d paths: %v", maxCheckPaths+1, err)
+		told := fmt.Sprintf("intagent checked only the first %d of these %d paths. Check the other %d", maxCheckPaths, tc.n, tc.unchecked)
+		if strings.Contains(res.Text, told) != (tc.unchecked > 0) {
+			t.Errorf("%d paths: %q", tc.n, res.Text)
+		}
 	}
 }
 

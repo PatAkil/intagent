@@ -159,8 +159,8 @@ func (a *App) guard(ctx context.Context, args []string) error {
 }
 
 // pathsPerCheck is how many paths one check carries: the server checks at
-// most 200 at once and refuses more, and older servers checked only the
-// first 200 and said nothing of the rest.
+// most 200 at once and counts the rest as unchecked, and older servers
+// checked only the first 200 and said nothing of the rest.
 const pathsPerCheck = 200
 
 // maxBusyRetries bounds how often a check is sent again when the server

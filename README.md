@@ -281,9 +281,10 @@ unreachable or too busy to check them, or the setup cannot be read; the default 
 bounds each request (default `2s`). A whole hook run, git included, takes at most 8 seconds, and at a session's end 4
 for Claude Code, Gemini CLI and Cursor and 2 for other agents (less if `CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS` asks),
 under the timeouts `intagent init` gives the agents, so a longer `INTAGENT_TIMEOUT` is cut short there.
-`intagent check`, the MCP `check_paths` tool and `intagent guard` send more than 200 paths in several checks. Under
-`INTAGENT_FAIL=closed`, a hook older than this release lets an edit the server is too busy to check go ahead, with a
-note to its agent.
+`intagent check`, the MCP `check_paths` tool and `intagent guard` send more than 200 paths in several checks. A check is
+answered on its first 200 paths, and says how many it did not check: an older client's guard, which sends a whole commit
+in one check, has the commit's first 200 files checked, as before. Under `INTAGENT_FAIL=closed`, a hook older than this
+release lets an edit the server is too busy to check go ahead, with a note to its agent.
 
 ## Security model
 

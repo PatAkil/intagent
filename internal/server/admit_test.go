@@ -450,14 +450,29 @@ func TestPacingForgetsIdleWorktrees(t *testing.T) {
 	}
 }
 
-// A check names at most 200 paths, and is refused rather than cut short.
-func TestOversizedCheckIsRefused(t *testing.T) {
+// A check of more than 200 paths is checked on its first 200, and its answer
+// counts the rest and says so. intagent's guard, check and check_paths send
+// checks of 200; older ones send a whole commit in one and read only the
+// conflicts, so a refusal would let a commit that touches a teammate's
+// reserved file through unchecked, or under INTAGENT_FAIL=closed refuse
+// every large commit.
+func TestOversizedCheckIsCheckedOnItsFirstPaths(t *testing.T) {
 	ts := newTestServer(t)
-	if code, _ := ts.post(t, "/v1/check", "alice", checkReq("alice", "/w/a", 200)); code != http.StatusOK {
-		t.Fatalf("200 paths: %d", code)
+	ts.do(t, "POST", "/v1/hook", "alice", hookEv(board.KindPrompt, "alice", "a1"), nil)
+	dec := board.DeclareRequest{Where: where("alice"), Summary: "retry", Patterns: []string{"svc/pay/**"}, Mode: board.ModeExclusive}
+	if code := ts.do(t, "POST", "/v1/intents", "alice", dec, nil); code != http.StatusOK {
+		t.Fatalf("declare: %d", code)
 	}
-	var e ErrorResponse
-	if code := ts.do(t, "POST", "/v1/check", "alice", checkReq("alice", "/w/a", 201), &e); code != http.StatusBadRequest || !strings.Contains(e.Error, "at most 200") {
-		t.Fatalf("201 paths: %d %q", code, e.Error)
+	for _, tc := range []struct{ n, unchecked int }{{200, 0}, {250, 50}} {
+		req := checkReq("bob", "/w/b", tc.n)
+		req.Paths[10].Path = "svc/pay/retry.go"
+		var res board.CheckResult
+		code := ts.do(t, "POST", "/v1/check", "bob", req, &res)
+		if code != http.StatusOK || len(res.Conflicts) != 1 || res.Conflicts[0].Severity != board.SeverityBlock || res.Unchecked != tc.unchecked {
+			t.Fatalf("a check of %d paths, a reserved one among them: %d %+v", tc.n, code, res)
+		}
+		if told := strings.Contains(res.Text, fmt.Sprintf("the first 200 of these %d paths", tc.n)); told != (tc.unchecked > 0) {
+			t.Fatalf("a check of %d paths: %q", tc.n, res.Text)
+		}
 	}
 }
