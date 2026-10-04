@@ -31,6 +31,9 @@ func New(base, token string, timeout time.Duration) *Client {
 type APIError struct {
 	Status  int
 	Message string
+	// RetryAfter is how long the server asked the client to wait before it
+	// tries again, if it did.
+	RetryAfter time.Duration
 }
 
 func (e *APIError) Error() string { return fmt.Sprintf("server said %d: %s", e.Status, e.Message) }
@@ -84,7 +87,11 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 		if e.Error == "" {
 			e.Error = http.StatusText(resp.StatusCode)
 		}
-		return &APIError{Status: resp.StatusCode, Message: e.Error}
+		ae := &APIError{Status: resp.StatusCode, Message: e.Error}
+		if secs, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil && secs > 0 {
+			ae.RetryAfter = time.Duration(min(secs, 3600)) * time.Second
+		}
+		return ae
 	}
 	if out == nil {
 		return nil

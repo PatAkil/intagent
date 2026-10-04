@@ -196,5 +196,6 @@ What matters:
 
 - `intagent watch` keeps a worktree on the board, reporting its git footprint on an interval and printing news.
 - `intagent guard`, installed as a pre-commit hook with `intagent init --git-hook`, refuses commits that touch paths
-  an active teammate holds exclusively.
+  an active teammate holds exclusively. It checks every staged file, 200 to a request; if the server stops answering
+  part way, it says how many files went unchecked, and `INTAGENT_FAIL=closed` refuses the commit.
 - `intagent mcp` works with any MCP client that speaks stdio.
