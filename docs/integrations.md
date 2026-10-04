@@ -19,7 +19,7 @@ permission `mcp__intagent__*`.
 | `PostToolUse` | same | `post_edit`, or `tool_end` + git footprint after Bash | `additionalContext`: news from the team |
 | `PostToolUseFailure` | same | `tool_end`: a failed call is no longer running | `additionalContext` |
 | `Stop` | (all) | `stop` + git footprint | nothing |
-| `SessionEnd` | (all) | `session_end` + git footprint (timeout 5 s; Claude's default budget is 1.5 s) | nothing |
+| `SessionEnd` | (all) | `session_end` + git footprint (timeout 5 s, of which intagent takes 4) | nothing |
 
 What matters:
 
@@ -51,6 +51,9 @@ What matters:
   is a `server/discover` probe that intagent answers with "method not found", as Claude expects.
 - **Failure is open.** A hook that crashes, times out or prints invalid JSON lets the tool run. intagent relies on this:
   when its server is unreachable, it prints nothing.
+- **Session end.** A hook's own `timeout` sets Claude's bound on `SessionEnd` hooks (1.5 s applies only to hooks
+  without one), unless `CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS` is set: intagent then keeps 0.75 s under it. Copilot
+  CLI's bound is not known, so it gets 2 s, as Codex does.
 
 ## Codex
 
