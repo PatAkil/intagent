@@ -154,3 +154,19 @@ func (b *Board) forgetDormant(now time.Time, dormant int, idle []*claim) bool {
 	}
 	return true
 }
+
+// Footprint byte budgets, which footprintCost counts against: what one
+// claim's footprint may hold, and what all of one member's may. A footprint
+// of 2000 files of the paths a large monorepo has (60 bytes, and an area of
+// 20) costs about 350 KB; one of 2000 paths of a kilobyte, 2.2 MB. A member
+// runs every one of their agents with one token, a fleet's too.
+const (
+	defaultFootprintBytes       = 512 << 10
+	defaultMemberFootprintBytes = 32 << 20
+)
+
+// footprintRoom is how many bytes claim c's footprint may hold: what its own
+// budget allows, and what its member's other claims leave of theirs.
+func (b *Board) footprintRoom(c *claim) int {
+	return min(b.cfg.MaxFootprintBytes, b.cfg.MemberFootprintBytes-(b.memberBytes[c.Member]-c.fpBytes))
+}

@@ -229,6 +229,9 @@ type claim struct {
 	// claim changed files in, and the changed paths in order.
 	areaAt      map[string]time.Time
 	sortedPaths []string
+	// fpBytes is what the footprint counts against the byte budgets
+	// (footprintCost).
+	fpBytes int
 	// removed marks a claim taken off the board, which its repository's
 	// index skips until it drops it.
 	removed bool

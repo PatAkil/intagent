@@ -80,9 +80,21 @@ func (b *Board) checkIndexes() error {
 	if listed != len(b.sessions) {
 		return fmt.Errorf("%d sessions listed under claims, %d on the board", listed, len(b.sessions))
 	}
+	members := map[string]int{}
 	for id, c := range b.claims {
 		if err := c.checkFootprintIndex(); err != nil {
 			return fmt.Errorf("claim %s: %w", id, err)
+		}
+		members[c.Member] += c.fpBytes
+	}
+	for m, n := range members {
+		if n != 0 && b.memberBytes[m] != n {
+			return fmt.Errorf("member %s's claims count %d footprint bytes, the board %d", m, n, b.memberBytes[m])
+		}
+	}
+	for m, n := range b.memberBytes {
+		if members[m] != n || n == 0 {
+			return fmt.Errorf("the board counts %d footprint bytes for %s, whose claims count %d", n, m, members[m])
 		}
 	}
 	return nil
@@ -93,6 +105,13 @@ func (b *Board) checkIndexes() error {
 func (c *claim) checkFootprintIndex() error {
 	if len(c.sortedPaths) != len(c.Footprint) {
 		return fmt.Errorf("%d paths in order, %d in the footprint", len(c.sortedPaths), len(c.Footprint))
+	}
+	n := 0
+	for p, t := range c.Footprint {
+		n += footprintCost(p, t)
+	}
+	if n != c.fpBytes {
+		return fmt.Errorf("the footprint costs %d bytes, the claim counts %d", n, c.fpBytes)
 	}
 	for i, p := range c.sortedPaths {
 		if _, ok := c.Footprint[p]; !ok || (i > 0 && c.sortedPaths[i-1] >= p) {
@@ -242,9 +261,9 @@ func TestAreaIndexMatchesTheFootprintWalk(t *testing.T) {
 					paths = append(paths, p)
 				}
 			}
-			c.setFootprint(fp, paths)
+			b.setFootprint(c, fp, paths)
 		default:
-			c.putTouch(path, &touch{Area: area, At: at})
+			b.putTouch(c, path, &touch{Area: area, At: at})
 		}
 		walk := map[string]time.Time{}
 		for _, t := range c.Footprint {

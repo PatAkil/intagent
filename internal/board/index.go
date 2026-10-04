@@ -15,7 +15,9 @@ import (
 //   - each repository's claims, in ID order (byRepo);
 //   - each claim's sessions (claimSessions);
 //   - for each claim, the latest change in each area it changed (areaAt) and
-//     its changed paths in order (sortedPaths).
+//     its changed paths in order (sortedPaths);
+//   - what each claim's footprint, and each member's claims' footprints,
+//     count against their byte budgets (fpBytes, memberBytes).
 //
 // They are derived state, never saved, and rebuilt by Restore. Only the
 // functions in this file change them, or what they are derived from: the
@@ -57,6 +59,7 @@ func (b *Board) addClaim(c *claim) {
 		c.Footprint = map[string]*touch{}
 	}
 	c.indexFootprint()
+	b.charge(c.Member, c.fpBytes)
 }
 
 // removeClaim takes c off the board. Its sessions stay, as sessions of a
@@ -70,6 +73,7 @@ func (b *Board) removeClaim(c *claim) {
 		delete(b.byKey, c.key())
 	}
 	c.removed = true
+	b.charge(c.Member, -c.fpBytes)
 	r := b.byRepo[c.Repo]
 	r.removed++
 	if 2*r.removed <= len(r.claims) {
@@ -141,9 +145,31 @@ func (b *Board) unlinkSession(s *session) {
 	}
 }
 
-// setFootprint replaces the claim's footprint with fp, whose paths are
-// paths, in any order. It takes both. A snapshot may still be reading the
-// map replaced, which is left as it was.
+// setFootprint replaces c's footprint with fp, whose paths are paths, in any
+// order, and keeps its member's byte count. It takes both. A snapshot may
+// still be reading the map replaced, which is left as it was.
+func (b *Board) setFootprint(c *claim, fp map[string]*touch, paths []string) {
+	was := c.fpBytes
+	c.setFootprint(fp, paths)
+	b.charge(c.Member, c.fpBytes-was)
+}
+
+// putTouch records t as c's latest change to path, and keeps its member's
+// byte count.
+func (b *Board) putTouch(c *claim, path string, t *touch) {
+	was := c.fpBytes
+	c.putTouch(path, t)
+	b.charge(c.Member, c.fpBytes-was)
+}
+
+// charge adds n to what member's claims' footprints count, which the board
+// keeps only for members whose claims have changed files.
+func (b *Board) charge(member string, n int) {
+	if b.memberBytes[member] += n; b.memberBytes[member] == 0 {
+		delete(b.memberBytes, member)
+	}
+}
+
 func (c *claim) setFootprint(fp map[string]*touch, paths []string) {
 	c.Footprint, c.fpShared = fp, false
 	// What git reports is usually in order already.
@@ -151,6 +177,7 @@ func (c *claim) setFootprint(fp map[string]*touch, paths []string) {
 		slices.Sort(paths)
 	}
 	c.sortedPaths = paths
+	c.countBytes()
 	c.indexAreas()
 }
 
@@ -162,7 +189,10 @@ func (c *claim) putTouch(path string, t *touch) {
 	}
 	old, had := c.Footprint[path]
 	c.Footprint[path] = t
-	if !had {
+	c.fpBytes += footprintCost(path, t)
+	if had {
+		c.fpBytes -= footprintCost(path, old)
+	} else {
 		i, _ := slices.BinarySearch(c.sortedPaths, path)
 		c.sortedPaths = slices.Insert(c.sortedPaths, i, path)
 	}
@@ -182,7 +212,20 @@ func (c *claim) indexFootprint() {
 		c.sortedPaths = append(c.sortedPaths, p)
 	}
 	slices.Sort(c.sortedPaths)
+	c.countBytes()
 	c.indexAreas()
+}
+
+// footprintCost is what one changed file counts against the footprint byte
+// budgets: its path and its area, and about what the board keeps for it
+// beside them.
+func footprintCost(path string, t *touch) int { return len(path) + len(t.Area) + 96 }
+
+func (c *claim) countBytes() {
+	c.fpBytes = 0
+	for p, t := range c.Footprint {
+		c.fpBytes += footprintCost(p, t)
+	}
 }
 
 func (c *claim) indexAreas() {

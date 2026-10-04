@@ -67,7 +67,10 @@ since nothing remembers it was said), and its session start says its teammates w
 repository's stats count such hooks (`unstored`). Each sweep makes room by dropping the sessions not live that went
 silent longest, down to nine tenths of the bound. Past `max_dormant_claims` (20,000) claims with no live session, each
 sweep forgets up to 200 of those quiet longest that hold no intent, announced in one `claim.forgotten` per repository
-that names no claim.
+that names no claim. A footprint counts each file's path and area, and 96 bytes more, against two budgets: 512 KB for
+one claim (2000 files of a large monorepo's paths take about 350 KB) and 32 MB for all of one member's claims, a fleet's
+included. A footprint keeps the files its budgets take, the first in the order the client sent them, which puts first
+the files it would least want left out, and is marked truncated.
 
 The server's sweeper emits `session.stalled` and `session.gone` events once per transition, so the dashboard and the
 owner's next session see them. A webhook hears of them at most once a second, everything waiting in one message, so a

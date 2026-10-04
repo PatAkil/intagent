@@ -59,6 +59,10 @@ type Config struct {
 	MaxSessions int `json:"max_sessions"`
 	// MaxDormantClaims caps the claims with no live session the board keeps.
 	MaxDormantClaims int `json:"max_dormant_claims"`
+	// MaxFootprintBytes and MemberFootprintBytes cap what one claim's
+	// footprint, and all of one member's, may hold (bounds.go).
+	MaxFootprintBytes    int `json:"max_footprint_bytes"`
+	MemberFootprintBytes int `json:"member_footprint_bytes"`
 }
 
 // DefaultConfig returns the timings described in docs/design.md.
@@ -76,8 +80,10 @@ func DefaultConfig() Config {
 		KeepActivities: 300,
 		// A thousand sessions and a week's dormant claims are the scale
 		// intagent is meant for; these are twenty times that.
-		MaxSessions:      20_000,
-		MaxDormantClaims: 20_000,
+		MaxSessions:          20_000,
+		MaxDormantClaims:     20_000,
+		MaxFootprintBytes:    defaultFootprintBytes,
+		MemberFootprintBytes: defaultMemberFootprintBytes,
 	}
 }
 
@@ -113,6 +119,8 @@ func (c Config) WithDefaults() Config {
 	orInt(&c.KeepActivities, d.KeepActivities)
 	orInt(&c.MaxSessions, d.MaxSessions)
 	orInt(&c.MaxDormantClaims, d.MaxDormantClaims)
+	orInt(&c.MaxFootprintBytes, d.MaxFootprintBytes)
+	orInt(&c.MemberFootprintBytes, d.MemberFootprintBytes)
 	return c
 }
 
@@ -160,6 +168,7 @@ type Board struct {
 	// byRepo and claimSessions index claims and sessions (index.go).
 	byRepo        map[string]*repoIndex
 	claimSessions map[string]map[string]*session
+	memberBytes   map[string]int
 	recent        []Activity
 	seq           uint64
 	version       uint64
@@ -219,6 +228,7 @@ func New(cfg Config, opts ...Option) *Board {
 		sessions:      map[string]*session{},
 		byRepo:        map[string]*repoIndex{},
 		claimSessions: map[string]map[string]*session{},
+		memberBytes:   map[string]int{},
 		notes:         map[string][]time.Time{},
 		stats:         map[string]*Stats{},
 		dropped:       map[string]uint64{},
@@ -760,27 +770,38 @@ func (b *Board) reconcile(now time.Time, c *claim, s *session, fp *Footprint) {
 	paths := make([]string, 0, len(files))
 	var added []PathRef
 	moved := false // a file's area changed
+	// The files the claim keeps, in the order the client sends them, which
+	// puts first those it would least want left out, are those its byte
+	// budgets take.
+	room, cut := b.footprintRoom(c), false
 	for _, f := range files {
-		paths = append(paths, f.Path)
-		if t, ok := c.Footprint[f.Path]; ok {
-			if f.Area != "" && f.Area != t.Area {
-				moved = true
-				t = &touch{Area: f.Area, At: t.At, Session: t.Session, FromGit: t.FromGit}
-			}
-			next[f.Path] = t
-			continue
+		t, ok := c.Footprint[f.Path]
+		switch {
+		case !ok:
+			// Which session found a file in git says nothing about who
+			// changed it, so a touch from git names none.
+			t = &touch{Area: f.Area, At: now, FromGit: true}
+		case f.Area != "" && f.Area != t.Area:
+			t = &touch{Area: f.Area, At: t.At, Session: t.Session, FromGit: t.FromGit}
 		}
-		// Which session found a file in git says nothing about who changed
-		// it, so a touch from git names none.
-		next[f.Path] = &touch{Area: f.Area, At: now, FromGit: true}
-		added = append(added, f)
+		if room -= footprintCost(f.Path, t); room < 0 {
+			cut = true
+			break
+		}
+		paths = append(paths, f.Path)
+		next[f.Path] = t
+		if !ok {
+			added = append(added, f)
+		} else if t != c.Footprint[f.Path] {
+			moved = true
+		}
 	}
 	// The files are distinct, so those kept are the ones not added.
 	removed := len(c.Footprint) - (len(next) - len(added))
 	if len(added) > 0 || removed > 0 || moved {
-		c.setFootprint(next, paths)
+		b.setFootprint(c, next, paths)
 	}
-	c.FootprintTruncated = fp.Truncated
+	c.FootprintTruncated = fp.Truncated || cut
 	if len(added) > 0 || removed > 0 {
 		b.record(Activity{At: now, Kind: ActivityFootprintReconciled, Repo: c.Repo, Member: c.Member, ClaimID: c.ID, Session: s.ID, Agent: s.Agent,
 			Text: fmt.Sprintf("%d changed files (+%d, -%d)", len(next), len(added), removed)})
@@ -839,14 +860,15 @@ func (b *Board) touch(now time.Time, c *claim, s *session, paths []PathRef) {
 			if p.Area != "" {
 				area = p.Area
 			}
-			c.putTouch(p.Path, &touch{Area: area, At: now, Session: s.Key})
+			b.putTouch(c, p.Path, &touch{Area: area, At: now, Session: s.Key})
 			continue
 		}
-		if len(c.Footprint) >= b.cfg.MaxFootprint {
+		t := &touch{Area: p.Area, At: now, Session: s.Key}
+		if len(c.Footprint) >= b.cfg.MaxFootprint || footprintCost(p.Path, t) > b.footprintRoom(c)-c.fpBytes {
 			c.FootprintTruncated = true
 			continue
 		}
-		c.putTouch(p.Path, &touch{Area: p.Area, At: now, Session: s.Key})
+		b.putTouch(c, p.Path, t)
 		fresh = append(fresh, p)
 	}
 	b.record(Activity{At: now, Kind: ActivityFileChanged, Repo: c.Repo, Member: c.Member, ClaimID: c.ID, Session: s.ID, Agent: s.Agent, Paths: pathsOf(paths)})

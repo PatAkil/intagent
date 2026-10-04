@@ -117,3 +117,70 @@ func TestDormantClaimsPastTheCapAreForgotten(t *testing.T) {
 		}
 	}
 }
+
+// A footprint keeps what its byte budgets take, the first files in the
+// order the client sent them, and says it was cut: a claim's own budget,
+// and what its member's other claims leave of theirs. The answer is the
+// same as ever.
+func TestFootprintsKeepWithinTheirByteBudgets(t *testing.T) {
+	h := newHarness(t, func(c *Config) { c.MaxFootprintBytes, c.MemberFootprintBytes = 10_000, 25_000 })
+	files := make([]string, 100)
+	for i := range files {
+		files[i] = fmt.Sprintf("svc/%s/f%03d.go", strings.Repeat("d", 90), i) // 208 bytes each
+	}
+	cost := footprintCost(files[0], &touch{Area: "svc/" + strings.Repeat("d", 90)})
+	for i, want := range []int{10_000 / cost, 10_000 / cost, (25_000 - 2*(10_000/cost)*cost) / cost} {
+		wt := fmt.Sprint("w", i)
+		h.scanAt("bot", wt, wt, files...)
+		c := h.claimIn("bot", wt)
+		if len(c.Footprint) != want || !c.FootprintTruncated {
+			t.Fatalf("claim %d kept %d files, truncated %t; want the first %d", i, len(c.Footprint), c.FootprintTruncated, want)
+		}
+		for _, f := range files[:want] {
+			if c.Footprint[f] == nil {
+				t.Fatalf("claim %d did not keep %s, one of the first", i, f)
+			}
+		}
+	}
+	// An edit past the budget is not kept either, and still answered.
+	if res := h.at(KindPostEdit, "bot", "w0", "w0", "svc/new.go"); res.Decision != DecisionAllow {
+		t.Fatalf("a post_edit past the budget: %s", res.Decision)
+	}
+	if h.claimIn("bot", "w0").Footprint["svc/new.go"] != nil {
+		t.Fatal("a claim at its budget kept a new file")
+	}
+	// Another member's budget is their own.
+	h.scanAt("alice", "w", "a", files[:10]...)
+	if n := len(h.claimIn("alice", "w").Footprint); n != 10 {
+		t.Fatalf("alice's claim kept %d of 10 files", n)
+	}
+}
+
+// One member's footprints, sent to one fresh worktree after another, hold
+// at most the member's budget, however many come, and each at most its
+// own: in the scale review, 218 heartbeats of a megabyte each took a 2 GB
+// server past 3.5 GB. The budgets here are a sixteenth of the defaults.
+func TestOneMembersFootprintsAreBounded(t *testing.T) {
+	const claimBytes, memberBytes = defaultFootprintBytes / 16, defaultMemberFootprintBytes / 16
+	h := newHarness(t, func(c *Config) { c.MaxFootprintBytes, c.MemberFootprintBytes = claimBytes, memberBytes })
+	files := make([]string, 300)
+	for i := range files {
+		files[i] = fmt.Sprintf("x/%s/%04d", strings.Repeat("y", 140), i)
+	}
+	fp := &Footprint{Files: refs(files...)}
+	for i := range 80 {
+		// Each in a repository of its own, so what it costs is the footprint.
+		w := Where{Repo: fmt.Sprintf("github.com/acme/r%02d", i), Host: "h", Worktree: "/w"}
+		if _, err := h.b.Hook(h.now, HookEvent{Kind: KindHeartbeat, Member: "mallory", Agent: AgentCodex, SessionID: "s", Where: w, Footprint: fp}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	most, sum := 0, 0
+	for _, c := range h.b.claims {
+		most, sum = max(most, c.fpBytes), sum+c.fpBytes
+	}
+	t.Logf("80 footprints of %d bytes: the member holds %d bytes, the largest claim %d", 300*footprintCost(fp.Files[0].Path, &touch{Area: fp.Files[0].Area}), sum, most)
+	if sum > memberBytes || most > claimBytes || sum < memberBytes-claimBytes {
+		t.Fatalf("the member holds %d bytes, a claim %d", sum, most)
+	}
+}

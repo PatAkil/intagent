@@ -249,6 +249,7 @@ func (b *Board) RestoreAfter(r io.Reader, now, stopped time.Time) error {
 	b.sessions = map[string]*session{}
 	b.byRepo = map[string]*repoIndex{}
 	b.claimSessions = map[string]map[string]*session{}
+	b.memberBytes = map[string]int{}
 	b.unpruned = map[string]bool{}
 	for _, c := range s.Claims {
 		if c == nil || c.ID == "" {

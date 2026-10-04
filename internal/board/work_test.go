@@ -229,7 +229,7 @@ func addDormant(b *Board, repo string, n, files int, at time.Time, areas []strin
 			fp[p] = &touch{Area: area, At: at, FromGit: true}
 			paths = append(paths, p)
 		}
-		c.setFootprint(fp, paths)
+		b.setFootprint(c, fp, paths)
 	}
 }
 
