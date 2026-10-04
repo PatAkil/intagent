@@ -618,3 +618,23 @@ func TestTokenAddRunsDoNotLoseEachOther(t *testing.T) {
 		t.Fatalf("members = %d, %v", len(fc.Members), err)
 	}
 }
+
+// A note to a teammate with no claim in the repository yet waits for their
+// first session there, which hears it; one to a name not on the team finds
+// no one, as before.
+func TestNoteWaitsForATeammateNewToTheRepository(t *testing.T) {
+	ts := newTestServer(t)
+	var note board.NoteResult
+	if code := ts.do(t, "POST", "/v1/notes", "bob", board.NoteRequest{Where: where("bob"), To: "alice", Text: "start with the docs"}, &note); code != http.StatusOK ||
+		note.HeldFor != "alice" || len(note.Delivered) != 0 {
+		t.Fatalf("note to alice, with no claim yet: %d %+v", code, note)
+	}
+	if code := ts.do(t, "POST", "/v1/notes", "bob", board.NoteRequest{Where: where("bob"), To: "carol", Text: "x"}, nil); code != http.StatusNotFound {
+		t.Fatalf("note to carol, not on the team: %d", code)
+	}
+	var res board.HookResult
+	ts.do(t, "POST", "/v1/hook", "alice", hookEv(board.KindSessionStart, "alice", "a1"), &res)
+	if !strings.Contains(res.Context, "start with the docs") {
+		t.Fatalf("alice's first session was told:\n%s", res.Context)
+	}
+}

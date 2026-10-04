@@ -85,9 +85,11 @@ func TestOnlyListeningClaimsAreTold(t *testing.T) {
 	}
 }
 
-// A note to a member goes to their claims still listening. One to a member
-// none of whose claims listens waits in the one they were last active in,
-// not in every worktree they left; so does one to whoever changed a path.
+// A note to a member goes to their claims still listening, not to every
+// worktree they left. One to a member none of whose claims listens waits for
+// their next session (mail.go). One to whoever changed a path goes to those
+// still listening, and for each member none of whose claims there listens,
+// to the one they were last active in.
 func TestNotesGoToClaimsStillListening(t *testing.T) {
 	h := newHarness(t)
 	for _, wt := range []string{"w1", "w2", "w3"} {
@@ -98,6 +100,7 @@ func TestNotesGoToClaimsStillListening(t *testing.T) {
 	h.at(KindPostEdit, "carol", "c", "c1", "go.mod")
 	h.at(KindSessionEnd, "carol", "c", "c1")
 	// bob's claims have been quiet for 30, 20 and 10 hours.
+	var held string
 	note := func(to string) []string {
 		t.Helper()
 		h.advance(time.Minute)
@@ -105,6 +108,7 @@ func TestNotesGoToClaimsStillListening(t *testing.T) {
 		if err != nil {
 			t.Fatalf("note to %s: %v", to, err)
 		}
+		held = res.HeldFor
 		return res.Delivered
 	}
 	w1, w2, w3 := h.claimIn("bob", "w1").ID, h.claimIn("bob", "w2").ID, h.claimIn("bob", "w3").ID
@@ -113,8 +117,8 @@ func TestNotesGoToClaimsStillListening(t *testing.T) {
 		t.Errorf("a note to bob went to %v, want his claims quiet for less than a day, %v", got, []string{w2, w3})
 	}
 	h.advance(15 * time.Hour)
-	if got := note("bob"); !slices.Equal(got, []string{w3}) {
-		t.Errorf("a note to bob, away from every claim, went to %v, want only the newest, %s", got, w3)
+	if got := note("bob"); len(got) != 0 || held != "bob" {
+		t.Errorf("a note to bob, away from every claim, went to %v, held for %q; want it held for bob", got, held)
 	}
 	if got := note("go.mod"); !slices.Equal(got, []string{w3, carol}) {
 		t.Errorf("a note to whoever changed go.mod went to %v, want bob's newest claim and carol's, %v", got, []string{w3, carol})

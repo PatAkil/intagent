@@ -110,13 +110,16 @@ hears of teammates' work from its greeting and its checks, and may hear again of
 alert names at most five files and counts the rest, and a claim remembers being told of at most five files of each
 teammate's claim: past those, a file that comes back into the teammate's changes is told again, so what claims sharing a
 large footprint remember grows with the pairs of them, not with the files. A note to a member goes to their claims still
-listening, and to one none of whose claims listens, to the claim they were last active in, rather than to every worktree
-they left. An inbox holds 50 items; a full one lets go first of an item a session was already shown, then of the oldest
-item of the sender holding the most, an alert before a note when senders tie, so a flood of one teammate's alerts or
-notes pushes out their own items rather than another's note the agent has not heard yet. The sweeper drops inbox items a
-day old, which no session is shown any more, and the alerts a claim that no longer listens remembers having heard; and
-once a claim is removed, the alerts other claims remember of it, which nothing can match again since a claim's ID is
-never reused.
+listening, not to every worktree they left; to a member none of whose claims listens, or a teammate with no claim in the
+repository yet, it waits in a mailbox for their next session there, in whichever worktree, which hears it (the answer's
+`held_for` names them). A mailbox holds 20 notes, the board 1024 mailboxes, and a note waits a day, as an inbox item
+does. A note to whoever changed a path goes to the claims still listening, and for each member none of whose claims
+there listens, to the one they were last active in. An inbox holds 50 items; a full one lets go first of an item a
+session was already shown, then of the oldest item of the sender holding the most, an alert before a note when senders
+tie, so a flood of one teammate's alerts or notes pushes out their own items rather than another's note the agent has
+not heard yet. The sweeper drops inbox items a day old, which no session is shown any more, and the alerts a claim that
+no longer listens remembers having heard; and once a claim is removed, the alerts other claims remember of it, which
+nothing can match again since a claim's ID is never reused.
 
 Every acknowledgement is remembered per session, so an agent hears about a given overlap once, not on every edit. A
 collision is announced (a `conflict` activity, for the dashboard and webhooks) under the teammate whose work decided the
@@ -262,7 +265,7 @@ All endpoints take and return JSON and require `Authorization: Bearer <token>`, 
 | `POST /v1/intents` | MCP, CLI | Declare intents for a claim. Returns overlaps. |
 | `POST /v1/intents/release` | MCP, CLI | Release some or all intents. |
 | `POST /v1/check` | MCP, CLI, guard | Who else claims or touched these paths, the first 200 of them (`unchecked` counts the rest, and `text` says so; intagent's CLI, MCP tool and guard send more in several checks). Read-only. |
-| `POST /v1/notes` | MCP, CLI | Send a note to a claim or a member. |
+| `POST /v1/notes` | MCP, CLI | Send a note to a claim, a member or whoever changed a path. A note to a member whose agents are not in the repository waits for their next session there (`held_for`). |
 | `GET /v1/board` | CLI, dashboard | Every claim and session in a repo, with derived states. Gzip when the client takes it, and a weak `ETag` for `If-None-Match`. Its `epoch` changes when the server restarts, and `server` is there while agents' edits go ahead unchecked (below). With `format=text`, the board as text; adding `limit`, `host` and `worktree` gives an agent at most `limit` claims (16 KB), those sharing files or areas with its own first, as the MCP `team_board` tool shows them. |
 | `GET /v1/repos` | dashboard | The repositories with claims, each with the server's `epoch`. |
 | `GET /v1/stream` | dashboard | Server-sent events. |

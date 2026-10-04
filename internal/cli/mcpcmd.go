@@ -178,6 +178,9 @@ func (a *App) mcpTools() []mcp.Tool {
 				if err != nil {
 					return "", err
 				}
+				if res.HeldFor != "" {
+					return fmt.Sprintf("None of %s's agents is working in this repository now; the note waits for their next session here.", res.HeldFor), nil
+				}
 				return fmt.Sprintf("Note queued for %d claim(s); their agents see it at their next step.", len(res.Delivered)), nil
 			},
 		},

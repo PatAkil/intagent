@@ -975,6 +975,9 @@ func (b *Board) oldSnapshotCopy(now time.Time) (snapshot, uint64) {
 	for _, x := range b.sessions {
 		s.Sessions = append(s.Sessions, x.clone())
 	}
+	if len(b.mail) > 0 {
+		s.Mail = b.mailCopy()
+	}
 	return s, b.version
 }
 

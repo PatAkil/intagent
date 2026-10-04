@@ -201,6 +201,9 @@ type Board struct {
 	// unpruned holds the repositories a claim was removed from since the
 	// last sweep, whose claims may remember alerts of it (pruneAlerts).
 	unpruned map[string]bool
+	// mail holds the notes waiting for members, by repository and member
+	// (mail.go).
+	mail map[string]*mailbox
 }
 
 // Option configures a Board.
@@ -238,6 +241,7 @@ func New(cfg Config, opts ...Option) *Board {
 		statsAt:       map[string]time.Time{},
 		dropped:       map[string]uint64{},
 		unpruned:      map[string]bool{},
+		mail:          map[string]*mailbox{},
 		newID:         randomID,
 		log:           slog.New(slog.DiscardHandler),
 	}
@@ -1803,6 +1807,7 @@ func (b *Board) deliver(now time.Time, c *claim, s *session) string {
 	}
 	pending := s.Pending
 	s.Pending = ""
+	b.collectMail(now, c)
 	return joinBlocks(pending, b.deliverInbox(now, c, s))
 }
 
@@ -2189,11 +2194,18 @@ type NoteRequest struct {
 	Text string `json:"text"`
 	// ByPerson says the member wrote the note themselves, not their agent.
 	ByPerson bool `json:"by_person,omitempty"`
+	// ToMember, set by the server, says To names a member of the team, who
+	// may have no claim in the repository yet.
+	ToMember bool `json:"-"`
 }
 
 // NoteResult lists the claims a note was queued for.
 type NoteResult struct {
 	Delivered []string `json:"delivered"`
+	// HeldFor names the member a note waits for when none of their
+	// worktrees in the repository is listening: their next session there
+	// hears it, in whichever worktree.
+	HeldFor string `json:"held_for,omitempty"`
 }
 
 // Note queues a note in the inbox of every claim the recipient resolves to.
@@ -2221,11 +2233,21 @@ func (b *Board) Note(now time.Time, r NoteRequest) (NoteResult, error) {
 		return NoteResult{}, ErrRateLimited
 	}
 	self := b.findClaim(r.Member, w)
-	targets, path, byID := b.resolve(w.Repo, to, self)
-	if !byID {
-		targets = b.listeners(b.liveAt(now), targets)
+	targets, path, byID := b.resolve(w.Repo, to, self, r.ToMember)
+	var res NoteResult
+	live := b.liveAt(now)
+	switch {
+	case byID:
+	case path != "" || to == r.Member:
+		targets = b.listeners(live, targets)
+	default:
+		// To a member: their claims still listening, or their mailbox.
+		targets = slices.DeleteFunc(targets, func(c *claim) bool { return !b.listening(live, c) })
+		if len(targets) == 0 {
+			res.HeldFor = to
+		}
 	}
-	if len(targets) == 0 {
+	if len(targets) == 0 && res.HeldFor == "" {
 		return NoteResult{}, fmt.Errorf("%w: %q", ErrNoTarget, to)
 	}
 	b.changed()
@@ -2234,20 +2256,26 @@ func (b *Board) Note(now time.Time, r NoteRequest) (NoteResult, error) {
 	if self != nil {
 		from = self
 	}
-	var res NoteResult
+	sender := who(from)
+	if r.ByPerson {
+		sender = from.Member
+	}
+	item := InboxItem{Kind: "note", FromClaim: from.ID, From: r.Member, Text: fmt.Sprintf("Note from %s: %s", sender, quote(text))}
 	for _, t := range targets {
-		sender := who(from)
-		if r.ByPerson {
-			sender = from.Member
-		}
-		b.enqueue(now, t, InboxItem{Kind: "note", FromClaim: from.ID, From: r.Member, Text: fmt.Sprintf("Note from %s: %s", sender, quote(text))})
+		b.enqueue(now, t, item)
 		res.Delivered = append(res.Delivered, t.ID)
 	}
-	b.statsOf(w.Repo, now).Notes += len(targets)
+	if res.HeldFor != "" {
+		b.hold(now, w.Repo, res.HeldFor, item)
+	}
+	b.statsOf(w.Repo, now).Notes += max(len(targets), 1)
 	note := Activity{At: now, Kind: ActivityNoteSent, Repo: w.Repo, Member: r.Member, ClaimID: from.ID}
-	if path != "" {
+	switch {
+	case path != "":
 		note.Paths, note.Text = []string{path}, fmt.Sprintf("to whoever works on %s: %s", path, text)
-	} else {
+	case res.HeldFor != "":
+		note.Text = fmt.Sprintf("to %s, for their next session: %s", res.HeldFor, text)
+	default:
 		note.Text = fmt.Sprintf("to %s: %s", targets[0].Member, text)
 	}
 	b.record(note)
@@ -2256,8 +2284,9 @@ func (b *Board) Note(now time.Time, r NoteRequest) (NoteResult, error) {
 
 // resolve finds a note's recipients: a claim by ID, a member's claims, or the
 // claims that changed or reserved a path, which it also returns. It reports
-// whether the note named its claim.
-func (b *Board) resolve(repo, to string, self *claim) ([]*claim, string, bool) {
+// whether the note named its claim. A note to a member of the team (member)
+// is to that member, whatever claims they have.
+func (b *Board) resolve(repo, to string, self *claim, member bool) ([]*claim, string, bool) {
 	if c, ok := b.claims[to]; ok && c.Repo == repo {
 		return []*claim{c}, "", true
 	}
@@ -2270,7 +2299,7 @@ func (b *Board) resolve(repo, to string, self *claim) ([]*claim, string, bool) {
 			out = append(out, c)
 		}
 	}
-	if len(out) > 0 {
+	if len(out) > 0 || member {
 		return out, "", false
 	}
 	p, err := glob.CleanPath(to)
@@ -2416,6 +2445,7 @@ func (b *Board) Sweep(now time.Time) {
 		}
 	}
 	changed = b.pruneAlerts() || changed
+	changed = b.tidyMail(now) || changed
 	if changed {
 		b.changed()
 	}

@@ -165,6 +165,10 @@ func (a *App) note(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	if res.HeldFor != "" {
+		fmt.Fprintf(a.Out, "Note held for %s's next session in this repository.\n", res.HeldFor)
+		return nil
+	}
 	fmt.Fprintf(a.Out, "Note queued for %d claim(s): %s\n", len(res.Delivered), strings.Join(res.Delivered, ", "))
 	return nil
 }

@@ -305,6 +305,16 @@ func (s *Server) admits(who memberHash) bool {
 	return false
 }
 
+// isMember reports whether name is a member of the team.
+func (s *Server) isMember(name string) bool {
+	for _, m := range *s.members.Load() {
+		if m.name == name {
+			return true
+		}
+	}
+	return false
+}
+
 // Board exposes the board, for tests and embedding.
 func (s *Server) Board() *board.Board { return s.board }
 
@@ -651,6 +661,9 @@ func (s *Server) handleNote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Member = memberFrom(r)
+	// A note to a teammate with no claim in the repository yet waits for
+	// their first session there.
+	req.ToMember = s.isMember(strings.TrimSpace(req.To))
 	res, err := s.board.Note(s.now(), req)
 	if err != nil {
 		writeBoardError(w, err)

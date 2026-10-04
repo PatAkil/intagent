@@ -152,6 +152,9 @@ func TestWriteSnapshotMatchesMarshal(t *testing.T) {
 	for i := range 8 {
 		dropped.hook(KindPostEdit, "alice", "a1", fmt.Sprintf("x/%d.go", i))
 	}
+	if _, err := dropped.b.Note(t0, NoteRequest{Member: "alice", Where: whereOf("alice"), To: "bob", Text: "hi", ToMember: true}); err != nil {
+		t.Fatal(err) // a note held for bob, whom the board does not know yet
+	}
 	for name, b := range map[string]*Board{"empty": small, "kit": kit.Board, "dropped": dropped.b} {
 		want, wantVersion, err := b.oldSnapshot(t0)
 		if err != nil {

@@ -27,6 +27,9 @@ type snapshot struct {
 	Stats    map[string]*Stats `json:"stats,omitempty"`
 	// Dropped is nil in a snapshot from a server that did not keep it.
 	Dropped *droppedMarks `json:"dropped,omitempty"`
+	// Mail is the notes waiting for members (mail.go), by repository and
+	// member.
+	Mail []*mailbox `json:"mail,omitempty"`
 }
 
 // droppedMarks are what the board's feed has let go of, as Board keeps them,
@@ -83,6 +86,10 @@ func (b *Board) WriteSnapshot(w io.Writer, now time.Time) (uint64, error) {
 	if s.Dropped != nil {
 		sw.raw(`,"dropped":`)
 		sw.value(s.Dropped)
+	}
+	if len(s.Mail) > 0 {
+		sw.raw(`,"mail":`)
+		sw.value(s.Mail)
 	}
 	sw.raw("}")
 	if sw.err != nil {
@@ -164,6 +171,9 @@ func (b *Board) snapshotCopy(now time.Time) (snapshot, uint64) {
 	}
 	for _, x := range b.sessions {
 		s.Sessions = append(s.Sessions, x.clone())
+	}
+	if len(b.mail) > 0 {
+		s.Mail = b.mailCopy()
 	}
 	return s, b.version
 }
@@ -291,6 +301,12 @@ func (b *Board) RestoreAfter(r io.Reader, now, stopped time.Time) error {
 		b.stats = map[string]*Stats{}
 	}
 	b.statsAt = map[string]time.Time{}
+	b.mail = map[string]*mailbox{}
+	for _, m := range s.Mail {
+		if m != nil && m.Repo != "" && m.Member != "" && len(m.Items) > 0 {
+			b.mail[mailKey(m.Repo, m.Member)] = m
+		}
+	}
 	// What happened before the snapshot is in it, or gone with the process.
 	b.notes = map[string][]time.Time{}
 	b.pending = nil
@@ -336,6 +352,8 @@ func readSnapshot(r io.Reader) (snapshot, error) {
 			return dec.Decode(&s.Stats)
 		case strings.EqualFold(key, "dropped"):
 			return dec.Decode(&s.Dropped)
+		case strings.EqualFold(key, "mail"):
+			return readArray(dec, &s.Mail)
 		}
 		var skip json.RawMessage // a field from a newer server
 		return dec.Decode(&skip)
