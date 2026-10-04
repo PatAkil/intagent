@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -29,6 +30,9 @@ type testServer struct {
 	tokens map[string]string
 	mu     sync.Mutex
 	clock  time.Time
+	// step moves the server's request clock at every reading, so that a
+	// request has waited step when the board asks whether it is late.
+	step, reads atomic.Int64
 }
 
 func newTestServer(t *testing.T, mutate ...func(*Options)) *testServer {
@@ -52,6 +56,7 @@ func newTestServer(t *testing.T, mutate ...func(*Options)) *testServer {
 		t.Fatal(err)
 	}
 	ts.Server = s
+	s.clock = ts.requestClock
 	hs := httptest.NewServer(s.Handler())
 	t.Cleanup(hs.Close)
 	ts.url = hs.URL
@@ -62,6 +67,10 @@ func (ts *testServer) now() time.Time {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
 	return ts.clock
+}
+
+func (ts *testServer) requestClock() time.Time {
+	return time.Unix(1_790_000_000, 0).Add(time.Duration(ts.reads.Add(1) * ts.step.Load()))
 }
 
 func (ts *testServer) do(t *testing.T, method, path, member string, body any, out any) int {

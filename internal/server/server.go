@@ -75,6 +75,9 @@ type Server struct {
 	closeOnce  sync.Once
 	// uiKey signs dashboard sessions, so a session cookie is never a token.
 	uiKey []byte
+	// clock measures how long requests wait. It is not the board's time,
+	// which Options.Now may replace; tests replace this one too.
+	clock func() time.Time
 }
 
 type memberHash struct {
@@ -94,6 +97,7 @@ func New(o Options) (*Server, error) {
 		hub:        newHub(),
 		log:        o.Logger,
 		now:        o.Now,
+		clock:      time.Now,
 		dataDir:    o.DataDir,
 		publicRead: o.PublicRead,
 		demo:       o.Demo,
@@ -242,7 +246,10 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 		Handler:           s.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       2 * time.Minute,
-		BaseContext:       func(net.Listener) context.Context { return ctx },
+		// Requests keep their context while the server stops: Shutdown waits
+		// for them, and a hook whose context ended would be taken for one
+		// whose agent had stopped waiting.
+		BaseContext: func(net.Listener) context.Context { return context.WithoutCancel(ctx) },
 	}
 	srv.RegisterOnShutdown(func() { s.closeOnce.Do(func() { close(s.closing) }) })
 	maintainCtx, stopMaintain := context.WithCancel(context.WithoutCancel(ctx))
@@ -372,13 +379,20 @@ func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleHook(w http.ResponseWriter, r *http.Request) {
+	caller := s.waiterFor(r, s.clock())
 	var ev board.HookEvent
 	if !decode(w, r, &ev) {
 		return
 	}
 	ev.Member = memberFrom(r)
+	ev.Late = caller.late
 	res, err := s.board.Hook(s.now(), ev)
-	if err != nil {
+	switch {
+	case errors.Is(err, board.ErrAbandoned):
+		// Its agent went ahead without the answer, which can only be the
+		// allow it acted on; a client still waiting learns it was unchecked.
+		s.log.Debug("hook not answered: its agent stopped waiting", "member", ev.Member, "kind", ev.Kind, "waited", caller.waited())
+	case err != nil:
 		s.log.Warn("hook rejected", "member", ev.Member, "kind", ev.Kind, "err", err)
 		writeBoardError(w, err)
 		return

@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"time"
 
 	"github.com/patakil/intagent/internal/board"
@@ -60,6 +61,9 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
 	req.Header.Set("User-Agent", "intagent")
+	if d := patience(ctx, c.http.Timeout); d >= time.Millisecond {
+		req.Header.Set(timeoutHeader, strconv.FormatInt(d.Milliseconds(), 10))
+	}
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return err
@@ -90,6 +94,23 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 		return nil
 	}
 	return json.Unmarshal(data, out)
+}
+
+// timeoutHeader tells the server how long the client waits for an answer, in
+// milliseconds, so that it does not decide a hook for an agent that went
+// ahead without it (internal/server reads it).
+const timeoutHeader = "X-Intagent-Timeout"
+
+// patience is how long a request waits for its answer: the client's
+// timeout, or less if ctx ends sooner; 0 if neither bounds it.
+func patience(ctx context.Context, timeout time.Duration) time.Duration {
+	d := timeout
+	if dl, ok := ctx.Deadline(); ok {
+		if left := time.Until(dl); d <= 0 || left < d {
+			d = left
+		}
+	}
+	return max(d, 0)
 }
 
 // Hook sends a lifecycle event.
