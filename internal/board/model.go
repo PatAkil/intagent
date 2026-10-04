@@ -365,6 +365,9 @@ type HookResult struct {
 	Context   string     `json:"context,omitempty"`
 	ClaimID   string     `json:"claim_id,omitempty"`
 	Conflicts []Conflict `json:"conflicts,omitempty"`
+	// MoreConflicts counts the conflicts Conflicts leaves out: it lists at
+	// most 200 that block or overlap, and the 20 newest of those nearby.
+	MoreConflicts int `json:"more_conflicts,omitempty"`
 	// Unchecked says the board did not get to the event before its agent
 	// stopped waiting, or the server was too busy to check it (a large
 	// pre_edit under load): nothing was checked or recorded, and the decision
@@ -463,7 +466,10 @@ type Activity struct {
 	// teammate's reservation, which the policy would have stopped.
 	Breach bool `json:"breach,omitempty"`
 	// Also names the other teammates a collision newly ran into, besides the
-	// one Text names: "carol on c/y.go: has unmerged changes to this file".
+	// one Text names: "carol on c/y.go: has unmerged changes to this file",
+	// with " (in 3 worktrees)" for one said of several of a member's claims.
+	// It holds at most four, and then a line that counts the claims of the
+	// rest: "12 more".
 	Also []string `json:"also,omitempty"`
 	// Idle marks a session.gone whose agent had finished its turn and was
 	// waiting for its person: a session left open, not a stuck agent.

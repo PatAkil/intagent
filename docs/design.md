@@ -104,7 +104,10 @@ day old, which no session is shown any more, and the alerts a claim that no long
 once a claim is removed, the alerts other claims remember of it, which nothing can match again since a claim's ID is
 never reused.
 
-Every acknowledgement is remembered per session, so an agent hears about a given overlap once, not on every edit.
+Every acknowledgement is remembered per session, so an agent hears about a given overlap once, not on every edit. A
+collision is announced (a `conflict` activity, for the dashboard and webhooks) under the teammate whose work decided the
+answer, and names at most four others it newly ran into, a member's many worktrees with the same news in one line,
+then counts the rest.
 
 ## Intents
 
@@ -237,7 +240,7 @@ All endpoints take and return JSON and require `Authorization: Bearer <token>`, 
 
 | Method and path | Used by | Purpose |
 |---|---|---|
-| `POST /v1/hook` | hooks | One normalised lifecycle event in, a decision and context out. |
+| `POST /v1/hook` | hooks | One normalised lifecycle event in, a decision and context out. The conflicts an edit's answer lists are those that block or overlap, up to 200, and the 20 newest nearby; `more_conflicts` counts the rest. |
 | `POST /v1/intents` | MCP, CLI | Declare intents for a claim. Returns overlaps. |
 | `POST /v1/intents/release` | MCP, CLI | Release some or all intents. |
 | `POST /v1/check` | MCP, CLI, guard | Who else claims or touched these paths, the first 200 of them (`unchecked` counts the rest, and `text` says so; intagent's CLI, MCP tool and guard send more in several checks). Read-only. |

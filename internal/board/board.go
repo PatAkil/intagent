@@ -1360,16 +1360,50 @@ func (b *Board) announce(now time.Time, c *claim, s *session, paths []PathRef, d
 		top = f
 	}
 	var also []string
+	worktrees := map[string]int{} // claims each line stands for
 	named := map[string]bool{top.ClaimID: true}
 	for _, cf := range fresh {
 		if !named[cf.ClaimID] {
 			named[cf.ClaimID] = true
-			also = append(also, fmt.Sprintf("%s on %s: %s", cf.Member, cf.Path, cf.Why))
+			line := fmt.Sprintf("%s on %s: %s", cf.Member, cf.Path, cf.Why)
+			if worktrees[line] == 0 {
+				also = append(also, line)
+			}
+			worktrees[line]++
 		}
 	}
 	b.record(Activity{At: now, Kind: ActivityConflict, Repo: c.Repo, Member: c.Member, ClaimID: c.ID, Session: s.ID, Agent: s.Agent,
-		Paths: decidedFirst(paths, acted), Severity: top.Severity, Decision: d, Also: also,
+		Paths: decidedFirst(paths, acted), Severity: top.Severity, Decision: d, Also: alsoLines(also, worktrees),
 		Text: fmt.Sprintf("%s → %s (%s)", top.Path, top.Member, top.Why)})
+}
+
+// maxAlso bounds the lines an activity's Also holds, besides one that counts
+// the rest: every stream, the feed, the snapshot and a webhook message carry
+// it, and a fleet's worktrees on one file would otherwise each add a line.
+const maxAlso = 4
+
+// alsoLines is lines, each said once with the worktrees it stands for, up to
+// maxAlso of them, and how many teammates' claims the rest stand for.
+func alsoLines(lines []string, worktrees map[string]int) []string {
+	out := make([]string, 0, min(len(lines), maxAlso+1))
+	rest := 0
+	for i, line := range lines {
+		if i >= maxAlso {
+			rest += worktrees[line]
+			continue
+		}
+		if n := worktrees[line]; n > 1 {
+			line += fmt.Sprintf(" (in %d worktrees)", n)
+		}
+		out = append(out, line)
+	}
+	if rest > 0 {
+		out = append(out, fmt.Sprintf("%d more", rest))
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // decidedFirst names an edit's paths for its activity. When there are more
@@ -1434,7 +1468,8 @@ func (b *Board) judge(now time.Time, c *claim, s *session, paths []PathRef, noAs
 // answer turns a verdict into what the hook says, and acknowledges the
 // questions and warnings it shows.
 func (b *Board) answer(now time.Time, s *session, v verdict) HookResult {
-	res := HookResult{Decision: DecisionAllow, Conflicts: v.all}
+	res := HookResult{Decision: DecisionAllow}
+	res.Conflicts, res.MoreConflicts = boundConflicts(v.all)
 	switch {
 	case len(v.refused) > 0:
 		res.Decision = DecisionRefuse
@@ -1453,6 +1488,51 @@ func (b *Board) answer(now time.Time, s *session, v verdict) HookResult {
 		}
 	}
 	return res
+}
+
+// Bounds on the conflicts an answer lists, which an edit's agent never reads
+// (it reads the decision, the reason and the context) but which go back in
+// every answer: those that block or overlap, and the newest of those nearby.
+const (
+	maxAnswerConflicts = 200
+	maxNearbyConflicts = 20
+)
+
+// boundConflicts keeps, of the conflicts all lists, the first
+// maxAnswerConflicts that block or overlap, those that block first, and the
+// maxNearbyConflicts newest of those nearby, in the order all has them, and
+// counts the rest.
+func boundConflicts(all []Conflict) ([]Conflict, int) {
+	var nearby []int
+	for i, cf := range all {
+		if cf.Severity == SeverityNearby {
+			nearby = append(nearby, i)
+		}
+	}
+	if len(all)-len(nearby) <= maxAnswerConflicts && len(nearby) <= maxNearbyConflicts {
+		return all, 0
+	}
+	keep := make([]bool, len(all))
+	kept := 0
+	for _, sev := range []Severity{SeverityBlock, SeverityOverlap} {
+		for i, cf := range all {
+			if cf.Severity == sev && kept < maxAnswerConflicts {
+				keep[i] = true
+				kept++
+			}
+		}
+	}
+	slices.SortStableFunc(nearby, func(x, y int) int { return all[y].Since.Compare(all[x].Since) })
+	for _, i := range nearby[:min(len(nearby), maxNearbyConflicts)] {
+		keep[i] = true
+	}
+	out := make([]Conflict, 0, kept+maxNearbyConflicts)
+	for i, cf := range all {
+		if keep[i] {
+			out = append(out, cf)
+		}
+	}
+	return out, len(all) - len(out)
 }
 
 // count adds one checked edit to the repository's stats, under its most
