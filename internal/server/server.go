@@ -454,8 +454,7 @@ func (s *Server) handleBoard(w http.ResponseWriter, r *http.Request) {
 	}
 	v := s.board.View(s.now(), repo)
 	if r.URL.Query().Get("format") == "text" {
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		_, _ = io.WriteString(w, v.Text()+"\n")
+		writeText(w, v.Text()+"\n")
 		return
 	}
 	writeJSON(w, http.StatusOK, v)
@@ -543,10 +542,55 @@ func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 	return true
 }
 
+// writeTimeout bounds how long an answer may go without progress: each piece
+// of it must reach the client's connection within this time, as nginx's
+// send_timeout has it. The server has no WriteTimeout, which would end event
+// streams, so without this a client that stopped reading (a laptop asleep
+// mid-download, a paused pipe) would hold its handler and the answer's memory
+// until TCP gave up, while a slow client that keeps reading still gets
+// everything. A variable for tests.
+var writeTimeout = 15 * time.Second
+
+// progressChunk is how much of an answer one write deadline covers.
+const progressChunk = 64 << 10
+
+// progressWriter re-arms the write deadline before each piece of an answer.
+type progressWriter struct {
+	w  http.ResponseWriter
+	rc *http.ResponseController
+}
+
+func progress(w http.ResponseWriter) progressWriter {
+	return progressWriter{w: w, rc: http.NewResponseController(w)}
+}
+
+func (p progressWriter) Write(b []byte) (int, error) {
+	n := 0
+	for len(b) > 0 {
+		k := min(len(b), progressChunk)
+		// A writer that takes no deadline (a test recorder) writes without one.
+		if err := p.rc.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil && !errors.Is(err, http.ErrNotSupported) {
+			return n, err
+		}
+		m, err := p.w.Write(b[:k])
+		n += m
+		if err != nil {
+			return n, err
+		}
+		b = b[k:]
+	}
+	return n, nil
+}
+
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
+	_ = json.NewEncoder(progress(w)).Encode(v)
+}
+
+func writeText(w http.ResponseWriter, text string) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	_, _ = io.WriteString(progress(w), text)
 }
 
 // ErrorResponse is the body of every error.
