@@ -96,8 +96,23 @@ network, serve HTTPS: `--tls-cert cert.pem --tls-key key.pem`, or a reverse prox
 certificate's handshake costs the server about three times as much CPU (about 1.5 ms, or 1.5 cores at 1000 hooks a
 second). To keep an RSA certificate for old browsers, give both pairs, `--tls-cert ec.pem --tls-key ec.key --tls-cert
 rsa.pem --tls-key rsa.key`; intagent's clients get the ECDSA one. A proxy takes that cost off the server only if it
-runs on another machine. The server keeps up to 500 dashboards connected at once, 20 per member and 100 without a
-token; `--max-streams`, `--max-member-streams` and `--max-public-streams` change that, and 0 allows none.
+runs on another machine.
+
+| `serve` flag | Default | What it sets |
+|---|---|---|
+| `--config` | `team.json` | Members, policy and webhook. Members are reloaded while the server runs; the rest at the next start. |
+| `--addr` | `:7400` | The address to listen on. |
+| `--data` | `intagent-data` | Where the board's snapshot and the key that signs dashboard sessions are kept; `""` keeps both in memory. |
+| `--tls-cert`, `--tls-key` | none | Serve HTTPS. Give them twice, an ECDSA pair and an RSA pair, to serve both. |
+| `--public-read` | off | Anyone who can reach the server can see the board without a token. |
+| `--max-connections` | 4096 | Connections open at once; past it, new ones are closed as soon as they are accepted. |
+| `--max-streams` | 500 | Dashboards connected at once, in all; 0 allows none. |
+| `--max-member-streams` | 20 | Dashboards one member may have connected at once; 0 allows none. |
+| `--max-public-streams` | 100 | Dashboards connected without a token, with `--public-read`; 0 allows none. |
+| `--log-level` | `info` | `debug`, `info`, `warn` or `error`. |
+
+A client has 15 seconds to send a request and 16 KB for its headers, and an answer that makes no progress for 15
+seconds is cut off. A dashboard over its stream cap is answered 429 and tries again later. These are not settings.
 
 **Each repository, once** (one person; then commit the files it writes):
 
@@ -113,6 +128,11 @@ else's hooks, and replaces only its own, so running it again after an upgrade mi
 file first: one it cannot edit (JSON with comments, say) stops it before anything is written. The hooks do nothing
 for a teammate who has not installed intagent. `--areas 'services/*,libs/*'` defines your monorepo's areas, and an
 `"ignore"` list in `.intagent.json` (`["api/gen/**"]`) keeps generated files out of what agents report.
+
+A worktree reports at most 2000 changed files, ignored ones left out first. Past that it keeps one file of each changed
+area, then what the branch has not committed, then the branch's commits, then the files of new directories of more than
+500 files (a `.venv` nobody ignored). A new directory whose files do not all fit is named in their place; the server
+does not judge such directories yet, so teammates are not told about the files they stand for.
 
 **Each member, in each clone:**
 
@@ -189,13 +209,13 @@ incoming webhooks work as they are, and any other endpoint receives the activity
 `session.stalled` fires when a working agent has been silent past `stall_after` (or `tool_stall_after` inside a tool
 call), `session.gone` when an agent stopped reporting without ending its session, and `conflict` when an edit was
 refused or put to a person, or a change made through the shell landed in a teammate's reservation (warnings are not
-sent). A session that had finished its turn and was left waiting for its person turns gone after `idle_after` too; it
-is not stuck, so the dashboard shows it but the webhook does not, unless the webhook sets `"idle": true`. Any other
-activity on the dashboard's feed can be listed too: `claim.opened`, `claim.released`, `claim.forgotten`,
-`session.started`, `session.ended`, `session.recovered`, `file.changed`, `footprint.reconciled`, `intent.declared`,
-`intent.released` and `note.sent`, and the server's own `server.degraded` and `server.recovered` (below). A misspelt
-one stops the server from starting, as does one an older server does not know: list `server.*` only once no older
-server reads the file.
+sent). A session that had finished its turn and was left waiting for its person turns gone after `idle_after` too; it is
+not stuck, so the dashboard shows it but the webhook does not, unless the webhook sets `"idle": true` (a server older
+than this setting refuses a team file that has it). Any other activity on the dashboard's feed can be listed too:
+`claim.opened`, `claim.released`, `claim.forgotten`, `session.started`, `session.ended`, `session.recovered`,
+`file.changed`, `footprint.reconciled`, `intent.declared`, `intent.released` and `note.sent`, and the server's own
+`server.degraded` and `server.recovered` (below). A misspelt one stops the server from starting, as does one an older
+server does not know: list `server.*` only once no older server reads the file.
 
 Messages go out at most one a second, and a storm becomes a few of them. Whatever waits is sent together: refused
 edits first, then stalled agents, then the rest. Up to five of one kind in one repository are told one line each;
@@ -214,17 +234,26 @@ message, within two seconds.
 ## When the server falls behind
 
 A hook waits `INTAGENT_TIMEOUT` (2 s) for the server and then lets the edit through. It tells the server how long it
-waits, and the server does not decide anything for an agent that has gone ahead: no refusal is counted or announced
-for it, and a bump it never saw still stops its next edit of the file. What the agent did is recorded all the same,
-and what it has not heard yet waits for its next answer. The agent is then told which of its edits went ahead without
-a check: by the server when the edit is reported, with what a check finds then, and otherwise by the hook, from a
-ledger it keeps in the user cache directory. The dashboard counts those edits beside the checked ones.
+waits, and the server does not decide anything for an agent that has gone ahead: no refusal is counted or announced for
+it, and a bump it never saw still stops its next edit of the file. What the agent did is recorded all the same, and what
+it has not heard yet waits for its next answer. An edit that names more than about 200 files is a large request: when
+its member has sent too many of those, or the server stays busy with other large requests for a second, it goes ahead
+unchecked and its agent is told so. The agent is then told which of its edits went ahead without a check: by the server
+when the edit is reported, with what a check finds then, and otherwise by the hook, from a ledger it keeps per worktree
+and session in the user cache directory (`~/.cache/intagent` on Linux) for a day, or until the session ends. The
+dashboard counts the edits the server got to too late beside the checked ones.
 
-People see it too. While more than 5% of edits go unchecked, the dashboard shows a banner, the server logs a warning
-when it starts and another when it ends, webhooks can send `server.degraded` and `server.recovered`, and `/healthz`
-reports `"degraded": true` with the last minute's `pre_edits_60s` and `unchecked_60s`. `/healthz` still answers 200,
-so a restart probe never turns a slow server into an absent one; `/healthz?strict=1` answers 503 while degraded, for
-monitors that alert.
+People see it too. Once more than 5% of the last 10 seconds' edits (and at least 3) went ahead unchecked, the server
+is degraded, until it has been so for 30 seconds and fewer than 1% do. Meanwhile the dashboard shows a banner, the
+server logs a warning when it starts and another when it ends, webhooks can send `server.degraded` and
+`server.recovered`, and `/healthz` reports it:
+
+```json
+{"ok": true, "version": "v0.1.0", "degraded": true, "since": "2026-10-04T09:30:05Z", "pre_edits_60s": 1200, "unchecked_60s": 300}
+```
+
+`/healthz` still answers 200, so a restart probe never turns a slow server into an absent one; `/healthz?strict=1`
+answers 503, with `"ok": false`, while degraded, for monitors that alert.
 
 ## Commands
 
@@ -248,8 +277,10 @@ monitors that alert.
 Environment: `INTAGENT_URL` and `INTAGENT_TOKEN` override the configuration, `INTAGENT_DISABLE=1` turns intagent
 off, `INTAGENT_FAIL=closed` refuses edits in enrolled repositories while intagent cannot check them (the server is
 unreachable, or the setup cannot be read; the default is to fail open), `INTAGENT_TIMEOUT` bounds each request
-(default `2s`). A whole hook run, git included, takes at most 8 seconds (2 at a session's end), under the timeouts
-`intagent init` gives the agents, so a longer `INTAGENT_TIMEOUT` is cut short there.
+(default `2s`). A whole hook run, git included, takes at most 8 seconds, and at a session's end 4 for Claude Code,
+Gemini CLI and Cursor and 2 for other agents (less if `CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS` asks), under the
+timeouts `intagent init` gives the agents, so a longer `INTAGENT_TIMEOUT` is cut short there. `intagent check`, the
+MCP `check_paths` tool and `intagent guard` send more than 200 paths in several checks.
 
 ## Security model
 
@@ -286,6 +317,23 @@ make e2e-gemini    # the real Gemini CLI against a scripted model: offline, free
 make dist VERSION=v0.1.0    # release archives for Linux, macOS and Windows, with SHA256SUMS
 make image VERSION=v0.1.0   # the server's container image
 ```
+
+`scripts/loadgen` drives a running server the way a team does, and reports how it held up: agents in their own
+worktrees sending every kind of hook, dashboards reloading the board as the page does and holding their streams, and
+for each endpoint the latencies, the errors and the edits a hook would have let through unchecked, with the server's
+memory and CPU. It is not part of `make check`. Its defaults are the scale intagent is meant for: 200 members with
+five agents each, 30 repositories, 100 dashboards and 300 streams.
+
+```sh
+go build -o /tmp/lg/intagent ./cmd/intagent
+go run ./scripts/loadgen -setup -intagent /tmp/lg/intagent -team /tmp/lg/team.json -tokens /tmp/lg/tokens.json
+/tmp/lg/intagent serve --config /tmp/lg/team.json --data /tmp/lg/data --addr 127.0.0.1:7400 & echo $! >/tmp/lg/pid
+go run ./scripts/loadgen -tokens /tmp/lg/tokens.json -pidfile /tmp/lg/pid -rate 200 -duration 60s
+kill "$(cat /tmp/lg/pid)"
+```
+
+`go run ./scripts/loadgen -h` lists the rest: the shape of the team and its footprints, the rate, a warm-up, and
+flags that model older clients and dashboards.
 
 Pushing a tag `vX.Y.Z` runs the release workflow: it tests, publishes a GitHub release with those archives, and
 pushes the server image to `ghcr.io/<owner>/intagent` for amd64 and arm64.

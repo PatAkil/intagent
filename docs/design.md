@@ -61,7 +61,9 @@ and an empty footprint is released. Claims with no activity for `forget_after` (
 
 The server's sweeper emits `session.stalled` and `session.gone` events once per transition, so the dashboard and the
 owner's next session see them. A webhook hears of them at most once a second, everything waiting in one message, so a
-network blip that stalls hundreds of agents at once reads as one summary rather than hundreds of alarms.
+network blip that stalls hundreds of agents at once reads as one summary rather than hundreds of alarms. A session that
+was waiting for its person when it turned gone is marked `idle`: it is not stuck, and the webhook leaves it out unless
+the team asks for it (`"webhook": {"idle": true}`).
 
 ## Awareness and conflicts
 
@@ -148,7 +150,8 @@ internal/cli           the commands: serve, token, login, init, doctor, board, c
 internal/board         the domain: sessions, claims, intents, footprint, policy, liveness, inbox, stats.
                        Pure; time is passed in
 internal/glob          ** glob matching for intents and areas
-internal/server        HTTP API, auth, SSE hub, sweeper, snapshot persistence, webhooks
+internal/server        HTTP API, auth, admission of large requests, shared board reads, SSE hub, sweeper,
+                       snapshot persistence, load status, webhooks
 internal/client        HTTP client and configuration (env, user config, repo config)
 internal/gitx          repo identity, worktree root, branch, footprint, areas
 internal/hook          adapters (Claude Code, Copilot CLI, Codex, Cursor, Gemini CLI): vendor hook JSON in,
@@ -158,8 +161,9 @@ internal/web           the dashboard, embedded
 ```
 
 The server keeps the board in memory behind one mutex. Each mutation marks the board dirty; a writer goroutine saves
-an atomic snapshot (write, fsync, rename) at most once a second and on shutdown. Team scale is dozens of members and
-a few hundred sessions, which this handles with room to spare.
+an atomic snapshot (write, fsync, rename) at most once a second and on shutdown. The scale it is meant for is about
+200 members running a thousand agent sessions in 30 repositories, with 100 dashboards open; `scripts/loadgen` drives a
+running server that way, with clients and dashboards that behave as intagent's do, and reports how it held up.
 
 Reads of a repository's board are shared, because every open dashboard reloads it a moment after each of its events.
 A request joins the build of the board that has not read the board yet, so no answer is older than its request (a
@@ -200,7 +204,7 @@ All endpoints take and return JSON and require `Authorization: Bearer <token>`, 
 | `GET /v1/repos` | dashboard | The repositories with claims, each with the server's `epoch`. |
 | `GET /v1/stream` | dashboard | Server-sent events. |
 | `GET /v1/whoami` | CLI | The member a token belongs to. |
-| `GET /healthz` | monitors | Up, and whether agents' edits go ahead unchecked (`?strict=1`: 503 while they do). |
+| `GET /healthz` | monitors | Up, and whether agents' edits go ahead unchecked: `ok`, `version`, `degraded`, `since`, `pre_edits_60s` and `unchecked_60s`. Always 200, except with `?strict=1`: 503 while degraded. |
 
 ## When the server falls behind
 
@@ -276,9 +280,10 @@ while degraded), in its log and, if asked, by webhook.
   put to sleep) does not hold the server's memory; a slow client that keeps reading gets all of it.
 - The hook fails open with a short timeout. `INTAGENT_FAIL=closed` turns an unreachable server, an answer the server
   could not check in time, or a setup intagent cannot read, into a refusal of edits in enrolled repositories, for
-  teams that want it. A whole hook run, git
-  included, has 8 seconds (2 at a session's end), under the timeouts `init` gives the agents, which would otherwise
-  kill it and let the edit through; git gets at most half of what is left, so the event still reaches the server.
+  teams that want it. A whole hook run, git included, has 8 seconds, and at a session's end 4 for Claude Code, Gemini
+  CLI and Cursor and 2 for other agents (less if `CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS` asks), under the timeouts
+  `init` gives the agents, which would otherwise kill it and let the edit through; git gets what the server request
+  leaves of that, and at least half, so a slow git cannot keep the event from the server.
 
 ## What it deliberately does not do
 
