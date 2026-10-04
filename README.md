@@ -268,9 +268,9 @@ saves fail (a full disk, say), the server logs it at once and then once a minute
 again with a growing pause, and `/healthz` carries `"snapshot": {"ok": false, "failing_since": ..., "attempts": ...,
 "error": "write: no space left on device"}`, which `?strict=1` answers with 503 too. `serve` exits non-zero when its
 final save fails. Each save keeps the snapshot it replaces as `board.json.prev`, so the snapshot takes twice its size on
-disk. A `board.json` that is cut short or damaged is set aside as `board.json.corrupt-<unix time>`, and the server starts
-from `board.json.prev`, or empty, and logs an error; one of a newer version of intagent, or one it cannot read, still
-stops it, so that it is not overwritten.
+disk. A `board.json` that is cut short or damaged is set aside as `board.json.corrupt-<unix time>`, and the server puts
+`board.json.prev` in its place and starts from it, or empty, and logs an error; one of a newer version of intagent, or
+one it cannot read, still stops it, so that it is not overwritten.
 
 ## Commands
 

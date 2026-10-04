@@ -466,6 +466,68 @@ func TestDamagedSnapshotIsSetAside(t *testing.T) {
 	}
 }
 
+// Once a damaged snapshot is set aside, the one saved before it takes its
+// place: a server stopped before its next save (killed while it saved, say)
+// restores it again, and one that cannot read it stops again. Before, the
+// next start found no board.json and started empty without a word, and two
+// saves later board.json.prev was overwritten too.
+func TestPreviousSnapshotOutlivesTheNextStart(t *testing.T) {
+	ts, clock, _ := persistServer(t)
+	for n := range 2 {
+		ts.change(t, n)
+		clock.add(time.Minute)
+		if err := ts.save(nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	restart := func() (*Server, error) {
+		return New(Options{Members: []Member{{Name: "alice", TokenSHA256: HashToken(ts.tokens["alice"])}}, DataDir: ts.dataDir,
+			Logger: slog.New(&logRecorder{}), Now: ts.now})
+	}
+	damage := func(path string, data string) {
+		t.Helper()
+		if err := os.Remove(path); err != nil { // not through a link the file may share
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	damage(ts.snapshotPath(), `{"format":1,"claims":[{"id":`)
+	for start := 1; start <= 2; start++ { // the second without a save between
+		s, err := restart()
+		if err != nil {
+			t.Fatalf("start %d: %v", start, err)
+		}
+		if v := s.Board().View(ts.now(), repo); len(v.Claims) != 1 || len(v.Claims[0].Files) != 1 {
+			t.Fatalf("start %d restored %d claims, want the previous snapshot's one, with one file", start, len(v.Claims))
+		}
+	}
+	if found, _ := filepath.Glob(filepath.Join(ts.dataDir, "board.json.corrupt-*")); len(found) != 1 {
+		t.Fatalf("set aside: %v, want the damaged snapshot once", found)
+	}
+
+	// One it cannot read stops every start, not just the first.
+	damage(ts.snapshotPath(), `{"format":1,"claims":[{"id":`)
+	damage(ts.previousPath(), `{"format":2,"claims":[]}`)
+	for start := 1; start <= 2; start++ {
+		if _, err := restart(); err == nil {
+			t.Fatalf("start %d with a previous snapshot of a newer format began", start)
+		}
+	}
+
+	// One damaged too is not left in board.json, to be set aside at every
+	// start.
+	damage(ts.snapshotPath(), `{"format":1,"claims":[{"id":`)
+	damage(ts.previousPath(), `{"format":1,"sessions":[{"key":`)
+	if s, err := restart(); err != nil || len(s.Board().View(ts.now(), repo).Claims) != 0 {
+		t.Fatalf("both damaged: %v", err)
+	}
+	if _, err := os.Stat(ts.snapshotPath()); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("board.json after both were found damaged: %v", err)
+	}
+}
+
 func jsonView(v board.View) string {
 	var b bytes.Buffer
 	writeJSON(&recorder{body: &b, header: http.Header{}}, http.StatusOK, v)

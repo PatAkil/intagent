@@ -156,6 +156,11 @@ func causeOf(err error) string {
 // none: every agent fails open while the server does not start. Any other
 // error stops the server, so that it does not overwrite a snapshot it
 // could not read: one of a newer format, say.
+//
+// The snapshot saved before takes the damaged one's place before it is
+// restored: a server stopped before its next save, or one killed while it
+// restores, restores it again at its next start rather than none, and
+// one that cannot read it stops again rather than start empty.
 func (s *Server) load() error {
 	if s.dataDir == "" {
 		return nil
@@ -178,13 +183,21 @@ func (s *Server) load() error {
 		return fmt.Errorf("%s: %w, and it could not be set aside: %w", path, err, rerr)
 	}
 	s.log.Error("the board's snapshot is damaged, and was set aside", "file", aside, "err", err)
+	if lerr := fsutil.LinkAside(s.previousPath(), path); lerr != nil {
+		s.log.Warn("the snapshot saved before the damaged one could not take its place", "err", lerr)
+	}
 	switch perr := s.restoreFrom(s.previousPath()); {
 	case perr == nil:
 		s.log.Warn("restored the snapshot saved before the damaged one: what changed after it is lost", "file", s.previousPath())
-		// Not the version saved, which is gone: the next save writes the
-		// board again.
+		// Not the version saved, which may be gone: the next save writes
+		// the board again.
 		s.saves.version = s.board.Version() - 1
 	case errors.Is(perr, fs.ErrNotExist) || errors.Is(perr, board.ErrCorruptSnapshot):
+		// Damaged too: the next start finds no snapshot, as this one
+		// restores none, rather than set it aside again.
+		if rerr := os.Remove(path); rerr != nil && !errors.Is(rerr, fs.ErrNotExist) {
+			return fmt.Errorf("%s: %w, and it could not be removed: %w", path, perr, rerr)
+		}
 		s.log.Error("starting with an empty board: no earlier snapshot could be restored", "err", perr)
 	default:
 		return fmt.Errorf("%s: %w", s.previousPath(), perr)

@@ -177,10 +177,11 @@ their own, so a slow or stuck disk does not delay the news. A clean stop abandon
 requests in flight, and saves once more; `serve` exits non-zero if that save fails. Each save keeps the snapshot it
 replaces as `board.json.prev`, a hard link made before the new one is renamed in. At start, the temporary files of saves
 that were killed halfway are removed, and a snapshot that is cut short or damaged is set aside as
-`board.json.corrupt-<unix time>` and `board.json.prev` restored instead, or nothing: a server that will not start leaves
-every agent unchecked. A snapshot of a newer format, or one that cannot be read, still stops it. Beside its maps the board keeps
-indexes, rebuilt from the snapshot on a restart: each repository's claims, each claim's sessions, and for each claim
-the latest change in each area it changed files in and its changed paths in order. A check of a path then looks at
+`board.json.corrupt-<unix time>` and `board.json.prev` put in its place and restored, or nothing: a server that will not
+start leaves every agent unchecked, and one stopped before its next save restores the same again. A snapshot of a newer
+format, or one that cannot be read, still stops it. Beside its maps the board keeps indexes, rebuilt from the snapshot
+on a restart: each repository's claims, each claim's sessions, and for each claim the latest change in each area it
+changed files in and its changed paths in order. A check of a path then looks at
 each claim of its repository once, asks the sessions of only the claims that matter to it whether they are live, and
 finds nearby work by a lookup rather than a walk of every file; a declared intent is matched against the files under
 the directory it is rooted in. What a check costs grows with the claims of its repository, not with every session and
