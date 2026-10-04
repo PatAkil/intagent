@@ -512,7 +512,10 @@ func (b *Board) Hook(now time.Time, ev HookEvent) (HookResult, error) {
 	if checkedAfter {
 		b.unansweredEdit(now, c, s, ev)
 	}
-	was := b.state(now, s)
+	// What the session was last announced as, not what the clock makes of
+	// it: a session back before a sweep announced it stalled has nothing to
+	// recover from.
+	was := s.Reported
 	res := HookResult{Decision: DecisionAllow, ClaimID: c.ID, CheckedAfter: checkedAfter}
 
 	switch ev.Kind {

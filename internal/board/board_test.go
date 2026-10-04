@@ -447,6 +447,21 @@ func TestSweepAnnouncesStallsOnceAndRecovery(t *testing.T) {
 	}
 }
 
+// A session that comes back past the stall line before a sweep announced it
+// stalled recovers from nothing, and is announced as neither: recovery
+// follows only what was announced. It was announced as recovered, with no
+// stall before it, from the clock.
+func TestRecoveryFollowsOnlyWhatWasAnnounced(t *testing.T) {
+	h := newHarness(t)
+	h.hook(KindPrompt, "alice", "a1")
+	h.advance(DefaultConfig().StallAfter + 5*time.Second)
+	h.hook(KindPostEdit, "alice", "a1", "a/b.go")
+	h.b.Sweep(h.now)
+	if stalled, recovered := h.activities("session.stalled"), h.activities("session.recovered"); len(stalled)+len(recovered) != 0 {
+		t.Fatalf("%d stalled and %d recovered for a session no sweep saw silent", len(stalled), len(recovered))
+	}
+}
+
 // A session left waiting for its person is not a stuck agent: its gone is
 // marked idle, so a webhook can leave it to the dashboard.
 func TestSweepMarksSessionsLeftWaitingIdle(t *testing.T) {
