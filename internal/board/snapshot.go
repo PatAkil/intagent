@@ -225,12 +225,22 @@ func (s *session) clone() *session {
 // reservations; one that truly died before the outage is announced stalled
 // stall_after later than it would have been.
 func (b *Board) Restore(r io.Reader, now time.Time) error {
+	return b.RestoreAfter(r, now, time.Time{})
+}
+
+// RestoreAfter is Restore for a snapshot whose server is known to have run
+// on after it saved it, until stopped. A board that does not change is not
+// saved again, so its snapshot may be hours older than the stop; the time
+// the server ran on, hearing nothing from a session, is that session's
+// silence, and only the time since stopped is the server's downtime. A zero
+// stopped tells nothing the snapshot does not.
+func (b *Board) RestoreAfter(r io.Reader, now, stopped time.Time) error {
 	s, err := readSnapshot(r)
 	if err != nil {
 		return err
 	}
 	s.shareSessionKeys()
-	s.creditDowntime(now)
+	s.creditDowntime(now, stopped)
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.claims = map[string]*claim{}
@@ -420,12 +430,16 @@ func readDelim(dec *json.Decoder, want json.Delim) error {
 }
 
 // creditDowntime moves the times sessions were last heard from, and went
-// into tools, on by the time since the snapshot was saved, but never past
-// now. A snapshot that does not say when it was saved, or a clock that went
-// back, moves nothing.
-func (s *snapshot) creditDowntime(now time.Time) {
-	down := now.Sub(s.Saved)
-	if s.Saved.IsZero() || down <= 0 {
+// into tools, on by the time the server was down: since it stopped, or
+// since the snapshot was saved if that is later, but never past now. When
+// neither is known, or the clock went back, it moves nothing.
+func (s *snapshot) creditDowntime(now, stopped time.Time) {
+	since := s.Saved
+	if stopped.After(since) {
+		since = stopped
+	}
+	down := now.Sub(since)
+	if since.IsZero() || down <= 0 {
 		return
 	}
 	later := func(t time.Time) time.Time {

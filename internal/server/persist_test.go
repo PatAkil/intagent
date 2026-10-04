@@ -528,6 +528,99 @@ func TestPreviousSnapshotOutlivesTheNextStart(t *testing.T) {
 	}
 }
 
+// A restart counts as its agents' silence the time the server ran after
+// its last save, and as downtime only the time it was down. A board that
+// does not change is not saved again, and its snapshot says only when it
+// last changed: here 09:00, after which the server ran on until 09:10,
+// hearing nothing from alice's working agent. Down a minute, it took the
+// eleven minutes since the snapshot for downtime, and at 09:11:30 counted
+// the agent as silent for 30 seconds rather than ten and a half minutes,
+// and announced no stall. The server notes that it runs when it stops,
+// and every aliveEvery while it runs, which bounds what a crash credits
+// too: here at 09:09.
+func TestRestartCountsOnlyTheDowntime(t *testing.T) {
+	ts, _, _ := persistServer(t)
+	ts.do(t, http.MethodPost, "/v1/hook", "alice", hookEv(board.KindPrompt, "alice", "a1"), nil) // working at 09:00
+	if err := ts.save(nil); err != nil {
+		t.Fatal(err)
+	}
+	setBoardTime := func(at time.Time) {
+		ts.mu.Lock()
+		ts.clock = at
+		ts.mu.Unlock()
+	}
+	nine := ts.now().Add(9 * time.Minute)
+	setBoardTime(nine)
+	stop := serveTest(t, ts)
+	// A crash at 09:09: what the data directory holds once the server has
+	// noted that it runs, at its first look, a second after it started.
+	crash := t.TempDir()
+	deadline := time.Now().Add(10 * time.Second)
+	for !ts.lastAlive().Equal(nine) {
+		if time.Now().After(deadline) {
+			t.Fatal("a running server did not note that it runs")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	for _, p := range []string{ts.snapshotPath(), ts.alivePath()} {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(crash, filepath.Base(p)), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A clean stop at 09:10, with nothing changed since 09:00.
+	setBoardTime(nine.Add(time.Minute))
+	if err := stop(); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name, dir string
+		restart   time.Time
+	}{{"stopped at 09:10", ts.dataDir, nine.Add(2 * time.Minute)}, {"crashed at 09:09", crash, nine.Add(time.Minute)}} {
+		s, err := New(Options{Members: []Member{{Name: "alice", TokenSHA256: HashToken(ts.tokens["alice"])}}, DataDir: c.dir,
+			Logger: slog.New(&logRecorder{}), Now: func() time.Time { return c.restart }})
+		if err != nil {
+			t.Fatal(err)
+		}
+		at := nine.Add(150 * time.Second) // 09:11:30, silent ten and a half minutes of the server's time
+		s.Board().Sweep(at)
+		stalled := false
+		for _, a := range s.Board().View(at, repo).Recent {
+			stalled = stalled || a.Kind == board.ActivitySessionStalled
+		}
+		if !stalled {
+			t.Errorf("%s and restarted a minute later: a1, last heard at 09:00, is not stalled at 09:11:30", c.name)
+		}
+	}
+}
+
+// The server notes that it runs every aliveEvery, not at each of the
+// persister's looks, which come every second while the board is quiet.
+func TestServerNotesThatItRunsEveryHalfMinute(t *testing.T) {
+	ts, clock, _ := persistServer(t)
+	at := func(d time.Duration) time.Time {
+		ts.mu.Lock()
+		defer ts.mu.Unlock()
+		ts.clock = ts.clock.Add(d)
+		clock.add(d)
+		return ts.clock
+	}
+	first := at(0)
+	if wait := ts.aliveIfDue(); wait != aliveEvery || !ts.lastAlive().Equal(first) {
+		t.Fatalf("first look: next in %s, noted %s; want %s and %s", wait, ts.lastAlive(), aliveEvery, first)
+	}
+	at(10 * time.Second)
+	if wait := ts.aliveIfDue(); wait != 20*time.Second || !ts.lastAlive().Equal(first) {
+		t.Fatalf("10 s later: next in %s, noted %s; want 20s and the first", wait, ts.lastAlive())
+	}
+	if later := at(20 * time.Second); ts.aliveIfDue() != aliveEvery || !ts.lastAlive().Equal(later) {
+		t.Fatalf("30 s later: noted %s, want %s", ts.lastAlive(), later)
+	}
+}
+
 func jsonView(v board.View) string {
 	var b bytes.Buffer
 	writeJSON(&recorder{body: &b, header: http.Header{}}, http.StatusOK, v)

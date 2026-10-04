@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -35,6 +36,8 @@ const (
 	failLogEvery = time.Minute
 	// slowSave is how long a save may take before it is logged, once.
 	slowSave = 30 * time.Second
+	// aliveEvery is how often the server notes that it runs (alivePath).
+	aliveEvery = 30 * time.Second
 )
 
 func (s *Server) snapshotPath() string { return filepath.Join(s.dataDir, "board.json") }
@@ -42,6 +45,15 @@ func (s *Server) snapshotPath() string { return filepath.Join(s.dataDir, "board.
 // previousPath keeps the snapshot before the last, should the last be
 // damaged after it was written.
 func (s *Server) previousPath() string { return s.snapshotPath() + ".prev" }
+
+// alivePath keeps when the server last ran, on its board's clock: it notes
+// so every aliveEvery and when it stops. A board that does not change is
+// not saved again, so its snapshot says only when it last changed, while
+// the server may have run on for hours since, hearing nothing from a
+// stuck agent. The next start counts only the time since as downtime
+// (board.RestoreAfter): all of it after a clean stop, and up to aliveEvery
+// more after a crash.
+func (s *Server) alivePath() string { return s.snapshotPath() + ".alive" }
 
 // saves follows the server's saves of its board: when the next is due, and
 // whether they fail.
@@ -59,6 +71,9 @@ type saves struct {
 	attempts int
 	cause    string
 	nextLog  time.Time
+	// noted is when the persister last noted that the server runs
+	// (aliveIfDue); only it reads and writes it.
+	noted time.Time
 }
 
 // SnapshotStatus says whether the server saves its board. /healthz reports
@@ -167,7 +182,8 @@ func (s *Server) load() error {
 	}
 	s.removeTemps()
 	path := s.snapshotPath()
-	err := s.restoreFrom(path)
+	stopped := s.lastAlive()
+	err := s.restoreFrom(path, stopped)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		return nil
@@ -186,7 +202,7 @@ func (s *Server) load() error {
 	if lerr := fsutil.LinkAside(s.previousPath(), path); lerr != nil {
 		s.log.Warn("the snapshot saved before the damaged one could not take its place", "err", lerr)
 	}
-	switch perr := s.restoreFrom(s.previousPath()); {
+	switch perr := s.restoreFrom(s.previousPath(), stopped); {
 	case perr == nil:
 		s.log.Warn("restored the snapshot saved before the damaged one: what changed after it is lost", "file", s.previousPath())
 		// Not the version saved, which may be gone: the next save writes
@@ -205,20 +221,56 @@ func (s *Server) load() error {
 	return nil
 }
 
-// restoreFrom restores the board from the snapshot at path.
-func (s *Server) restoreFrom(path string) error {
+// restoreFrom restores the board from the snapshot at path, saved by a
+// server that ran until stopped, if that is known.
+func (s *Server) restoreFrom(path string, stopped time.Time) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = f.Close() }()
-	return s.board.Restore(f, s.now())
+	return s.board.RestoreAfter(f, s.now(), stopped)
+}
+
+// lastAlive is when the server that last used the data directory last
+// noted that it ran, or zero if it is not known.
+func (s *Server) lastAlive() time.Time {
+	data, err := os.ReadFile(s.alivePath())
+	if err != nil {
+		return time.Time{}
+	}
+	t, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(string(data)))
+	if err != nil {
+		return time.Time{}
+	}
+	return t
+}
+
+// markAlive notes in the data directory that the server runs, at its
+// board's time now.
+func (s *Server) markAlive() {
+	stamp := s.now().UTC().Format(time.RFC3339Nano) + "\n"
+	if err := fsutil.WriteFile(s.alivePath(), []byte(stamp), 0o600); err != nil {
+		s.log.Debug("could not note that the server runs", "err", err)
+	}
+}
+
+// aliveIfDue notes that the server runs if it has not for aliveEvery, and
+// returns how long until it should again.
+func (s *Server) aliveIfDue() time.Duration {
+	now := s.clock()
+	if wait := s.saves.noted.Add(aliveEvery).Sub(now); wait > 0 {
+		return wait
+	}
+	s.markAlive()
+	s.saves.noted = now
+	return aliveEvery
 }
 
 // removeTemps removes the temporary files a save killed halfway left in the
 // data directory, best effort.
 func (s *Server) removeTemps() {
-	for _, p := range []string{s.snapshotPath(), s.previousPath(), filepath.Join(s.dataDir, "ui.key")} {
+	for _, p := range []string{s.snapshotPath(), s.previousPath(), s.alivePath(), filepath.Join(s.dataDir, "ui.key")} {
 		if n, err := fsutil.RemoveTemps(p); n > 0 || (err != nil && !errors.Is(err, fs.ErrNotExist)) {
 			s.log.Info("removed the temporary files of saves that did not finish", "file", p, "removed", n, "err", err)
 		}
@@ -282,9 +334,10 @@ func (a abandonable) Write(p []byte) (int, error) {
 	}
 }
 
-// persist saves the board while the server runs, as saves are due. Once
-// the server starts to stop, it abandons a save in flight and returns:
-// Serve saves once more when the requests are done.
+// persist saves the board while the server runs, as saves are due, and
+// notes every aliveEvery that it runs. Once the server starts to stop, it
+// abandons a save in flight and returns: Serve saves once more when the
+// requests are done.
 func (s *Server) persist(ctx context.Context) {
 	if s.dataDir == "" {
 		return
@@ -298,7 +351,7 @@ func (s *Server) persist(ctx context.Context) {
 		case <-s.closing:
 			return
 		case <-t.C:
-			t.Reset(s.saveIfDue(s.closing))
+			t.Reset(min(s.saveIfDue(s.closing), s.aliveIfDue()))
 		}
 	}
 }

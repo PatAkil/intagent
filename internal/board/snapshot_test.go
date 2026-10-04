@@ -462,24 +462,30 @@ func TestRestoreCreditsTheDowntime(t *testing.T) {
 }
 
 // The credit for downtime moves a session's times by the time since the
-// snapshot, never past the restore; it moves nothing when the snapshot does
-// not say when it was saved, or the clock went back.
+// server stopped, or since the snapshot if that is later, never past the
+// restore; it moves nothing when neither is known, or the clock went back.
 func TestDowntimeCreditBounds(t *testing.T) {
 	saved := t0.Add(time.Hour)
 	for _, c := range []struct {
-		name            string
-		saved, now      time.Time
-		seen, toolSince time.Time
-		wantSeen        time.Time
-		wantTool        time.Time
+		name                string
+		saved, stopped, now time.Time
+		seen, toolSince     time.Time
+		wantSeen            time.Time
+		wantTool            time.Time
 	}{
-		{"downtime", saved, saved.Add(time.Hour), t0, t0.Add(10 * time.Minute), t0.Add(time.Hour), t0.Add(70 * time.Minute)},
-		{"not past now", saved, saved.Add(time.Minute), saved.Add(5 * time.Minute), time.Time{}, saved.Add(time.Minute), time.Time{}},
-		{"no saved time", time.Time{}, saved, t0, t0, t0, t0},
-		{"clock went back", saved, saved.Add(-time.Hour), t0, t0, t0, t0},
+		{"downtime", saved, time.Time{}, saved.Add(time.Hour), t0, t0.Add(10 * time.Minute), t0.Add(time.Hour), t0.Add(70 * time.Minute)},
+		{"ran on after the save", saved, saved.Add(50 * time.Minute), saved.Add(time.Hour), t0, t0, t0.Add(10 * time.Minute),
+			t0.Add(10 * time.Minute)},
+		{"stopped before the save", saved, saved.Add(-time.Minute), saved.Add(time.Hour), t0, t0, t0.Add(time.Hour), t0.Add(time.Hour)},
+		{"not past now", saved, time.Time{}, saved.Add(time.Minute), saved.Add(5 * time.Minute), time.Time{}, saved.Add(time.Minute),
+			time.Time{}},
+		{"no saved time", time.Time{}, time.Time{}, saved, t0, t0, t0, t0},
+		{"only the stop", time.Time{}, saved, saved.Add(time.Hour), t0, t0, t0.Add(time.Hour), t0.Add(time.Hour)},
+		{"clock went back", saved, time.Time{}, saved.Add(-time.Hour), t0, t0, t0, t0},
+		{"clock went back past the stop", saved, saved.Add(time.Hour), saved.Add(time.Minute), t0, t0, t0, t0},
 	} {
 		s := snapshot{Saved: c.saved, Sessions: []*session{{Key: "k", LastSeen: c.seen, ToolSince: c.toolSince}, nil}}
-		s.creditDowntime(c.now)
+		s.creditDowntime(c.now, c.stopped)
 		if x := s.Sessions[0]; !x.LastSeen.Equal(c.wantSeen) || !x.ToolSince.Equal(c.wantTool) {
 			t.Errorf("%s: last seen %s, in tools since %s; want %s and %s", c.name, x.LastSeen, x.ToolSince, c.wantSeen, c.wantTool)
 		}

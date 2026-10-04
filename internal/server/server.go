@@ -405,6 +405,11 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 		// last save: serve must not exit as if it had not.
 		err = errors.Join(err, fmt.Errorf("final snapshot: %w", serr))
 	}
+	if s.dataDir != "" {
+		// The snapshot holds the board since its last change; the next
+		// start counts as downtime only the time from here.
+		s.markAlive()
+	}
 	<-notified
 	return err
 }

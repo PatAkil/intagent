@@ -67,9 +67,12 @@ the team asks for it (`"webhook": {"idle": true}`). A session is announced `sess
 again after a stall or gone was announced: one back before the sweeper noticed has recovered from nothing.
 
 The time the server was down does not count as its agents' silence: a restored board moves each session's last report,
-and the start of the tool it is in, on by the time since the snapshot was saved, never past the restart. Agents still at
-work are not announced stalled by the first sweep, and their exclusive intents keep refusing. The cost is that an agent
-that died just before the outage holds its reservation for up to `stall_after` after the restart.
+and the start of the tool it is in, on by the time the server was down, never past the restart. A board that does not
+change is not saved again, so the server also notes in `board.json.alive`, every 30 seconds and when it stops, that it
+runs: the time it ran on after its last save, hearing nothing from an agent, still counts. Agents still at work are not
+announced stalled by the first sweep, and their exclusive intents keep refusing. The cost is that an agent that died
+just before the outage holds its reservation for up to `stall_after` after the restart, and up to 30 seconds more after
+a crash.
 
 ## Awareness and conflicts
 
