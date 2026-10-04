@@ -507,3 +507,54 @@ func TestViewMatchesTheOracle(t *testing.T) {
 		})
 	}
 }
+
+// oldRecord is record as it was: it copied the whole feed into a new array
+// on every activity once the feed was full.
+func (b *Board) oldRecord(a Activity) {
+	b.seq++
+	a.Seq = b.seq
+	b.recent = append(b.recent, a)
+	if over := len(b.recent) - b.cfg.KeepActivities; over > 0 {
+		b.recent = append(b.recent[:0:0], b.recent[over:]...)
+	}
+	b.pending = append(b.pending, a)
+}
+
+// The feed holds the last KeepActivities activities, in order, whatever its
+// length and however many have been recorded.
+func TestFeedKeepsTheLastActivities(t *testing.T) {
+	for _, keep := range []int{1, 7, 300, 3000} {
+		b := New(Config{KeepActivities: keep})
+		for n := 1; n <= 200_000; n++ {
+			b.record(Activity{Kind: ActivityFileChanged, Repo: repo, Text: fmt.Sprint(n), Paths: []string{"a.go"}})
+			b.pending = b.pending[:0]
+			if n%997 != 0 && n != 200_000 && n > keep+1 {
+				continue
+			}
+			first := max(1, n-keep+1)
+			if len(b.recent) != n-first+1 {
+				t.Fatalf("keep %d, %d recorded: the feed holds %d", keep, n, len(b.recent))
+			}
+			for i, a := range b.recent {
+				if want := uint64(first + i); a.Seq != want || a.Text != fmt.Sprint(want) {
+					t.Fatalf("keep %d, %d recorded: entry %d is seq %d %q, want %d", keep, n, i, a.Seq, a.Text, want)
+				}
+			}
+		}
+	}
+}
+
+// Recording an activity into a full feed does not copy the feed: across many
+// records, the array is replaced about once per KeepActivities of them.
+func TestRecordDoesNotCopyTheFeed(t *testing.T) {
+	b := New(DefaultConfig())
+	a := Activity{Kind: ActivityFileChanged, Repo: repo, Paths: []string{"a.go"}}
+	for range b.cfg.KeepActivities {
+		b.record(a)
+	}
+	// AllocsPerRun rounds down: under one allocation per record is 0. The old
+	// record allocated a new array for every one.
+	if allocs := testing.AllocsPerRun(1000, func() { b.record(a); b.pending = b.pending[:0] }); allocs != 0 {
+		t.Fatalf("recording into a full feed of %d made %.0f allocations per activity", b.cfg.KeepActivities, allocs)
+	}
+}

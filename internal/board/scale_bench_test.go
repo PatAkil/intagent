@@ -121,22 +121,29 @@ func BenchmarkScaleSweepQuiet(b *testing.B) {
 	}
 }
 
-// Recording one activity once the feed is full.
+// Recording one activity once the feed is full, by the old record in
+// oracle_test.go and the current one.
 func BenchmarkScaleRecord(b *testing.B) {
 	for _, keep := range []int{300, 3000} {
-		b.Run(fmt.Sprint(keep), func(b *testing.B) {
-			bd := New(Config{KeepActivities: keep})
-			a := Activity{At: t0, Kind: ActivityFileChanged, Repo: "github.com/acme/mono", Member: "m", Paths: []string{"a/b.go"}}
-			for range keep {
-				bd.record(a)
-			}
-			b.ReportAllocs()
-			b.ResetTimer()
-			for range b.N {
-				bd.record(a)
-				bd.pending = bd.pending[:0]
-			}
-		})
+		for _, version := range []string{"old", "new"} {
+			b.Run(fmt.Sprintf("%d/%s", keep, version), func(b *testing.B) {
+				bd := New(Config{KeepActivities: keep})
+				record := bd.record
+				if version == "old" {
+					record = bd.oldRecord
+				}
+				a := Activity{At: t0, Kind: ActivityFileChanged, Repo: "github.com/acme/mono", Member: "m", Paths: []string{"a/b.go"}}
+				for range keep {
+					record(a)
+				}
+				b.ReportAllocs()
+				b.ResetTimer()
+				for range b.N {
+					record(a)
+					bd.pending = bd.pending[:0]
+				}
+			})
+		}
 	}
 }
 

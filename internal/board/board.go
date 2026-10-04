@@ -206,7 +206,12 @@ func (b *Board) record(a Activity) {
 	a.Seq = b.seq
 	b.recent = append(b.recent, a)
 	if over := len(b.recent) - b.cfg.KeepActivities; over > 0 {
-		b.recent = append(b.recent[:0:0], b.recent[over:]...)
+		// Slice past the oldest rather than copy the feed: append moves it to
+		// a new array only when it runs out of room, about once in
+		// KeepActivities records. Clear what is dropped, so the old array
+		// does not keep it alive meanwhile.
+		clear(b.recent[:over])
+		b.recent = b.recent[over:]
 	}
 	b.pending = append(b.pending, a)
 }
