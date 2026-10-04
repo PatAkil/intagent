@@ -57,11 +57,11 @@ func (b *Board) trimSessions(now time.Time, c *claim, keep *session) {
 	}
 }
 
-// trimEnded drops, of each claim's sessions not live, all but the
-// maxEndedSessions heard from last: those of a flood that went gone together
-// with none joining after them, which trimSessions never sees. done are the
-// sessions the sweep keeps that are not live, in the order they were last
-// heard from. Since the claims are trimmed, each looks afresh when the next
+// trimEnded drops, of each claim's sessions that ended or are gone, all but
+// the maxEndedSessions heard from last: those of a flood that went gone
+// together with none joining after them, which trimSessions never sees. done
+// are the sessions the sweep keeps that ended or are gone, in the order they
+// were last heard from; one that stalled is kept, as the dashboard shows it. Since the claims are trimmed, each looks afresh when the next
 // session joins it. It reports whether it dropped any.
 func (b *Board) trimEnded(done []*session) bool {
 	kept := map[string]int{}

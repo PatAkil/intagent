@@ -390,6 +390,16 @@ func TestSweepBoundsTheSessionsAClaimKeeps(t *testing.T) {
 	if w.sessionVisits > maxEndedSessions+1 {
 		t.Fatalf("alice's edit read %d sessions to learn whether bot's claim is live", w.sessionVisits)
 	}
+	// Sessions that stalled are kept, however many: the dashboard shows
+	// them, and one that comes back is announced as recovered.
+	for i := range 30 {
+		h.at(KindPrompt, "fleet", "w", fmt.Sprint("f", i))
+	}
+	h.advance(h.b.cfg.StallAfter + time.Minute)
+	h.b.Sweep(h.now)
+	if n := len(h.b.claimSessions[h.claimIn("fleet", "w").ID]); n != 30 {
+		t.Fatalf("the fleet's claim keeps %d of its 30 stalled sessions", n)
+	}
 }
 
 // The directories a footprint names in place of files count against its

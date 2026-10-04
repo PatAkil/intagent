@@ -2384,7 +2384,7 @@ func (b *Board) Sweep(now time.Time) {
 	// sessions are dropped: gathered in this pass, not by a search of every
 	// session for every claim.
 	live, held := map[string]bool{}, make(map[string]bool, len(b.claims))
-	var done []*session // those kept that are not live, in the order of keys
+	var done []*session // those kept that ended or are gone, in the order of keys
 	for _, k := range keys {
 		s := b.sessions[k]
 		if trace != nil {
@@ -2418,9 +2418,10 @@ func (b *Board) Sweep(now time.Time) {
 			continue
 		}
 		held[s.ClaimID] = true
-		if st.Live() {
+		switch {
+		case st.Live():
 			live[s.ClaimID] = true
-		} else {
+		case st == StateEnded || st == StateGone:
 			done = append(done, s)
 		}
 	}
