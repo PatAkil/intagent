@@ -481,10 +481,7 @@ func (ev HookEvent) clean(maxFootprint int) (HookEvent, error) {
 		files := cleanFootprint(fp.Files, maxFootprint)
 		ev.Footprint = &Footprint{Files: files, Truncated: fp.Truncated || len(fp.Files) > len(files)}
 	}
-	// A task is the first line's first maxTaskLen characters.
-	if ev.Prompt = firstLine(ev.Prompt); len(ev.Prompt) > maxPrompt {
-		ev.Prompt = ev.Prompt[:maxPrompt]
-	}
+	ev.Prompt = PromptLine(ev.Prompt)
 	// An edit is checked in full: as many paths as a claim keeps.
 	ev.Paths, err = cleanPaths(ev.Paths, maxFootprint)
 	return ev, err
@@ -564,6 +561,16 @@ func (c *claim) taskFromIntent() bool {
 		}
 	}
 	return false
+}
+
+// PromptLine is the part of a prompt the board reads, of which a task is the
+// first maxTaskLen characters: its first line, up to 8 KB. Clients send no
+// more, so that a prompt with a log pasted into it stays a small request.
+func PromptLine(prompt string) string {
+	if prompt = firstLine(prompt); len(prompt) > maxPrompt {
+		prompt = prompt[:maxPrompt]
+	}
+	return prompt
 }
 
 func firstLine(s string) string {

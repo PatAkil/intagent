@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -63,6 +64,105 @@ func TestLargeBodiesAreMetered(t *testing.T) {
 	ts.mu.Unlock()
 	if code, _ := ts.post(t, "/v1/hook", "alice", big); code != http.StatusOK {
 		t.Fatalf("large body after a second: %d", code)
+	}
+}
+
+// reservedEdit has alice reserve svc/pay/** and returns a pre_edit by bob
+// that names n files, one of them inside the reservation: a codemod's patch,
+// about 90 bytes a file.
+func reservedEdit(t *testing.T, ts *testServer, n int) board.HookEvent {
+	t.Helper()
+	ts.do(t, "POST", "/v1/hook", "alice", hookEv(board.KindPrompt, "alice", "a1"), nil)
+	dec := board.DeclareRequest{Where: where("alice"), Summary: "retry", Patterns: []string{"svc/pay/**"}, Mode: board.ModeExclusive}
+	if code := ts.do(t, "POST", "/v1/intents", "alice", dec, nil); code != http.StatusOK {
+		t.Fatalf("declare: %d", code)
+	}
+	ev := hookEv(board.KindPreEdit, "bob", "b1")
+	for i := range n {
+		ev.Paths = append(ev.Paths, board.PathRef{Path: fmt.Sprintf("services/payments/internal/handlers/v2/file_%04d.go", i)})
+	}
+	ev.Paths[n/2].Path = "svc/pay/retry.go"
+	return ev
+}
+
+// A pre_edit over largeBody is never answered 429 or 503, which its hook
+// would turn into a refused edit under INTAGENT_FAIL=closed. It draws on a
+// budget the member's footprints do not spend, and when that budget, or the
+// wait for a slot, runs out, the edit goes ahead unchecked and its agent is
+// told so.
+func TestLargeEditsAreNeverRefusedForLoad(t *testing.T) {
+	ts := newTestServer(t)
+	edit := reservedEdit(t, ts, 300)
+	body, _ := json.Marshal(edit)
+	if len(body) <= largeBody {
+		t.Fatalf("the edit is %d bytes, not a large body", len(body))
+	}
+	ts.admit.byteCap = 100 << 10
+	// bob's footprints spend his budget, as a fleet's session starts would.
+	for range 2 {
+		ts.post(t, "/v1/hook", "bob", heartbeat("bob", 40<<10))
+	}
+	if code, _ := ts.post(t, "/v1/hook", "bob", heartbeat("bob", 40<<10)); code != http.StatusTooManyRequests {
+		t.Fatalf("a footprint over the budget: %d", code)
+	}
+	send := func() (int, board.HookResult) {
+		var res board.HookResult
+		code := ts.do(t, "POST", "/v1/hook", "bob", edit, &res)
+		return code, res
+	}
+	checked := func(what string) {
+		t.Helper()
+		if code, res := send(); code != http.StatusOK || len(res.Conflicts) == 0 || strings.Contains(res.Context, "without a check") {
+			t.Fatalf("%s: %d %+v", what, code, res)
+		}
+	}
+	unchecked := func(what string) {
+		t.Helper()
+		if code, res := send(); code != http.StatusOK || res.Decision != board.DecisionAllow || res.Context != uncheckedEditNote ||
+			len(res.Conflicts) != 0 {
+			t.Fatalf("%s: %d %+v", what, code, res)
+		}
+	}
+	fits := int(ts.admit.byteCap) / len(body)
+	for i := range fits {
+		checked(fmt.Sprintf("edit %d of %d within the budget for edits", i+1, fits))
+	}
+	unchecked("an edit over the budget for edits")
+	ts.mu.Lock()
+	ts.clock = ts.clock.Add(time.Second)
+	ts.mu.Unlock()
+	checked("an edit a second later")
+
+	ts.admit.largeWait = 50 * time.Millisecond
+	for range cap(ts.admit.large) {
+		ts.admit.large <- struct{}{} // every slot busy with another large body
+	}
+	unchecked("an edit with no slot free")
+	for range cap(ts.admit.large) {
+		<-ts.admit.large
+	}
+	checked("an edit with the slots free")
+}
+
+// A body that starts as a pre_edit, and so draws on the budget for edits,
+// must be one.
+func TestLargeEditMustBeAPreEdit(t *testing.T) {
+	ts := newTestServer(t)
+	body, _ := json.Marshal(reservedEdit(t, ts, 300))
+	for _, kind := range []string{`"kind"`, `"KIND"`} {
+		b := slices.Concat(body[:len(body)-1], []byte(","+kind+`:"heartbeat"}`))
+		req, _ := http.NewRequest(http.MethodPost, ts.url+"/v1/hook", bytes.NewReader(b))
+		req.Header.Set("Authorization", "Bearer "+ts.tokens["bob"])
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var e ErrorResponse
+		_ = json.NewDecoder(resp.Body).Decode(&e)
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest || !strings.Contains(e.Error, "starts as a pre_edit") {
+			t.Fatalf("a pre_edit whose %s is then heartbeat: %d %q", kind, resp.StatusCode, e.Error)
+		}
 	}
 }
 

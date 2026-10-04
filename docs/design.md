@@ -175,15 +175,19 @@ All endpoints take and return JSON and require `Authorization: Bearer <token>`, 
 - Request bodies are capped at 1 MB. Paths are validated. A body over 16 KB (a footprint, in practice) is charged to
   its member's budget of 4 MB a second, with a burst of 32 MB for a fleet's session starts, from its `Content-Length`
   before it is read (429 past it), and only as many are decoded and handled at once as the server has CPUs (503
-  after a second's wait). The hooks that check edits are a few hundred bytes (16 KB is about 200 paths) and are not
-  metered, so no ordinary edit is refused for load under `INTAGENT_FAIL=closed`. Footprints and prompts are cut to
-  size before the board's lock is taken: a footprint to its first 2000 entries, duplicates and invalid paths
+  after a second's wait). A pre_edit is never answered either way, since under `INTAGENT_FAIL=closed` its hook would
+  refuse the edit. Most are a few hundred bytes and not metered. One over 16 KB (about 200 paths: a codemod's patch)
+  draws on a budget of its own, which footprints do not spend, and when that budget or the wait for a slot runs out
+  the edit goes ahead unchecked and its agent is told so. The server knows a pre_edit by how its body starts,
+  `{"kind":"pre_edit"`, as intagent's clients write it, and refuses a body that starts so and turns out to be
+  another kind. Clients send only a prompt's first line, which is all the board reads. Footprints and prompts are cut
+  to size before the board's lock is taken: a footprint to its first 2000 entries, duplicates and invalid paths
   included.
 - An edit is checked on every path it names, up to 2000; past that its agent is told how many were not checked. A
   check of more than 2000 paths is refused rather than cut short. Checks and declarations are paced per member and
   worktree, one at a time and five a second with a burst of 20 (429 past that), since each holds the board's lock for
   as long as its paths and patterns take; an orchestrator's agents, each in its own worktree, are paced apart. Hooks
-  are never paced: an edit must not go unchecked, or be refused, for load.
+  are never paced: a fleet's agents share one token, and each of their edits is checked.
 - A client has 15 seconds to send a whole request and 16 KB for its headers, and past 4096 open connections
   (`serve --max-connections`) the server closes new ones as soon as it accepts them, so a client that sends slowly, or
   opens many connections, with a token or without, cannot use up the server's file descriptors and memory. A hook

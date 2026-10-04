@@ -261,11 +261,15 @@ func (s *Server) SetMembers(ms []Member) error {
 // Board exposes the board, for tests and embedding.
 func (s *Server) Board() *board.Board { return s.board }
 
+// hookRoute is the route of hook events, whose large bodies are metered by
+// kind.
+const hookRoute = "POST /v1/hook"
+
 // Handler returns the server's routes.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealth)
-	mux.Handle("POST /v1/hook", s.write(s.handleHook))
+	mux.Handle(hookRoute, s.write(s.handleHook))
 	mux.Handle("POST /v1/intents", s.write(s.handleDeclare))
 	mux.Handle("POST /v1/intents/release", s.write(s.handleRelease))
 	mux.Handle("POST /v1/check", s.write(s.handleCheck))
@@ -369,14 +373,21 @@ func (s *Server) write(h http.HandlerFunc) http.Handler {
 			writeError(w, http.StatusUnauthorized, "missing or unknown token")
 			return
 		}
-		release, ok := s.admitBody(w, r, name)
+		release, edit, ok := s.admitBody(w, r, name)
 		if !ok {
 			return
 		}
 		defer release()
-		h(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, name)))
+		ctx := context.WithValue(r.Context(), ctxKey{}, name)
+		if edit {
+			ctx = context.WithValue(ctx, editKey{}, true)
+		}
+		h(w, r.WithContext(ctx))
 	})
 }
+
+// editKey marks a request whose body was admitted as a pre_edit's.
+type editKey struct{}
 
 // read admits a bearer token or the dashboard cookie, or anyone with PublicRead.
 func (s *Server) read(h http.HandlerFunc) http.Handler {
@@ -437,6 +448,12 @@ func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleHook(w http.ResponseWriter, r *http.Request) {
 	var ev board.HookEvent
 	if !decode(w, r, &ev) {
+		return
+	}
+	if edit, _ := r.Context().Value(editKey{}).(bool); edit && ev.Kind != board.KindPreEdit {
+		// It started as a pre_edit, and so drew on the budget for edits, but
+		// a later field gave it another kind.
+		writeError(w, http.StatusBadRequest, "invalid JSON body: it starts as a pre_edit and is not one")
 		return
 	}
 	ev.Member = memberFrom(r)

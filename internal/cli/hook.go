@@ -130,7 +130,7 @@ func (a *App) handleHook(ctx context.Context, ad hook.Adapter, ev hook.Event) (h
 		LateContext: ev.LateContext, NoAsk: ev.NoAsk,
 	}
 	if ws.settings.SharePrompts {
-		hev.Prompt = ev.Prompt
+		hev.Prompt = board.PromptLine(ev.Prompt)
 	}
 	if ev.Footprint && (ev.Kind != board.KindToolEnd || footprintDue(ws.wt.Root, ev.SessionID)) {
 		// Git gets what the server request leaves of the hook's time, and at
