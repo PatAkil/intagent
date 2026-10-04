@@ -175,7 +175,12 @@ func TestAuth(t *testing.T) {
 	if code := do(http.MethodGet, "/v1/whoami", ts.tokens["bob"], ""); code != http.StatusUnauthorized {
 		t.Fatalf("token as a session: %d", code)
 	}
-	if code := do(http.MethodGet, "/v1/whoami", "00"+session[2:], ""); code != http.StatusUnauthorized {
+	// The cookie is hex, so a first digit other than its own forges one.
+	forged := "1" + session[1:]
+	if session[0] == '1' {
+		forged = "0" + session[1:]
+	}
+	if code := do(http.MethodGet, "/v1/whoami", forged, ""); code != http.StatusUnauthorized {
 		t.Fatalf("forged session: %d", code)
 	}
 	if code := ts.do(t, "GET", "/healthz", "", nil, nil); code != http.StatusOK {
