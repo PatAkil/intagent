@@ -102,22 +102,27 @@ func BenchmarkScalePreEdit(b *testing.B) {
 }
 
 // A sweep once n agents, each in its own worktree, have gone quiet: it
-// announced them, and their sessions are kept an hour more.
+// announced them, and their sessions are kept an hour more. By the old
+// Sweep in oracle_test.go and the current one.
 func BenchmarkScaleSweepQuiet(b *testing.B) {
 	for _, n := range []int{2000, 20000} {
-		b.Run(fmt.Sprint(n), func(b *testing.B) {
-			sb := newScaleBoard(targetShape(filesFixed, 0), DefaultConfig(), t0, 0)
-			for k := range n {
-				sb.hook(b, sb.fresh(k, 1+k%29, KindHeartbeat))
-			}
-			sb.now = sb.now.Add(sb.cfg.IdleAfter + time.Minute)
-			sb.Sweep(sb.now)
-			sb.now = sb.now.Add(15 * time.Second)
-			b.ResetTimer()
-			for range b.N {
-				sb.Sweep(sb.now)
-			}
-		})
+		sb := newScaleBoard(targetShape(filesFixed, 0), DefaultConfig(), t0, 0)
+		for k := range n {
+			sb.hook(b, sb.fresh(k, 1+k%29, KindHeartbeat))
+		}
+		sb.now = sb.now.Add(sb.cfg.IdleAfter + time.Minute)
+		sb.Sweep(sb.now)
+		sb.now = sb.now.Add(15 * time.Second)
+		for _, v := range []struct {
+			name  string
+			sweep func(time.Time)
+		}{{"old", sb.oldSweep}, {"new", sb.Sweep}} {
+			b.Run(fmt.Sprintf("%d/%s", n, v.name), func(b *testing.B) {
+				for range b.N {
+					v.sweep(sb.now)
+				}
+			})
+		}
 	}
 }
 

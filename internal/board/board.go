@@ -346,6 +346,9 @@ func (b *Board) state(now time.Time, s *session) State {
 func (b *Board) liveClaims(now time.Time) map[string]bool {
 	live := map[string]bool{}
 	for _, s := range b.sessions {
+		if trace != nil {
+			trace.sessionVisits++
+		}
 		if b.state(now, s).Live() {
 			live[s.ClaimID] = true
 		}
@@ -356,6 +359,9 @@ func (b *Board) liveClaims(now time.Time) map[string]bool {
 func (b *Board) liveSessions(now time.Time) map[string]bool {
 	live := map[string]bool{}
 	for k, s := range b.sessions {
+		if trace != nil {
+			trace.sessionVisits++
+		}
 		if b.state(now, s).Live() {
 			live[k] = true
 		}
@@ -1616,8 +1622,15 @@ func (b *Board) Sweep(now time.Time) {
 		}
 		return strings.Compare(x, y)
 	})
+	// Which claims still have a session, and which a live one, once old
+	// sessions are dropped: gathered in this pass, not by a search of every
+	// session for every claim.
+	live, held := map[string]bool{}, make(map[string]bool, len(b.claims))
 	for _, k := range keys {
 		s := b.sessions[k]
+		if trace != nil {
+			trace.sessionVisits++
+		}
 		st := b.state(now, s)
 		if st != s.Reported {
 			if st == StateStalled || st == StateGone {
@@ -1642,9 +1655,13 @@ func (b *Board) Sweep(now time.Time) {
 		if !st.Live() && now.Sub(s.LastSeen) > keepEndedFor && (st == StateEnded || now.Sub(s.LastSeen) > b.cfg.IdleAfter+keepEndedFor) {
 			delete(b.sessions, k)
 			changed = true
+			continue
+		}
+		held[s.ClaimID] = true
+		if st.Live() {
+			live[s.ClaimID] = true
 		}
 	}
-	live := b.liveClaims(now)
 	ids := make([]string, 0, len(b.claims))
 	for id := range b.claims {
 		ids = append(ids, id)
@@ -1656,7 +1673,7 @@ func (b *Board) Sweep(now time.Time) {
 			continue
 		}
 		switch {
-		case len(c.Intents) == 0 && len(c.Footprint) == 0 && !b.hasSessions(c.ID):
+		case len(c.Intents) == 0 && len(c.Footprint) == 0 && !held[c.ID]:
 			b.deleteClaim(now, c, ActivityClaimReleased)
 			changed = true
 		case now.Sub(c.UpdatedAt) > b.cfg.ForgetAfter:
@@ -1672,15 +1689,6 @@ func (b *Board) Sweep(now time.Time) {
 	if changed {
 		b.changed()
 	}
-}
-
-func (b *Board) hasSessions(claimID string) bool {
-	for _, s := range b.sessions {
-		if s.ClaimID == claimID {
-			return true
-		}
-	}
-	return false
 }
 
 func pathsOf(ps []PathRef) []string {

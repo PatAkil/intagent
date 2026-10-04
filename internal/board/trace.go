@@ -7,13 +7,14 @@ import "github.com/patakil/intagent/internal/glob"
 // machine, and they show work that grows with the board long before it is
 // slow enough to time.
 type workTrace struct {
-	conflictsFor int // paths checked against the claims of a repository
-	conflictWith int // other claims a path was compared with
-	workedInArea int // claims searched for work in an area
-	areaVisits   int // footprint entries those searches read
-	ranked       int // claims ranked for a greeting
-	globMatch    int // glob.Match calls
-	globOverlap  int // glob.Overlap calls
+	conflictsFor  int // paths checked against the claims of a repository
+	conflictWith  int // other claims a path was compared with
+	workedInArea  int // claims searched for work in an area
+	areaVisits    int // footprint entries those searches read
+	ranked        int // claims ranked for a greeting
+	sessionVisits int // sessions read by Sweep and to find which are live
+	globMatch     int // glob.Match calls
+	globOverlap   int // glob.Overlap calls
 }
 
 // trace is nil except while a test counts. A test that sets it must not run

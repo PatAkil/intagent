@@ -113,10 +113,14 @@ func randomBoard(t *testing.T, rng *rand.Rand, cfg Config, ties bool) (*Board, t
 	return b, now
 }
 
-// twin copies a board's claims and sessions into a new board.
+// twin copies a board's claims, sessions, feed, stats and version into a new board.
 func twin(b *Board) *Board {
 	t := New(b.cfg)
-	t.seq = b.seq
+	t.seq, t.version, t.recent = b.seq, b.version, slices.Clone(b.recent)
+	for repo, st := range b.stats {
+		c := *st
+		t.stats[repo] = &c
+	}
 	for id, c := range b.claims {
 		t.claims[id] = c.clone()
 		t.byKey[c.key()] = id
@@ -563,5 +567,180 @@ func TestRecordDoesNotCopyTheFeed(t *testing.T) {
 	// record allocated a new array for every one.
 	if allocs := testing.AllocsPerRun(1000, func() { b.record(a); b.pending = b.pending[:0] }); allocs != 0 {
 		t.Fatalf("recording into a full feed of %d made %.0f allocations per activity", b.cfg.KeepActivities, allocs)
+	}
+}
+
+// oldSweep is Sweep as it was: for every claim with nothing left, it
+// searched every session for one still attached to it.
+func (b *Board) oldSweep(now time.Time) {
+	changed := false
+	keys := make([]string, 0, len(b.sessions))
+	for k := range b.sessions {
+		keys = append(keys, k)
+	}
+	slices.SortFunc(keys, func(x, y string) int {
+		if c := b.sessions[x].LastSeen.Compare(b.sessions[y].LastSeen); c != 0 {
+			return c
+		}
+		return strings.Compare(x, y)
+	})
+	for _, k := range keys {
+		s := b.sessions[k]
+		st := b.state(now, s)
+		if st != s.Reported {
+			if st == StateStalled || st == StateGone {
+				c := b.claims[s.ClaimID]
+				repo, member := "", s.Member
+				if c != nil {
+					repo = c.Repo
+				}
+				text := fmt.Sprintf("silent for %s", ago(now, s.LastSeen))
+				if st == StateStalled && s.Tool != "" {
+					text = fmt.Sprintf("inside %s for %s", s.Tool, ago(now, s.ToolSince))
+				}
+				kind := ActivitySessionGone
+				if st == StateStalled {
+					kind = ActivitySessionStalled
+				}
+				b.record(Activity{At: now, Kind: kind, Repo: repo, Member: member, ClaimID: s.ClaimID, Session: s.ID, Agent: s.Agent, Text: text})
+			}
+			s.Reported = st
+			changed = true
+		}
+		if !st.Live() && now.Sub(s.LastSeen) > keepEndedFor && (st == StateEnded || now.Sub(s.LastSeen) > b.cfg.IdleAfter+keepEndedFor) {
+			delete(b.sessions, k)
+			changed = true
+		}
+	}
+	live := b.liveClaims(now)
+	ids := make([]string, 0, len(b.claims))
+	for id := range b.claims {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	for _, id := range ids {
+		c := b.claims[id]
+		if live[c.ID] {
+			continue
+		}
+		switch {
+		case len(c.Intents) == 0 && len(c.Footprint) == 0 && !b.oldHasSessions(c.ID):
+			b.deleteClaim(now, c, ActivityClaimReleased)
+			changed = true
+		case now.Sub(c.UpdatedAt) > b.cfg.ForgetAfter:
+			b.deleteClaim(now, c, ActivityClaimForgotten)
+			changed = true
+		}
+	}
+	for m, ts := range b.notes {
+		if len(ts) == 0 || now.Sub(ts[len(ts)-1]) > noteWindow {
+			delete(b.notes, m)
+		}
+	}
+	if changed {
+		b.changed()
+	}
+}
+
+func (b *Board) oldHasSessions(claimID string) bool {
+	for _, s := range b.sessions {
+		if s.ClaimID == claimID {
+			return true
+		}
+	}
+	return false
+}
+
+// canonical is a board's snapshot with its claims and sessions in order.
+func canonical(t *testing.T, b *Board, now time.Time) string {
+	t.Helper()
+	data, _, err := b.Snapshot(now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var s snapshot
+	if err := json.Unmarshal(data, &s); err != nil {
+		t.Fatal(err)
+	}
+	slices.SortFunc(s.Claims, func(x, y *claim) int { return strings.Compare(x.ID, y.ID) })
+	slices.SortFunc(s.Sessions, func(x, y *session) int { return strings.Compare(x.Key, y.Key) })
+	return jsonOf(s)
+}
+
+// sweptState is what a sweep changes: which sessions and claims remain, what
+// each session was last announced as, and the board's version.
+func sweptState(b *Board) string {
+	var sb strings.Builder
+	for _, k := range slices.Sorted(maps.Keys(b.sessions)) {
+		fmt.Fprintf(&sb, "%s=%s ", k, b.sessions[k].Reported)
+	}
+	fmt.Fprintf(&sb, "| %v | %d", slices.Sorted(maps.Keys(b.claims)), b.version)
+	return sb.String()
+}
+
+// Sweeps past the stall, idle, keep and forget lines leave random boards as
+// the old Sweep left them, and announce the same, on boards with sessions
+// that went quiet working, waiting, inside tools and after ending.
+func TestSweepMatchesTheOracle(t *testing.T) {
+	rng := rand.New(rand.NewSource(3))
+	announced, released := 0, 0
+	for range 300 {
+		oldB, now := randomBoard(t, rng, DefaultConfig(), true)
+		newB := twin(oldB)
+		var told []Activity // Sweep hands its activities to the notifier as it unlocks
+		newB.notify = func(a []Activity) { told = append(told, a...) }
+		for _, d := range []time.Duration{0, 11 * time.Minute, 46 * time.Minute, 2*time.Hour + time.Minute, 15 * time.Second,
+			time.Hour, 7 * 24 * time.Hour} {
+			now = now.Add(d)
+			oldB.oldSweep(now)
+			newB.Sweep(now)
+			if len(oldB.pending)+len(told) > 0 && !reflect.DeepEqual(oldB.pending, told) {
+				t.Fatalf("sweep at %s announced differently:\nold: %+v\nnew: %+v", now, oldB.pending, told)
+			}
+			if o, n := sweptState(oldB), sweptState(newB); o != n {
+				t.Fatalf("sweep at %s left the board differently:\nold: %s\nnew: %s", now, o, n)
+			}
+			for _, a := range told {
+				switch a.Kind {
+				case ActivitySessionStalled, ActivitySessionGone:
+					announced++
+				case ActivityClaimReleased, ActivityClaimForgotten:
+					released++
+				}
+			}
+			oldB.pending, told = nil, nil
+		}
+		if o, n := canonical(t, oldB, now), canonical(t, newB, now); o != n {
+			t.Fatalf("the sweeps left the board differently:\nold: %s\nnew: %s", o, n)
+		}
+	}
+	t.Logf("%d sessions announced, %d claims released or forgotten", announced, released)
+	if announced < 500 || released < 500 {
+		t.Fatalf("%d sessions announced and %d claims released: the boards do not exercise the sweep", announced, released)
+	}
+}
+
+// A sweep reads each session once, however many worktrees have gone quiet:
+// it does not search the sessions again for each claim.
+func TestSweepReadsEachSessionOnce(t *testing.T) {
+	sb := newScaleBoard(smallShape(), DefaultConfig(), t0, 0)
+	const quiet = 2000
+	for k := range quiet {
+		sb.hook(t, sb.fresh(k, k%3, KindHeartbeat))
+	}
+	for _, d := range []time.Duration{sb.cfg.IdleAfter + time.Minute, 15 * time.Second} {
+		sb.now = sb.now.Add(d)
+		trace = &workTrace{}
+		sb.Sweep(sb.now)
+		visits := trace.sessionVisits
+		trace = nil
+		// The old sweep read sessions 2,028,882 times here: up to all 2000
+		// for each claim it searched.
+		if visits > quiet {
+			t.Fatalf("a sweep of %d quiet sessions read sessions %d times", quiet, visits)
+		}
+	}
+	if len(sb.claims) != quiet || len(sb.sessions) != quiet {
+		t.Fatalf("%d claims and %d sessions after the sweeps, want %d each", len(sb.claims), len(sb.sessions), quiet)
 	}
 }
