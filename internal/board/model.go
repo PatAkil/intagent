@@ -400,4 +400,7 @@ type Activity struct {
 	// Also names the other teammates a collision newly ran into, besides the
 	// one Text names: "carol on c/y.go: has unmerged changes to this file".
 	Also []string `json:"also,omitempty"`
+	// Idle marks a session.gone whose agent had finished its turn and was
+	// waiting for its person: a session left open, not a stuck agent.
+	Idle bool `json:"idle,omitempty"`
 }

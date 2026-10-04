@@ -22,6 +22,9 @@ type WebhookConfig struct {
 	// Events lists activity kinds to send. Empty means DefaultWebhookEvents.
 	// "conflict" sends only refused or asked edits, never warnings.
 	Events []board.ActivityKind `json:"events,omitempty"`
+	// Idle also sends session.gone for agents that had finished their turn and
+	// were waiting for their person: sessions left open, not stuck agents.
+	Idle bool `json:"idle,omitempty"`
 }
 
 // DefaultWebhookEvents are the activities worth interrupting a person for.
@@ -50,6 +53,9 @@ func newNotifier(cfg WebhookConfig, log *slog.Logger) *notifier {
 func (n *notifier) wants(a board.Activity) bool {
 	if !slices.Contains(n.cfg.Events, a.Kind) {
 		return false
+	}
+	if a.Kind == board.ActivitySessionGone && a.Idle {
+		return n.cfg.Idle
 	}
 	if a.Kind == board.ActivityConflict {
 		// Refusals and questions, and changes made inside a teammate's
