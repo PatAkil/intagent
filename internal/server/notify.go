@@ -96,11 +96,12 @@ type notifier struct {
 	recovered bool // the webhook wants session.recovered
 	client    *http.Client
 	log       *slog.Logger
-	// now and pace time the sender, which tests drive themselves. They are
-	// transport time: the board's own clock plays no part.
-	now  func() time.Time
-	pace time.Duration
-	wake chan struct{} // one slot: something was queued
+	// now, after and pace time the sender, which tests drive themselves.
+	// They are transport time: the board's own clock plays no part.
+	now   func() time.Time
+	after func(time.Duration) <-chan time.Time
+	pace  time.Duration
+	wake  chan struct{} // one slot: something was queued
 
 	mu      sync.Mutex
 	pending []*pendingItem
@@ -136,7 +137,7 @@ func newNotifier(cfg WebhookConfig, log *slog.Logger) *notifier {
 		log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 	return &notifier{cfg: cfg, client: &http.Client{Timeout: webhookTimeout}, log: log,
-		now: time.Now, pace: webhookPace, wake: make(chan struct{}, 1), alerts: map[string][]*pendingItem{},
+		now: time.Now, after: time.After, pace: webhookPace, wake: make(chan struct{}, 1), alerts: map[string][]*pendingItem{},
 		recovered: slices.Contains(cfg.Events, board.ActivitySessionRecovered)}
 }
 
@@ -298,11 +299,9 @@ func (n *notifier) waitForTurn(ctx context.Context) bool {
 		if wait <= 0 {
 			return true
 		}
-		t := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
-			t.Stop()
-		case <-t.C:
+		case <-n.after(wait):
 			return true
 		}
 	}
@@ -423,7 +422,7 @@ func (n *notifier) flush(ctx context.Context) {
 			n.log.Warn("webhook gave up", "dropped", dropped, "attempts", maxAttempts)
 		}
 	default:
-		n.failures = 0
+		n.failures, n.countedTries = 0, 0
 		n.settled(items, false)
 		n.log.Warn("webhook refused; dropping", "dropped", m.count, "err", ans.err)
 	}

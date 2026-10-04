@@ -21,6 +21,8 @@ import (
 // The webhook scenarios run the notifier's sender in fake time against fake
 // endpoints, so a storm of minutes takes milliseconds and every count is
 // exact: the clock moves only when the sender waits or an endpoint answers.
+// The sender waits on its own timer, so what the scenarios measure is the
+// waiting that ships.
 
 var stormStart = time.Date(2026, 10, 2, 10, 0, 0, 0, time.UTC)
 
@@ -28,6 +30,14 @@ var stormStart = time.Date(2026, 10, 2, 10, 0, 0, 0, time.UTC)
 type fakeClock struct{ t time.Time }
 
 func (c *fakeClock) now() time.Time { return c.t }
+
+// after is the sender's timer: the wait passes at once, and the clock with it.
+func (c *fakeClock) after(d time.Duration) <-chan time.Time {
+	c.t = c.t.Add(d)
+	ch := make(chan time.Time, 1)
+	ch <- c.t
+	return ch
+}
 
 // fakeEndpoint answers posts in fake time. It accepts everything after a
 // round trip, or only rate messages a second as Slack does (429 with
@@ -40,6 +50,7 @@ type fakeEndpoint struct {
 	burst      float64
 	retryAfter string // the Retry-After of a 429; empty sends none
 	hang       bool   // never answers within the client's timeout
+	script     []int  // answers these statuses first, in order
 	fail       int    // answers 503 to this many posts first
 	refuse     int    // answers this status to every post
 	during     func() // runs once while the next post is in flight
@@ -109,6 +120,11 @@ func (e *fakeEndpoint) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 func (e *fakeEndpoint) decide(now time.Time) int {
+	if len(e.script) > 0 {
+		status := e.script[0]
+		e.script = e.script[1:]
+		return status
+	}
 	if e.refuse != 0 {
 		return e.refuse
 	}
@@ -166,20 +182,24 @@ func newStorm(t *testing.T, ep *fakeEndpoint, cfg WebhookConfig) *storm {
 	cfg.URL = "https://hooks.example.com/services/x"
 	n := newNotifier(cfg, slog.New(logs))
 	n.client = &http.Client{Transport: ep, Timeout: webhookTimeout}
-	n.now = clock.now
+	n.now, n.after = clock.now, clock.after
 	return &storm{t: t, n: n, clock: clock, ep: ep, logs: logs, sent: map[uint64]board.Activity{}}
 }
 
-// until runs the sender up to fake time t, posting whenever something is
-// queued and the pace allows, as run does.
+// until runs the sender up to fake time t: whenever something is queued and
+// its turn comes before t, the sender waits for it and posts, as run does.
 func (s *storm) until(t time.Time) {
+	s.t.Helper()
 	for {
 		at, ok := s.n.nextSend()
 		if !ok || at.After(t) {
 			break
 		}
-		if at.After(s.clock.t) {
-			s.clock.t = at
+		if !s.n.waitForTurn(context.Background()) {
+			s.t.Fatal("the sender stopped waiting")
+		}
+		if s.clock.t.Before(at) {
+			s.t.Fatalf("the sender went at %s, before its turn at %s", s.clock.t.Sub(stormStart), at.Sub(stormStart))
 		}
 		s.n.flush(context.Background())
 	}
@@ -423,6 +443,101 @@ func TestWebhookWaitsOutRateLimits(t *testing.T) {
 	if s.n.queued() != 1 || len(s.logs.lines("webhook gave up")) != 0 {
 		t.Errorf("queued %d after 10 minutes of 429s", s.n.queued())
 	}
+}
+
+// A delivery or a refusal ends a run of failures, for what was only counted
+// as for what was listed: an overflow that meets one failure, after an
+// earlier one met five, still arrives whole.
+func TestWebhookFailuresStartAfreshAfterAnAnswer(t *testing.T) {
+	for _, end := range []int{http.StatusOK, http.StatusNotFound} {
+		ep := &fakeEndpoint{script: append(slices.Repeat([]int{http.StatusServiceUnavailable}, maxAttempts-1), end)}
+		s := newStorm(t, ep, WebhookConfig{})
+		overflow := func(round int) {
+			acts := make([]board.Activity, maxPending+1)
+			for i := range acts {
+				acts[i] = stall("m", repo, fmt.Sprint(round, "-", i))
+			}
+			s.at(stormStart.Add(time.Duration(round)*time.Minute), acts...)
+		}
+		overflow(0)
+		s.until(stormStart.Add(time.Minute))
+		ep.script = []int{http.StatusServiceUnavailable}
+		overflow(1)
+		s.until(stormStart.Add(5 * time.Minute))
+		last := 0
+		if n := len(ep.delivered); n > 0 {
+			last = ep.delivered[n-1].count
+		}
+		if last != maxPending+1 {
+			t.Errorf("after a %d: the last message covers %d activities, want %d", end, last, maxPending+1)
+		}
+		if got := s.logs.lines("webhook gave up"); len(got) != 0 {
+			t.Errorf("after a %d: logged %q", end, got)
+		}
+	}
+}
+
+// run, the sender that ships, keeps the pace between messages, waits out a
+// failure's backoff and a 429's Retry-After, and starts the backoff afresh
+// after a delivery. Its clock moves only while it waits or the endpoint
+// answers, so the times are exact.
+func TestWebhookSenderWaitsItsTurn(t *testing.T) {
+	const fail, slow = http.StatusServiceUnavailable, http.StatusTooManyRequests
+	for _, c := range []struct {
+		name       string
+		rtt        time.Duration
+		answers    []int // the endpoint's first answers; then it accepts
+		retryAfter string
+		want       string // when each post started
+	}{
+		{"the pace runs from start to start", 300 * time.Millisecond, nil, "", "0s 1s 2s"},
+		{"failures back off, afresh after a delivery", 0, []int{fail, fail, http.StatusOK, fail}, "", "0s 1s 3s 4s 5s 6s"},
+		{"a 429 holds the sender for its Retry-After", 0, []int{slow}, "3", "0s 3s 4s 5s"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ep := &fakeEndpoint{rtt: c.rtt, script: c.answers, retryAfter: c.retryAfter}
+			s := newStorm(t, ep, WebhookConfig{})
+			delivered := make(chan struct{}, 8)
+			s.n.client.Transport = deliveries{ep, delivered}
+			ctx, cancel := context.WithCancel(context.Background())
+			done := make(chan struct{})
+			go func() { defer close(done); s.n.run(ctx) }()
+			// Each activity comes once the one before it was delivered.
+			for i, who := range []string{"alice", "bob", "carol"} {
+				a := stall(who, repo, who)
+				a.Seq = uint64(i + 1)
+				s.n.enqueue([]board.Activity{a})
+				select {
+				case <-delivered:
+				case <-time.After(10 * time.Second):
+					t.Fatalf("%s's stall was not delivered", who)
+				}
+			}
+			cancel()
+			<-done
+			var got []string
+			for _, r := range ep.requests {
+				got = append(got, r.Sub(stormStart).String())
+			}
+			if g := strings.Join(got, " "); g != c.want {
+				t.Errorf("posts at %s, want %s", g, c.want)
+			}
+		})
+	}
+}
+
+// deliveries tells a test each time its endpoint accepts a post.
+type deliveries struct {
+	ep   *fakeEndpoint
+	sent chan<- struct{}
+}
+
+func (d deliveries) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := d.ep.RoundTrip(req)
+	if err == nil && resp.StatusCode == http.StatusOK {
+		d.sent <- struct{}{}
+	}
+	return resp, err
 }
 
 // Any other refusal will not get better by trying again: the message is
