@@ -317,7 +317,10 @@ release lets an edit the server is too busy to check go ahead, with a note to it
   Paths and patterns containing control, formatting or line-separator characters are rejected; branch, agent and
   tool names are reduced to a single token; webhook messages escape Slack markup. Notes are rate-limited.
 - The hook fails open with a short timeout: intagent never stops an agent because intagent is down, unless a team
-  asks for `INTAGENT_FAIL=closed`.
+  asks for `INTAGENT_FAIL=closed`. A hook whose connection is refused, as while the server restarts, tries again after
+  100 and 200 ms and then every 400 ms, while its time allows; once a machine's hooks have been refused for 10
+  seconds, they try once until the server answers. Nothing else is tried again: a request that reached the server may
+  have been answered.
 
 ## What intagent deliberately does not do
 

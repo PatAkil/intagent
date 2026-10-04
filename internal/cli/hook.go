@@ -203,9 +203,15 @@ func (a *App) handleHook(ctx context.Context, ad hook.Adapter, ev hook.Event) (h
 // a stop or a session end lost with it would leave the session working,
 // announced as stalled, or live, its reservations refusing teammates' edits
 // for hours. The footprint is not recorded as sent, so the next scan sends
-// it.
+// it. A connection the server refuses, as it restarts, is tried again while
+// the hook's time allows (sendRetrying).
 func sendHook(ctx context.Context, ws *workspace, hev board.HookEvent, began time.Time) (board.HookResult, error) {
-	res, err := ws.client.Hook(ctx, hev)
+	var res board.HookResult
+	err := sendRetrying(ctx, downStamp(ws.settings.URL), time.Now, func() error {
+		var err error
+		res, err = ws.client.Hook(ctx, hev)
+		return err
+	})
 	if hev.Footprint == nil {
 		return res, err
 	}

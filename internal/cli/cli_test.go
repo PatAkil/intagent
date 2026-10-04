@@ -279,6 +279,7 @@ func TestHookStaysSilentWhenItCannotHelp(t *testing.T) {
 	}
 	// Server unreachable: fail open by default...
 	t.Setenv("INTAGENT_URL", "http://127.0.0.1:1")
+	longDown(t, "http://127.0.0.1:1")
 	t.Setenv("INTAGENT_TOKEN", tm.tokens["alice"])
 	t.Setenv("INTAGENT_TIMEOUT", "200ms")
 	if out, _, code := tm.as("alice", a, ev, "hook", "claude-code"); out != "" || code != 0 {

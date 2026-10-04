@@ -331,7 +331,12 @@ while degraded), in its log and, if asked, by webhook.
   turned away fails open at once instead of waiting out its timeout.
 - An answer that makes no progress for 15 seconds is cut off, so a client that stops reading mid-answer (a laptop
   put to sleep) does not hold the server's memory; a slow client that keeps reading gets all of it.
-- The hook fails open with a short timeout. `INTAGENT_FAIL=closed` turns an unreachable server, an answer the server
+- The hook fails open with a short timeout. Only a refused connection is tried again, after 100, 200 and then every
+  400 ms while more than half a second of the request's time is left: a server restarting closes its port for a
+  moment, and nothing of the request reached it, while a request reset or timed out may have been decided, and an
+  answer it spent must not be asked for twice. A stamp in the user's cache directory notes when refusals began; after
+  10 seconds of them, hooks on that machine try once, until a minute without one, or an answer, clears it.
+  `INTAGENT_FAIL=closed` turns an unreachable server, an answer the server
   could not check in time or was too busy to check, or a setup intagent cannot read, into a refusal of edits in
   enrolled repositories, for teams that want it. A whole hook run, git included, has 8 seconds, and at a session's
   end 4 for Claude Code, Gemini CLI and Cursor and 2 for other agents (less if

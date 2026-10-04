@@ -188,6 +188,7 @@ func TestHookTellsTheEditsItCouldNotCheck(t *testing.T) {
 
 	// The server is out of reach: two edits go ahead.
 	t.Setenv("INTAGENT_URL", "http://127.0.0.1:1")
+	longDown(t, "http://127.0.0.1:1")
 	t.Setenv("INTAGENT_TOKEN", tm.tokens["alice"])
 	t.Setenv("INTAGENT_TIMEOUT", "200ms")
 	for _, f := range []string{"README.md", "svc/pay/retry.go"} {
@@ -215,6 +216,7 @@ func TestHookTellsTheEditsItCouldNotCheck(t *testing.T) {
 
 	// Refused edits, under fail-closed, and a rejected token went ahead neither.
 	t.Setenv("INTAGENT_URL", "http://127.0.0.1:1")
+	longDown(t, "http://127.0.0.1:1")
 	t.Setenv("INTAGENT_TOKEN", tm.tokens["alice"])
 	t.Setenv("INTAGENT_TIMEOUT", "200ms")
 	t.Setenv("INTAGENT_FAIL", "closed")
@@ -234,6 +236,7 @@ func TestHookTellsTheEditsItCouldNotCheck(t *testing.T) {
 
 	// A session that ends takes its ledger with it.
 	t.Setenv("INTAGENT_URL", "http://127.0.0.1:1")
+	longDown(t, "http://127.0.0.1:1")
 	t.Setenv("INTAGENT_TOKEN", tm.tokens["alice"])
 	t.Setenv("INTAGENT_TIMEOUT", "200ms")
 	run("PreToolUse", edit("README.md"))
@@ -266,6 +269,7 @@ func TestLedgerWaitsForAnAnswerTheAgentReads(t *testing.T) {
 	}
 	file := filepath.Join(a, "README.md")
 	t.Setenv("INTAGENT_URL", "http://127.0.0.1:1")
+	longDown(t, "http://127.0.0.1:1")
 	t.Setenv("INTAGENT_TOKEN", tm.tokens["alice"])
 	t.Setenv("INTAGENT_TIMEOUT", "200ms")
 	cursor("preToolUse", map[string]any{"tool_name": "Write", "tool_input": map[string]any{"file_path": file}})
