@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"maps"
 	"math"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -264,5 +265,73 @@ func TestAlertsPlateauOverAMonth(t *testing.T) {
 	t.Logf("alerted keys after 8 days: %d; after 30: %d; %d short-lived claims", day8, day30, fresh)
 	if day8 == 0 || math.Abs(float64(day30-day8)) > 0.01*float64(day8) {
 		t.Fatalf("alerted keys after 30 days %d, after 8 %d: want them within 1%%", day30, day8)
+	}
+}
+
+// A claim remembers being told of at most maxToldPaths files a teammate's
+// claim changed, and an alert's item lists as many: the text counts the
+// rest. A file it was told of and does not remember is told again when it
+// comes back into the teammate's changes.
+func TestAlertsRememberAFewFilesPerTeammate(t *testing.T) {
+	h := newHarness(t)
+	files := make([]string, 10)
+	for i := range files {
+		files[i] = fmt.Sprintf("api/f%02d.go", i)
+	}
+	h.scanAt("alice", "w", "a1", files...)
+	h.scanAt("bob", "w", "b1", files...)
+	alice, bob := h.claimIn("alice", "w"), h.claimIn("bob", "w")
+	if len(alice.Inbox) != 1 || !slices.Equal(alice.Inbox[0].Paths, files[:5]) ||
+		!strings.Contains(alice.Inbox[0].Text, "api/f04.go and 5 more") {
+		t.Fatalf("alice's item: %+v", alice.Inbox)
+	}
+	if len(alice.Alerted) != maxToldPaths || alice.Told[bob.ID] != maxToldPaths {
+		t.Fatalf("alice remembers %d alerts, and counts %d of bob's claim; want %d", len(alice.Alerted), alice.Told[bob.ID], maxToldPaths)
+	}
+	// bob's worktree drops the files, then changes them again.
+	h.scanAt("bob", "w", "b1")
+	h.scanAt("bob", "w", "b1", files...)
+	if len(alice.Inbox) != 2 || !slices.Equal(alice.Inbox[1].Paths, files[5:]) || len(alice.Alerted) != maxToldPaths {
+		t.Fatalf("after bob changed them again: items %+v, %d alerts", alice.Inbox, len(alice.Alerted))
+	}
+}
+
+// Claims that share a large footprint, as branches stacked on a long-lived
+// one do, remember a few alerts per pair, not one per pair and file. Before,
+// 76 such claims of 2000 files held 5.7 million keys, and inbox items that
+// held every path, 627 MB.
+func TestSharedFootprintsAreRememberedPerPair(t *testing.T) {
+	const claims, files = 76, 2000
+	fp := make([]string, files)
+	for i := range fp {
+		fp[i] = fmt.Sprintf("services/svc%02d/pkg/file%04d.go", i%40, i)
+	}
+	h := newHarness(t)
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	for i := range claims {
+		h.advance(time.Second)
+		h.scanAt(fmt.Sprintf("m%02d", i), "stack", "s", fp...)
+	}
+	runtime.GC()
+	runtime.ReadMemStats(&after)
+	keys, paths, items := 0, 0, 0
+	for _, c := range h.b.claims {
+		keys += len(c.Alerted)
+		for _, it := range c.Inbox {
+			items++
+			paths += len(it.Paths)
+		}
+	}
+	heap := int64(after.HeapAlloc) - int64(before.HeapAlloc)
+	t.Logf("%d claims sharing %d files: %d alerted keys, %d items holding %d paths; heap +%.1f MB",
+		claims, files, keys, items, paths, float64(heap)/(1<<20))
+	if keys > claims*(claims-1)/2*maxToldPaths || paths > items*maxToldPaths {
+		t.Errorf("%d keys and %d paths in %d items, want at most %d and %d", keys, paths, items,
+			claims*(claims-1)/2*maxToldPaths, items*maxToldPaths)
+	}
+	if heap > 50<<20 {
+		t.Errorf("the board grew by %.1f MB, want under 50", float64(heap)/(1<<20))
 	}
 }

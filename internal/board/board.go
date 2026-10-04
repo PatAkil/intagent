@@ -871,29 +871,51 @@ func (b *Board) alertOthers(now time.Time, c *claim, paths []PathRef) {
 			}
 		}
 		b.coverByIntents(o, paths, byName, covered)
+		// o remembers it was told of the first few files c changed, so
+		// that c changing them again does not tell it again; past those,
+		// a file that comes back into c's changes is told again, so what
+		// it remembers of c does not grow with the files the two share.
+		told := o.Told[c.ID]
 		var hit []string
 		for i, p := range paths {
 			if !covered[i] {
 				continue
 			}
-			if !o.alert("touch|" + c.ID + "|" + p.Path) {
+			k := "touch|" + c.ID + "|" + p.Path
+			if o.Alerted[k] {
 				continue
+			}
+			if told < maxToldPaths {
+				o.alert(k)
+				told++
 			}
 			hit = append(hit, p.Path)
 		}
 		if len(hit) == 0 {
 			continue
 		}
+		if told != o.Told[c.ID] {
+			if o.Told == nil {
+				o.Told = map[string]int{}
+			}
+			o.Told[c.ID] = told
+		}
 		b.statsOf(c.Repo, now).Alerts++
 		b.enqueue(now, o, InboxItem{
 			Kind:      "overlap",
 			FromClaim: c.ID,
 			From:      c.Member,
-			Paths:     hit,
-			Text:      fmt.Sprintf("%s also changed %s%s.", who(c), listPaths(hit, 5), onBranch(c)),
+			Paths:     slices.Clone(hit[:min(len(hit), maxToldPaths)]),
+			Text:      fmt.Sprintf("%s also changed %s%s.", who(c), listPaths(hit, maxToldPaths), onBranch(c)),
 		})
 	}
 }
+
+// maxToldPaths bounds the files a claim remembers being told one teammate's
+// claim changed, and those an alert's item lists: its text names as many,
+// and counts the rest. Claims that share a large footprint, as stacked
+// branches do, otherwise remember a key for each file and pair of claims.
+const maxToldPaths = 5
 
 // listening reports whether claim o's agents may still hear what is queued
 // for it: it has a live session, or it was active within DormantFor. A claim
@@ -2128,8 +2150,8 @@ func (b *Board) tidy(now time.Time, c *claim, live bool) bool {
 		}
 		tidied = true
 	}
-	if len(c.Alerted) > 0 && !live && now.Sub(c.UpdatedAt) > b.cfg.DormantFor {
-		c.Alerted, c.alertedShared = nil, false
+	if (len(c.Alerted) > 0 || len(c.Told) > 0) && !live && now.Sub(c.UpdatedAt) > b.cfg.DormantFor {
+		c.Alerted, c.alertedShared, c.Told = nil, false, nil
 		tidied = true
 	}
 	return tidied
@@ -2151,10 +2173,21 @@ func (b *Board) pruneAlerts() bool {
 	return pruned
 }
 
-// pruneAlerted drops the claim's alerts of claims not in claims. It puts
-// what it keeps in a new map, which a snapshot may share, and which is no
-// larger than what it holds: a map does not shrink as keys are deleted.
+// pruneAlerted drops the claim's alerts of claims not in claims, and its
+// counts of them (Told). It puts the alerts it keeps in a new map, which a
+// snapshot may share, and which is no larger than what it holds: a map does
+// not shrink as keys are deleted.
 func (c *claim) pruneAlerted(claims map[string]*claim) bool {
+	pruned := false
+	for id := range c.Told {
+		if claims[id] == nil {
+			delete(c.Told, id)
+			pruned = true
+		}
+	}
+	if pruned && len(c.Told) == 0 {
+		c.Told = nil
+	}
 	dead := func(k string) bool {
 		id := alertedClaim(k)
 		return id != "" && claims[id] == nil
@@ -2166,7 +2199,7 @@ func (c *claim) pruneAlerted(claims map[string]*claim) bool {
 		}
 	}
 	if n == 0 {
-		return false
+		return pruned
 	}
 	var keep map[string]bool
 	if n < len(c.Alerted) {

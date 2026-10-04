@@ -217,9 +217,12 @@ type claim struct {
 	Inbox              []InboxItem `json:"inbox,omitempty"`
 	// Alerted remembers which symmetric alerts this claim already received.
 	// Only alert adds to it.
-	Alerted   map[string]bool `json:"alerted,omitempty"`
-	CreatedAt time.Time       `json:"created_at"`
-	UpdatedAt time.Time       `json:"updated_at"`
+	Alerted map[string]bool `json:"alerted,omitempty"`
+	// Told counts, for each teammate's claim, the files Alerted remembers
+	// it was told that claim changed, which are at most maxToldPaths.
+	Told      map[string]int `json:"told,omitempty"`
+	CreatedAt time.Time      `json:"created_at"`
+	UpdatedAt time.Time      `json:"updated_at"`
 
 	// Derived from Footprint, unexported so they are not saved, and changed
 	// only by the functions in index.go: the latest change in each area the

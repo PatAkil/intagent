@@ -178,6 +178,7 @@ func (c *claim) shareFootprint() *claim {
 	c.fpShared, c.alertedShared = true, true
 	d := *c
 	d.Intents = slices.Clone(c.Intents)
+	d.Told = maps.Clone(c.Told) // alertOthers counts in it
 	d.Inbox = slices.Clone(c.Inbox)
 	for i := range d.Inbox {
 		d.Inbox[i].DeliveredTo = maps.Clone(d.Inbox[i].DeliveredTo) // deliverInbox adds to it

@@ -421,13 +421,16 @@ func TestReportUncheckedMatchesTheOracleWithTies(t *testing.T) {
 }
 
 // oldAlertOthers is alertOthers as it was: every new file compared with
-// every intent of every other claim in the repository.
+// every intent of every other claim in the repository. It remembers and
+// lists at most maxToldPaths files per pair of claims, as alertOthers does
+// now, since what is compared is which claims and files match.
 func (b *Board) oldAlertOthers(now time.Time, c *claim, paths []PathRef) {
 	for _, o := range b.oldClaimsInRepo(c.Repo) {
 		if o.ID == c.ID {
 			continue
 		}
 		var hit []string
+		told := o.Told[c.ID]
 		for _, p := range paths {
 			if _, ok := o.Footprint[p.Path]; !ok && !slices.ContainsFunc(o.Intents, func(in Intent) bool { return glob.Match(in.Pattern, p.Path) }) {
 				continue
@@ -439,14 +442,23 @@ func (b *Board) oldAlertOthers(now time.Time, c *claim, paths []PathRef) {
 			if o.Alerted == nil {
 				o.Alerted = map[string]bool{}
 			}
-			o.Alerted[k] = true
+			if told < maxToldPaths {
+				o.Alerted[k] = true
+				told++
+			}
 			hit = append(hit, p.Path)
 		}
 		if len(hit) == 0 {
 			continue
 		}
+		if told != o.Told[c.ID] {
+			if o.Told == nil {
+				o.Told = map[string]int{}
+			}
+			o.Told[c.ID] = told
+		}
 		b.statsOf(c.Repo, now).Alerts++
-		b.enqueue(now, o, InboxItem{Kind: "overlap", FromClaim: c.ID, From: c.Member, Paths: hit,
+		b.enqueue(now, o, InboxItem{Kind: "overlap", FromClaim: c.ID, From: c.Member, Paths: hit[:min(len(hit), maxToldPaths)],
 			Text: fmt.Sprintf("%s also changed %s%s.", who(c), listPaths(hit, 5), onBranch(c))})
 	}
 }
@@ -981,6 +993,7 @@ func (c *claim) oldClone() *claim {
 		d.Inbox[i] = it
 	}
 	d.Alerted = maps.Clone(c.Alerted)
+	d.Told = maps.Clone(c.Told)
 	d.areaAt, d.sortedPaths, d.removed = nil, nil, false
 	return &d
 }
