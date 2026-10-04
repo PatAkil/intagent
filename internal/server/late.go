@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"strconv"
+	"sync/atomic"
 	"time"
 )
 
@@ -34,6 +35,8 @@ type waiter struct {
 	clock   func() time.Time
 	arrived time.Time
 	budget  time.Duration // 0: the client did not say
+	// unchecked is set once the request is counted as unchecked.
+	unchecked atomic.Bool
 }
 
 // waiterFor describes the client of a request that arrived at arrived.

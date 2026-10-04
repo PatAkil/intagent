@@ -31,8 +31,10 @@ type testServer struct {
 	mu     sync.Mutex
 	clock  time.Time
 	// step moves the server's request clock at every reading, so that a
-	// request has waited step when the board asks whether it is late.
+	// request has waited step when the board asks whether it is late; with
+	// wall set, the clock is the real one.
 	step, reads atomic.Int64
+	wall        atomic.Bool
 }
 
 func newTestServer(t *testing.T, mutate ...func(*Options)) *testServer {
@@ -70,6 +72,9 @@ func (ts *testServer) now() time.Time {
 }
 
 func (ts *testServer) requestClock() time.Time {
+	if ts.wall.Load() {
+		return time.Now()
+	}
 	return time.Unix(1_790_000_000, 0).Add(time.Duration(ts.reads.Add(1) * ts.step.Load()))
 }
 

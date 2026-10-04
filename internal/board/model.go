@@ -374,12 +374,18 @@ const (
 	ActivityIntentDeclared      ActivityKind = "intent.declared"
 	ActivityIntentReleased      ActivityKind = "intent.released"
 	ActivityNoteSent            ActivityKind = "note.sent"
+	// ActivityServerDegraded and ActivityServerRecovered are the server's own
+	// news, for webhooks that ask for it: agents' edits going ahead unchecked
+	// because it does not answer them in time, and its answering in time again.
+	ActivityServerDegraded  ActivityKind = "server.degraded"
+	ActivityServerRecovered ActivityKind = "server.recovered"
 )
 
 var activityKinds = []ActivityKind{
 	ActivityClaimOpened, ActivityClaimReleased, ActivityClaimForgotten, ActivitySessionStarted, ActivitySessionEnded, ActivitySessionRecovered,
 	ActivitySessionStalled, ActivitySessionGone, ActivityFileChanged, ActivityFootprintReconciled,
 	ActivityConflict, ActivityIntentDeclared, ActivityIntentReleased, ActivityNoteSent,
+	ActivityServerDegraded, ActivityServerRecovered,
 }
 
 // ParseActivityKind validates an activity kind's name.

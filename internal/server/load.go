@@ -1,0 +1,203 @@
+package server
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/patakil/intagent/internal/board"
+)
+
+// A server too busy to answer in time lets every edit through unchecked while
+// it looks well from outside: /healthz answers and the stream flows. So the
+// server counts, per second over the last minute, the pre_edits that arrive
+// and those whose agent went ahead without a checked answer, and says when
+// too many do: in /healthz, on the dashboard and, if asked, by webhook.
+
+const (
+	// The server is degraded once more than 1 in 20 of the last
+	// degradedWindow seconds' pre_edits went unchecked, and at least
+	// minUnchecked of them, and recovers once fewer than 1 in 100 of the last
+	// recoveredWindow seconds' did.
+	degradedWindow  = 10
+	recoveredWindow = 30
+	minUnchecked    = 3
+	statusWindow    = 60
+)
+
+// perSecond counts events in each of the last 60 seconds, without a lock.
+// A slot holds the second it counts, in its upper bits, and the count in its
+// lower 32: the first event of a later second starts the slot over.
+type perSecond [statusWindow]atomic.Int64
+
+const countBits = 1<<32 - 1
+
+// stamp is the part of a slot that names its second.
+func stamp(sec int64) int64 { return (sec & (1<<31 - 1)) << 32 }
+
+func (c *perSecond) add(t time.Time) {
+	sec := t.Unix()
+	if sec < 0 {
+		return
+	}
+	slot, st := &c[sec%statusWindow], stamp(sec)
+	for {
+		old := slot.Load()
+		next := st | 1
+		if old&^countBits == st {
+			next = old + 1
+		}
+		if slot.CompareAndSwap(old, next) {
+			return
+		}
+	}
+}
+
+// sum counts the events in the n seconds up to and including t's.
+func (c *perSecond) sum(t time.Time, n int) int64 {
+	var total int64
+	for sec := max(t.Unix()-int64(n)+1, 0); sec <= t.Unix(); sec++ {
+		if v := c[sec%statusWindow].Load(); v&^countBits == stamp(sec) {
+			total += v & countBits
+		}
+	}
+	return total
+}
+
+// LoadStatus says whether agents get the server's answers in time.
+type LoadStatus struct {
+	// Degraded says that too many agents recently went ahead with edits the
+	// server could not check in time.
+	Degraded bool `json:"degraded"`
+	// Since is when the server last became degraded or recovered.
+	Since time.Time `json:"since,omitzero"`
+	// PreEdits60s counts the edits agents asked about in the last minute,
+	// and Unchecked60s those whose agent went ahead without an answer.
+	PreEdits60s  int64 `json:"pre_edits_60s"`
+	Unchecked60s int64 `json:"unchecked_60s"`
+}
+
+// answers follows whether pre_edits are answered in time.
+type answers struct {
+	preEdits, unchecked perSecond
+
+	mu       sync.Mutex
+	degraded bool
+	since    time.Time
+	changed  chan struct{} // closed, and replaced, when degraded changes
+}
+
+func newAnswers() *answers { return &answers{changed: make(chan struct{})} }
+
+// status reports the state and the last minute's counts at now.
+func (l *answers) status(now time.Time) LoadStatus {
+	st, _ := l.watch(now)
+	return st
+}
+
+// watch reports the status, and a channel closed when it next changes.
+func (l *answers) watch(now time.Time) (LoadStatus, <-chan struct{}) {
+	l.mu.Lock()
+	st, changed := LoadStatus{Degraded: l.degraded, Since: l.since}, l.changed
+	l.mu.Unlock()
+	st.PreEdits60s, st.Unchecked60s = l.preEdits.sum(now, statusWindow), l.unchecked.sum(now, statusWindow)
+	return st, changed
+}
+
+// tick moves the state on, once a second. It reports the new status, and
+// how long the state it left had lasted, when the state changed.
+func (l *answers) tick(now time.Time) (st LoadStatus, lasted time.Duration, changed bool) {
+	l.mu.Lock()
+	if l.degraded {
+		n, gone := l.preEdits.sum(now, recoveredWindow), l.unchecked.sum(now, recoveredWindow)
+		changed = gone == 0 || gone*100 < n
+	} else {
+		n, gone := l.preEdits.sum(now, degradedWindow), l.unchecked.sum(now, degradedWindow)
+		changed = gone >= minUnchecked && gone*20 > n
+	}
+	if changed {
+		if !l.since.IsZero() {
+			lasted = now.Sub(l.since)
+		}
+		l.degraded, l.since = !l.degraded, now
+		close(l.changed)
+		l.changed = make(chan struct{})
+	}
+	l.mu.Unlock()
+	if changed {
+		st = l.status(now)
+	}
+	return st, lasted, changed
+}
+
+// watchCall counts a pre_edit, and counts it unchecked if its client gives
+// up before the answer is written; the returned func ends the watch.
+// Contexts that end sooner than a client gives up are not believed, as in
+// waiter.late.
+func (s *Server) watchCall(c *waiter) (stop func() bool) {
+	s.answers.preEdits.add(c.arrived)
+	guard := lateGuard
+	if c.budget > 0 {
+		guard = min(guard, c.budget)
+	}
+	return context.AfterFunc(c.ctx, func() {
+		if c.waited() >= guard {
+			s.uncheckedCall(c)
+		}
+	})
+}
+
+// uncheckedCall counts, once, a pre_edit that went ahead unchecked.
+func (s *Server) uncheckedCall(c *waiter) {
+	if c.unchecked.CompareAndSwap(false, true) {
+		s.answers.unchecked.add(s.clock())
+	}
+}
+
+// watchLoad moves the load state on every second until ctx ends.
+func (s *Server) watchLoad(ctx context.Context) {
+	t := time.NewTicker(time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			s.checkLoad(s.clock())
+		}
+	}
+}
+
+// checkLoad logs and announces a change of state.
+func (s *Server) checkLoad(now time.Time) {
+	st, lasted, changed := s.answers.tick(now)
+	if !changed {
+		return
+	}
+	a := board.Activity{At: now, Kind: board.ActivityServerRecovered, Text: fmt.Sprintf("after %s", lasted.Round(time.Second))}
+	if st.Degraded {
+		s.log.Warn("agents' edits are going ahead unchecked: the server does not answer them in time",
+			"unchecked_60s", st.Unchecked60s, "pre_edits_60s", st.PreEdits60s)
+		a.Kind, a.Text = board.ActivityServerDegraded, fmt.Sprintf("%d of %d edits in the last minute went ahead unchecked", st.Unchecked60s, st.PreEdits60s)
+	} else {
+		s.log.Warn("agents' edits are answered in time again", "degraded_for", lasted.Round(time.Second))
+	}
+	if s.notifier != nil {
+		s.notifier.enqueue([]board.Activity{a})
+	}
+}
+
+// sendStatus writes the load status as a server-sent "status" event. It has
+// no id: it is not an activity, and a reconnecting stream asks for none.
+func sendStatus(w io.Writer, st LoadStatus) bool {
+	data, err := json.Marshal(st)
+	if err != nil {
+		return false
+	}
+	_, err = fmt.Fprintf(w, "event: status\ndata: %s\n\n", data)
+	return err == nil
+}
