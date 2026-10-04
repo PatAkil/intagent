@@ -147,10 +147,13 @@ const maxShownPaths = 200
 
 // maxCheckPaths bounds the paths of one edit, or one check, compared with
 // teammates' work. Each path costs a look at each of the repository's
-// claims, under the board's lock: on a repository of 300 claims of 50 files,
-// every twentieth at 2000, 200 paths hold it for about 25 ms, and 2000 would
-// hold it ten times as long with ten times the conflicts in the answer. It
-// can rise to MaxFootprint once answers are bounded.
+// claims, under the board's lock: on the target board's busy repository (300
+// claims, typical or mixed footprints, 70% of them with intents) an edit of
+// 200 files holds it for 14 ms, and one of 2000 would hold it for 105 to
+// 120 ms and spend 40% of what one call may match (maxGlobWork); one
+// member's checks, at the 5 a second the server allows, would then hold it
+// for more than half of every second. Answers are bounded (boundConflicts),
+// but that cost is why it stays below MaxFootprint.
 // Past it, an edit's agent is told what was not checked, and a check's
 // answer counts and names what it did not check. It may exceed
 // maxShownPaths: an edit's activity lists the paths that decided its answer

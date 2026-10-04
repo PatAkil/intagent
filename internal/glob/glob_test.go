@@ -2,6 +2,7 @@ package glob
 
 import (
 	"errors"
+	"math/rand"
 	"strings"
 	"testing"
 	"time"
@@ -195,5 +196,34 @@ func TestMatchManyDoubleStars(t *testing.T) {
 	}
 	if got, _ := CleanPattern("**/**/x/**/**"); got != "**/x/**" {
 		t.Errorf("CleanPattern collapsed to %q", got)
+	}
+}
+
+// indexMeta finds what strings.IndexAny finds, on every string of a small
+// alphabet up to four bytes and on random longer ones.
+func TestIndexMetaMatchesIndexAny(t *testing.T) {
+	t.Parallel()
+	const alphabet = "a/.*?[]\\{é"
+	var walk func(s string)
+	walk = func(s string) {
+		if got, want := indexMeta(s), strings.IndexAny(s, `*?[\`); got != want {
+			t.Fatalf("indexMeta(%q) = %d, want %d", s, got, want)
+		}
+		if len(s) < 4 {
+			for i := range len(alphabet) {
+				walk(s + alphabet[i:i+1])
+			}
+		}
+	}
+	walk("")
+	rng := rand.New(rand.NewSource(1))
+	for range 10_000 {
+		b := make([]byte, rng.Intn(80))
+		for i := range b {
+			b[i] = alphabet[rng.Intn(len(alphabet))]
+		}
+		if got, want := indexMeta(string(b)), strings.IndexAny(string(b), `*?[\`); got != want {
+			t.Fatalf("indexMeta(%q) = %d, want %d", b, got, want)
+		}
 	}
 }

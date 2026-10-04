@@ -309,10 +309,23 @@ func segmentsOverlap(a, b string) bool {
 	return strings.HasSuffix(as, bs) || strings.HasSuffix(bs, as)
 }
 
-func hasMeta(s string) bool { return strings.ContainsAny(s, `*?[\`) }
+func hasMeta(s string) bool { return indexMeta(s) >= 0 }
+
+// indexMeta is strings.IndexAny(s, `*?[\`), which for a set of several
+// bytes builds the set on every call: a check of an edit of many files calls
+// it for every path and every teammate's intent.
+func indexMeta(s string) int {
+	for i := range len(s) {
+		switch s[i] {
+		case '*', '?', '[', '\\':
+			return i
+		}
+	}
+	return -1
+}
 
 func literalPrefix(s string) string {
-	if i := strings.IndexAny(s, `*?[\`); i >= 0 {
+	if i := indexMeta(s); i >= 0 {
 		return s[:i]
 	}
 	return s
@@ -328,7 +341,7 @@ func literalSuffix(s string) string {
 // LiteralDir returns the longest leading run of segments without wildcards:
 // the directory a pattern is rooted in, or "" for patterns like "**/*.go".
 func LiteralDir(pattern string) string {
-	i := strings.IndexAny(pattern, `*?[\`)
+	i := indexMeta(pattern)
 	if i < 0 {
 		return pattern
 	}
