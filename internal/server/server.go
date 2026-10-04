@@ -1022,7 +1022,9 @@ func (s *Server) logRequests(next http.Handler) http.Handler {
 		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(sw, r)
 		lvl := slog.LevelDebug
-		if sw.status >= 500 && r.URL.Path != "/healthz" { // a strict probe of a degraded server
+		// A 503 answers load, which admission logs in summary (loadLog), as
+		// a strict probe of a degraded server is answered.
+		if sw.status >= 500 && sw.status != http.StatusServiceUnavailable {
 			lvl = slog.LevelError
 		}
 		s.log.Log(r.Context(), lvl, "request", "method", r.Method, "path", r.URL.Path, "status", sw.status, "took", time.Since(start).Round(time.Microsecond))

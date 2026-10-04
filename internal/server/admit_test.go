@@ -2,12 +2,15 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -475,5 +478,76 @@ func TestOversizedCheckIsCheckedOnItsFirstPaths(t *testing.T) {
 		if told := strings.Contains(res.Text, fmt.Sprintf("the first 200 of these %d paths", tc.n)); told != (tc.unchecked > 0) {
 			t.Fatalf("a check of %d paths: %q", tc.n, res.Text)
 		}
+	}
+}
+
+// levels records each log line's level and message.
+type levels struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (l *levels) Enabled(context.Context, slog.Level) bool { return true }
+func (l *levels) WithAttrs([]slog.Attr) slog.Handler       { return l }
+func (l *levels) WithGroup(string) slog.Handler            { return l }
+func (l *levels) Handle(_ context.Context, r slog.Record) error {
+	line := r.Level.String() + " " + r.Message
+	r.Attrs(func(a slog.Attr) bool { line += " " + a.String(); return true })
+	l.mu.Lock()
+	l.lines = append(l.lines, line)
+	l.mu.Unlock()
+	return nil
+}
+
+func (l *levels) count(prefix string) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	n := 0
+	for _, line := range l.lines {
+		if strings.HasPrefix(line, prefix) {
+			n++
+		}
+	}
+	return n
+}
+
+// Large requests answered for load are logged in summary, at most a line a
+// minute, and a 503 is not an error: before, every large edit let through
+// unchecked was a warning of its own and every large body turned away for
+// a slot an ERROR line, when the server was busiest.
+func TestLoadAnswersAreLoggedInSummary(t *testing.T) {
+	logs := &levels{}
+	ts := newTestServer(t, func(o *Options) { o.Logger = slog.New(logs) })
+	edit := reservedEdit(t, ts, 300)
+	ts.admit.byteCap = 1 // every large body is over the budget
+	for range 10 {
+		ts.post(t, "/v1/hook", "bob", edit)                     // let through unchecked
+		ts.post(t, "/v1/hook", "bob", heartbeat("bob", 40<<10)) // 429
+	}
+	ts.admit.byteCap = 100 << 20
+	ts.admit.largeWait = time.Millisecond
+	for range cap(ts.admit.large) {
+		ts.admit.large <- struct{}{}
+	}
+	for range 5 {
+		if code, _ := ts.post(t, "/v1/hook", "alice", heartbeat("alice", 40<<10)); code != http.StatusServiceUnavailable {
+			t.Fatalf("a large body with every slot busy: %d", code)
+		}
+	}
+	for range cap(ts.admit.large) {
+		<-ts.admit.large
+	}
+	summary := "WARN too busy for large requests: large edits let through unchecked, and other large bodies turned away"
+	// The first is logged at once, and the next minute's line counts the rest:
+	// 9 more edits and the minute's own, 10 bodies over budget and 5 with no slot.
+	if n, warns, errs := logs.count(summary), logs.count("WARN"), logs.count("ERROR"); n != 1 || warns != 1 || errs != 0 {
+		t.Fatalf("%d summary lines, %d warnings and %d errors for 25 large requests answered for load in a minute:\n%s", n, warns, errs,
+			strings.Join(logs.lines, "\n"))
+	}
+	ts.passes(time.Minute)
+	ts.admit.byteCap = 1
+	ts.post(t, "/v1/hook", "bob", edit)
+	if n := logs.count(summary + " unchecked=10 turned_away=15"); n != 1 {
+		t.Fatalf("the next minute's line does not count those since the first:\n%s", strings.Join(logs.lines, "\n"))
 	}
 }

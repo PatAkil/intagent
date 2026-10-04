@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"io"
+	"log/slog"
 	"net/http"
 	"runtime"
 	"sync"
@@ -82,13 +83,42 @@ type admission struct {
 	calls   map[string]*bucket
 	busy    map[string]bool
 	pruneAt int
+	// shed counts, for the log, the large requests answered for load.
+	shed loadLog
+}
+
+// loadLog counts the large requests the server answers for load rather than
+// handle (a large edit let through unchecked, another large body turned
+// away), and logs them at most once a period: a line for each would flood
+// the log when the server is busiest. A line counts those since the last.
+type loadLog struct {
+	mu                 sync.Mutex
+	unchecked, refused int
+	last               time.Time
+	period             time.Duration
+}
+
+func (l *loadLog) note(now time.Time, unchecked bool, log *slog.Logger) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if unchecked {
+		l.unchecked++
+	} else {
+		l.refused++
+	}
+	if !l.last.IsZero() && now.Sub(l.last) < l.period {
+		return
+	}
+	log.Warn("too busy for large requests: large edits let through unchecked, and other large bodies turned away",
+		"unchecked", l.unchecked, "turned_away", l.refused)
+	l.unchecked, l.refused, l.last = 0, 0, now
 }
 
 func newAdmission() *admission {
 	return &admission{
 		bytes: map[string]*bucket{}, edits: map[string]*bucket{}, byteRate: memberByteRate, byteCap: memberByteBurst,
 		large: make(chan struct{}, runtime.GOMAXPROCS(0)), largeWait: largeBodyWait,
-		calls: map[string]*bucket{}, busy: map[string]bool{}, pruneAt: minPrune,
+		calls: map[string]*bucket{}, busy: map[string]bool{}, pruneAt: minPrune, shed: loadLog{period: time.Minute},
 	}
 }
 
@@ -132,6 +162,7 @@ func (s *Server) admitBody(w http.ResponseWriter, r *http.Request, member string
 			s.uncheckedEdit(w, r, member, "its member's budget for large edits is spent")
 			return nil, edit, false
 		}
+		s.admit.shed.note(s.clock(), false, s.log)
 		w.Header().Set("Retry-After", "1")
 		writeError(w, http.StatusTooManyRequests, "this member is sending more data than the server takes at once; try again in a second")
 		return nil, edit, false
@@ -154,6 +185,7 @@ func (s *Server) admitBody(w http.ResponseWriter, r *http.Request, member string
 			s.uncheckedEdit(w, r, member, "every large-body slot stayed busy")
 			return nil, edit, false
 		}
+		s.admit.shed.note(s.clock(), false, s.log)
 		w.Header().Set("Retry-After", "1")
 		writeError(w, http.StatusServiceUnavailable, "the server is busy with other large requests; try again in a second")
 	case <-r.Context().Done():
@@ -192,7 +224,8 @@ func (s *Server) uncheckedEdit(w http.ResponseWriter, r *http.Request, member, w
 	c := s.hookWaiter(r)
 	s.answers.preEdits.add(c.arrived)
 	s.uncheckedCall(c)
-	s.log.Warn("pre_edit let through unchecked", "member", member, "why", why)
+	s.log.Debug("pre_edit let through unchecked", "member", member, "why", why)
+	s.admit.shed.note(s.clock(), true, s.log)
 	writeJSON(w, http.StatusOK, board.HookResult{Decision: board.DecisionAllow, Unchecked: true, Context: uncheckedEditNote})
 }
 
