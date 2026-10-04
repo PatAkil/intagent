@@ -214,6 +214,7 @@ type claim struct {
 	FootprintTruncated bool        `json:"footprint_truncated,omitempty"`
 	Inbox              []InboxItem `json:"inbox,omitempty"`
 	// Alerted remembers which symmetric alerts this claim already received.
+	// Only alert adds to it.
 	Alerted   map[string]bool `json:"alerted,omitempty"`
 	CreatedAt time.Time       `json:"created_at"`
 	UpdatedAt time.Time       `json:"updated_at"`
@@ -226,6 +227,10 @@ type claim struct {
 	// removed marks a claim taken off the board, which its repository's
 	// index skips until it drops it.
 	removed bool
+	// fpShared and alertedShared say a snapshot shares Footprint or Alerted
+	// and may still be reading it, so the map must not be changed in place:
+	// putTouch and alert copy it first, and setFootprint replaces it.
+	fpShared, alertedShared bool
 }
 
 func claimKey(repo, member, host, worktree string) string {

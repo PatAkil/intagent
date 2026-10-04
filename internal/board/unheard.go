@@ -98,14 +98,9 @@ func (b *Board) recordUncheckedBreach(now time.Time, c *claim, s *session, told 
 		if cf.Severity != SeverityBlock || cf.SameClaim {
 			continue
 		}
-		k := uncheckedKey(action, cf)
-		if c.Alerted[k] {
+		if !c.alert(uncheckedKey(action, cf)) {
 			continue
 		}
-		if c.Alerted == nil {
-			c.Alerted = map[string]bool{}
-		}
-		c.Alerted[k] = true
 		if len(paths) == 0 {
 			first = cf
 		}

@@ -864,14 +864,9 @@ func (b *Board) alertOthers(now time.Time, c *claim, paths []PathRef) {
 			if !covered[i] {
 				continue
 			}
-			k := "touch|" + c.ID + "|" + p.Path
-			if o.Alerted[k] {
+			if !o.alert("touch|" + c.ID + "|" + p.Path) {
 				continue
 			}
-			if o.Alerted == nil {
-				o.Alerted = map[string]bool{}
-			}
-			o.Alerted[k] = true
 			hit = append(hit, p.Path)
 		}
 		if len(hit) == 0 {
@@ -961,11 +956,7 @@ func (b *Board) reportUnchecked(now time.Time, c *claim, s *session, added []Pat
 		}
 		// Once per file, reservation and policy: a new reservation, or a
 		// policy that now refuses what it only warned about, is news.
-		if k := uncheckedKey(action, cf); !c.Alerted[k] {
-			if c.Alerted == nil {
-				c.Alerted = map[string]bool{}
-			}
-			c.Alerted[k] = true
+		if c.alert(uncheckedKey(action, cf)) {
 			if len(paths) == 0 {
 				first = cf
 			}

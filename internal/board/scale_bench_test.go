@@ -340,3 +340,35 @@ func BenchmarkScaleCostlyPatterns(b *testing.B) {
 		}
 	})
 }
+
+// How long a snapshot holds the board's lock: the old one, in
+// oracle_test.go, copied every footprint; Snapshot shares them. "all-cap"
+// is 1000 claims at the cap, 2M files.
+func BenchmarkScaleSnapshotLock(b *testing.B) {
+	allCap := targetShape(filesAtCap, 0)
+	allCap.intents = 0
+	for _, tc := range []struct {
+		name string
+		sh   shape
+	}{
+		{"mixed", targetShape(filesMixed, 50)},
+		{"cap", cappedShape()},
+		{"all-cap", allCap},
+	} {
+		sb := boardOf(b, tc.sh)
+		for _, v := range []struct {
+			name   string
+			locked func()
+		}{
+			{"old", func() { sb.oldSnapshotCopy(sb.now) }},
+			{"new", func() { sb.snapshotCopy(sb.now) }},
+		} {
+			b.Run(tc.name+"/"+v.name, func(b *testing.B) {
+				b.ReportAllocs()
+				for range b.N {
+					v.locked()
+				}
+			})
+		}
+	}
+}

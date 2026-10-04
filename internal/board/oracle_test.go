@@ -330,7 +330,7 @@ func twin(b *Board) *Board {
 		t.stats[repo] = &c
 	}
 	for _, c := range b.claims {
-		t.addClaim(c.clone())
+		t.addClaim(c.oldClone()) // a deep copy: the old code changes maps in place
 	}
 	for _, s := range b.sessions {
 		t.attachSession(s.clone(), s.ClaimID)
@@ -941,4 +941,43 @@ func TestSweepMatchesTheOracle(t *testing.T) {
 	if announced < 500 || released < 500 {
 		t.Fatalf("%d sessions announced and %d claims released: the boards do not exercise the sweep", announced, released)
 	}
+}
+
+// oldSnapshotCopy is what Snapshot copied under the lock before it shared
+// footprints and alerts with the board: every footprint, touch and alert.
+func (b *Board) oldSnapshotCopy(now time.Time) (snapshot, uint64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	s := snapshot{Format: snapshotFormat, Saved: now, Seq: b.seq, Recent: slices.Clone(b.recent), Stats: map[string]*Stats{},
+		Dropped: &droppedMarks{Repos: maps.Clone(b.dropped), All: b.droppedAll, Floor: b.droppedFloor}}
+	for repo, st := range b.stats {
+		c := *st
+		s.Stats[repo] = &c
+	}
+	for _, c := range b.claims {
+		s.Claims = append(s.Claims, c.oldClone())
+	}
+	for _, x := range b.sessions {
+		s.Sessions = append(s.Sessions, x.clone())
+	}
+	return s, b.version
+}
+
+func (c *claim) oldClone() *claim {
+	d := *c
+	d.Intents = slices.Clone(c.Intents)
+	d.Footprint = make(map[string]*touch, len(c.Footprint))
+	for k, t := range c.Footprint {
+		tt := *t
+		d.Footprint[k] = &tt
+	}
+	d.Inbox = make([]InboxItem, len(c.Inbox))
+	for i, it := range c.Inbox {
+		it.Paths = slices.Clone(it.Paths)
+		it.DeliveredTo = maps.Clone(it.DeliveredTo)
+		d.Inbox[i] = it
+	}
+	d.Alerted = maps.Clone(c.Alerted)
+	d.areaAt, d.sortedPaths, d.removed = nil, nil, false
+	return &d
 }

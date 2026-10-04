@@ -2,6 +2,7 @@ package board
 
 import (
 	"iter"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -20,6 +21,11 @@ import (
 // functions in this file change them, or what they are derived from: the
 // board's claims and sessions, a session's ClaimID and a claim's Footprint.
 // A test recomputes them all after every step of the transcript.
+//
+// A snapshot shares each claim's Footprint and reads it after the lock is
+// released (Snapshot), so a footprint is copied on write: putTouch changes a
+// copy of a map a snapshot shares, and setFootprint puts a new map in place.
+// Nothing else may change a footprint map, or a touch in one.
 
 // repoIndex is a repository's claims in ID order. A removed claim stays in
 // the list, marked, until removed ones make up half of it: removing one is
@@ -136,9 +142,10 @@ func (b *Board) unlinkSession(s *session) {
 }
 
 // setFootprint replaces the claim's footprint with fp, whose paths are
-// paths, in any order. It takes both.
+// paths, in any order. It takes both. A snapshot may still be reading the
+// map replaced, which is left as it was.
 func (c *claim) setFootprint(fp map[string]*touch, paths []string) {
-	c.Footprint = fp
+	c.Footprint, c.fpShared = fp, false
 	// What git reports is usually in order already.
 	if !slices.IsSorted(paths) {
 		slices.Sort(paths)
@@ -147,8 +154,12 @@ func (c *claim) setFootprint(fp map[string]*touch, paths []string) {
 	c.indexAreas()
 }
 
-// putTouch records t as the claim's latest change to path.
+// putTouch records t as the claim's latest change to path. When a snapshot
+// shares the footprint, it changes a copy, which the claim keeps.
 func (c *claim) putTouch(path string, t *touch) {
+	if c.fpShared {
+		c.Footprint, c.fpShared = maps.Clone(c.Footprint), false
+	}
 	old, had := c.Footprint[path]
 	c.Footprint[path] = t
 	if !had {

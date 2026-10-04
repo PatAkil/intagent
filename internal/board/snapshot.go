@@ -34,46 +34,71 @@ type droppedMarks struct {
 
 // Snapshot serialises the board for persistence. The state is copied under
 // the lock and encoded outside it, so a large board does not hold up hooks
-// while it is written.
+// while it is written. The copy shares each claim's footprint with the
+// board, so the time the lock is held grows with the claims and sessions,
+// not with the files they changed.
 func (b *Board) Snapshot(now time.Time) ([]byte, uint64, error) {
+	s, version := b.snapshotCopy(now)
+	data, err := json.Marshal(s)
+	return data, version, err
+}
+
+// snapshotCopy copies what a snapshot holds, under the lock.
+func (b *Board) snapshotCopy(now time.Time) (snapshot, uint64) {
 	b.mu.Lock()
+	defer b.mu.Unlock()
 	s := snapshot{Format: snapshotFormat, Saved: now, Seq: b.seq, Recent: slices.Clone(b.recent), Stats: map[string]*Stats{},
 		Dropped: &droppedMarks{Repos: maps.Clone(b.dropped), All: b.droppedAll, Floor: b.droppedFloor}}
 	for repo, st := range b.stats {
 		c := *st
 		s.Stats[repo] = &c
 	}
+	s.Claims = make([]*claim, 0, len(b.claims))
 	for _, c := range b.claims {
-		s.Claims = append(s.Claims, c.clone())
+		s.Claims = append(s.Claims, c.shareFootprint())
 	}
+	s.Sessions = make([]*session, 0, len(b.sessions))
 	for _, x := range b.sessions {
 		s.Sessions = append(s.Sessions, x.clone())
 	}
-	version := b.version
-	b.mu.Unlock()
-	data, err := json.Marshal(s)
-	return data, version, err
+	return s, b.version
 }
 
-// clone copies a claim deeply enough to be read while the original changes.
-func (c *claim) clone() *claim {
+// shareFootprint copies a claim for a snapshot, deeply enough to be read
+// while the original changes, except for what the claim no longer changes
+// in place: its footprint and the touches in it (putTouch), the alerts it
+// heard (alert) and its inbox items' paths. The copy reads the claim's own.
+// Both are marked shared, so a copy put on a board copies them before it
+// changes them too.
+func (c *claim) shareFootprint() *claim {
+	c.fpShared, c.alertedShared = true, true
 	d := *c
 	d.Intents = slices.Clone(c.Intents)
-	d.Footprint = make(map[string]*touch, len(c.Footprint))
-	for k, t := range c.Footprint {
-		tt := *t
-		d.Footprint[k] = &tt
+	d.Inbox = slices.Clone(c.Inbox)
+	for i := range d.Inbox {
+		d.Inbox[i].DeliveredTo = maps.Clone(d.Inbox[i].DeliveredTo) // deliverInbox adds to it
 	}
-	d.Inbox = make([]InboxItem, len(c.Inbox))
-	for i, it := range c.Inbox {
-		it.Paths = slices.Clone(it.Paths)
-		it.DeliveredTo = maps.Clone(it.DeliveredTo)
-		d.Inbox[i] = it
-	}
-	d.Alerted = maps.Clone(c.Alerted)
 	// The copy is not on the board: it has no indexes.
 	d.areaAt, d.sortedPaths, d.removed = nil, nil, false
 	return &d
+}
+
+// alert notes that the claim heard the alert k, and reports whether it had
+// not already. When a snapshot shares the claim's alerts, it changes a copy,
+// which the claim keeps.
+func (c *claim) alert(k string) bool {
+	if c.Alerted[k] {
+		return false
+	}
+	switch {
+	case c.Alerted == nil:
+		c.Alerted = map[string]bool{}
+	case c.alertedShared:
+		c.Alerted = maps.Clone(c.Alerted)
+	}
+	c.alertedShared = false
+	c.Alerted[k] = true
+	return true
 }
 
 // clone copies a session deeply enough to be read while the original changes.

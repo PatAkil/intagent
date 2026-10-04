@@ -1154,27 +1154,44 @@ func TestParseHelpers(t *testing.T) {
 
 // Snapshot copies claims and sessions to encode them outside the lock; a
 // field added later without a deep copy would be read while hooks write it.
+// A snapshot's copies share nothing the board changes in place. A claim's
+// footprint and alerts are shared, and the claim copies each before it next
+// changes it.
 func TestClonesShareNothingMutable(t *testing.T) {
 	c := &claim{Intents: []Intent{{Pattern: "a/**"}}, Footprint: map[string]*touch{"a.go": {}},
 		Inbox: []InboxItem{{Paths: []string{"a"}, DeliveredTo: map[string]bool{"s": true}}}, Alerted: map[string]bool{"k": true},
 		areaAt: map[string]time.Time{"a": t0}, sortedPaths: []string{"a.go"}}
 	s := &session{Acked: map[string]bool{"k": true}, Calls: map[string]bool{"t": true}, refused: []refusal{{id: "t", spent: []string{"k"}}}}
-	for _, pair := range [][2]any{{c, c.clone()}, {s, s.clone()}} {
+	cc := c.shareFootprint()
+	for _, pair := range [][2]any{{c, cc}, {s, s.clone()}} {
 		a, b := reflect.ValueOf(pair[0]).Elem(), reflect.ValueOf(pair[1]).Elem()
 		for i := 0; i < a.NumField(); i++ {
-			fa, fb := a.Field(i), b.Field(i)
+			fa, fb, name := a.Field(i), b.Field(i), a.Type().Field(i).Name
 			switch fa.Kind() {
 			case reflect.Map, reflect.Slice, reflect.Pointer:
-				if fa.IsNil() {
-					t.Errorf("%s.%s is nil in the fixture: give it a value so the test covers it", a.Type().Name(), a.Type().Field(i).Name)
-				} else if fa.Pointer() == fb.Pointer() {
-					t.Errorf("%s.%s is shared by the clone", a.Type().Name(), a.Type().Field(i).Name)
+				switch {
+				case fa.IsNil():
+					t.Errorf("%s.%s is nil in the fixture: give it a value so the test covers it", a.Type().Name(), name)
+				case name == "Footprint" || name == "Alerted":
+					if fa.Pointer() != fb.Pointer() || !c.fpShared || !c.alertedShared {
+						t.Errorf("%s is copied, or not marked shared", name)
+					}
+				case fa.Pointer() == fb.Pointer():
+					t.Errorf("%s.%s is shared by the clone", a.Type().Name(), name)
 				}
 			}
 		}
 	}
-	if c.clone().Footprint["a.go"] == c.Footprint["a.go"] {
-		t.Error("touches are shared")
+	if reflect.ValueOf(cc.Inbox[0].DeliveredTo).Pointer() == reflect.ValueOf(c.Inbox[0].DeliveredTo).Pointer() {
+		t.Error("an inbox item's deliveries are shared")
+	}
+	c.putTouch("b.go", &touch{At: t0})
+	if !c.alert("k2") || c.alert("k2") {
+		t.Error("alert does not report news once")
+	}
+	if len(cc.Footprint) != 1 || len(cc.Alerted) != 1 || c.fpShared || c.alertedShared || len(c.Footprint) != 2 || len(c.Alerted) != 2 {
+		t.Errorf("a change reached the maps a snapshot shares: %d files and %d alerts there, %d and %d in the claim",
+			len(cc.Footprint), len(cc.Alerted), len(c.Footprint), len(c.Alerted))
 	}
 }
 
