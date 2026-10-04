@@ -144,8 +144,9 @@ a few hundred sessions, which this handles with room to spare.
 Reads of a repository's board are shared, because every open dashboard reloads it a moment after each of its events.
 A request joins the build of the board that has not read the board yet, so no answer is older than its request (a
 read after a write sees the write), and each build is encoded and compressed once for all who joined it. Builds of
-one repository start at least 250 ms apart, or twice as long as the last one took, and one build runs at a time
-across the server, so a hook waits behind at most one.
+one repository start at least 250 ms apart, or twice as long as the last one took to read the board, and one build
+reads at a time across the server, so a hook waits behind at most one read. Encoding takes no lock and runs outside
+that limit.
 
 ## API
 

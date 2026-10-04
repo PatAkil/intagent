@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"hash/maphash"
+	"io"
 	"log/slog"
 	"strconv"
 	"sync"
@@ -25,7 +26,9 @@ import (
 
 const (
 	// boardSpacing is the least time between the starts of two builds of one
-	// repository's board. A build that took long spaces the next one further.
+	// repository's board. A build that read the board for long spaces the
+	// next one further: twice as long as its read, so a repository's builds
+	// hold the board's lock at most half the time.
 	boardSpacing = 250 * time.Millisecond
 	// maxBoardEntries bounds the repositories whose builds are paced at once:
 	// ?repo= is anyone's input. Past it, a request builds alone.
@@ -55,11 +58,11 @@ type boardEntry struct {
 	next    *boardBuild   // the build requests join; nil once it reads the board
 	turn    chan struct{} // held by the build in progress: one at a time
 	pending int           // builds made and not yet finished
-	start   time.Time     // when the latest build started
-	took    time.Duration // how long it took
+	start   time.Time     // when the latest build started reading the board
+	took    time.Duration // how long it read
 }
 
-// gap is how long after the latest build the next may start.
+// gap is how long after the latest build started the next may start.
 func (e *boardEntry) gap() time.Duration { return max(boardSpacing, 2*e.took) }
 
 // boardBuilds coalesces reads of the board, per repository.
@@ -70,25 +73,27 @@ type boardBuilds struct {
 	clock func() time.Time
 	sleep func(time.Duration)
 	log   *slog.Logger
-	// slot lets one build run at a time across the server, so a hook waits
-	// behind at most one, and gz, used only while holding it, compresses.
+	// encode makes a build's answer from its view; a field for tests.
+	encode func(b *boardBuild, v board.View)
+	// slot lets one build read a board at a time across the server, so a
+	// hook waits behind at most one read. Encoding takes no lock and runs
+	// outside it. Encodings stay few all the same: each repository encodes
+	// one build at a time, and builds start no faster than they can read.
 	slot chan struct{}
-	gz   *gzip.Writer
 
 	mu    sync.Mutex
 	repos map[string]*boardEntry
 }
 
 func newBoardBuilds(view func(repo string) board.View, log *slog.Logger) *boardBuilds {
-	gz, _ := gzip.NewWriterLevel(nil, gzip.BestSpeed) // the level is valid
 	return &boardBuilds{
-		view:  view,
-		clock: time.Now,
-		sleep: time.Sleep,
-		log:   log,
-		slot:  make(chan struct{}, 1),
-		gz:    gz,
-		repos: map[string]*boardEntry{},
+		view:   view,
+		encode: encodeBoard,
+		clock:  time.Now,
+		sleep:  time.Sleep,
+		log:    log,
+		slot:   make(chan struct{}, 1),
+		repos:  map[string]*boardEntry{},
 	}
 }
 
@@ -136,9 +141,8 @@ func (c *boardBuilds) entry(repo string) *boardEntry {
 	return e
 }
 
-// run makes build b of repo once the build before it has finished, its gap
-// has passed and no other repository's build is running. b stops taking
-// requests just before it reads the board.
+// run makes build b of repo once the build before it has finished and its
+// gap has passed.
 func (c *boardBuilds) run(repo string, e *boardEntry, b *boardBuild) {
 	b.err = errBoardBuild // kept if the build panics: its requests then fail, not hang
 	defer func() {
@@ -155,9 +159,20 @@ func (c *boardBuilds) run(repo string, e *boardEntry, b *boardBuild) {
 	if wait > 0 {
 		c.sleep(wait)
 	}
+	v, requests, read := c.read(repo, e, b)
+	start := c.clock()
+	c.encode(b, v)
+	c.log.Debug("board built", "repo", repo, "requests", requests, "read", read.Round(time.Microsecond),
+		"encoded", c.clock().Sub(start).Round(time.Microsecond), "bytes", len(b.json), "gzip_bytes", len(b.gz))
+}
+
+// read reads repo's board for build b once no other build is reading one,
+// and notes in e when it started and how long it took. b stops taking
+// requests just before. It returns the view, the requests sharing it and the
+// time it took.
+func (c *boardBuilds) read(repo string, e *boardEntry, b *boardBuild) (board.View, int, time.Duration) {
 	c.slot <- struct{}{}
 	defer func() { <-c.slot }()
-
 	c.mu.Lock()
 	e.next = nil // from here on, requests wait for the next build
 	start := c.clock()
@@ -165,36 +180,55 @@ func (c *boardBuilds) run(repo string, e *boardEntry, b *boardBuild) {
 	requests := b.requests
 	c.mu.Unlock()
 
-	c.build(repo, b)
+	v := c.view(repo)
 	took := c.clock().Sub(start)
 	c.mu.Lock()
 	e.took = took
 	c.mu.Unlock()
-	c.log.Debug("board built", "repo", repo, "requests", requests, "took", took.Round(time.Microsecond),
-		"bytes", len(b.json), "gzip_bytes", len(b.gz))
+	return v, requests, took
 }
 
-// build reads the board and encodes the answer. The caller holds c.slot.
-func (c *boardBuilds) build(repo string, b *boardBuild) {
-	v := c.view(repo)
+// encodeBoard makes b's answer from v: the JSON writeJSON would write, the
+// same compressed, and a validator.
+func encodeBoard(b *boardBuild, v board.View) {
 	body, err := json.Marshal(v)
 	if err != nil {
 		b.err = err
 		return
 	}
 	body = append(body, '\n')
+	gz, err := gzipped(body)
+	if err != nil {
+		b.err = err
+		return
+	}
+	b.view, b.json, b.gz, b.etag, b.err = v, body, gz, boardETag(body), nil
+}
+
+// gzipWriters keeps compressors for reuse: each holds most of a megabyte of
+// tables.
+var gzipWriters = sync.Pool{New: func() any {
+	zw, _ := gzip.NewWriterLevel(io.Discard, gzip.BestSpeed) // the level is valid
+	return zw
+}}
+
+// gzipped compresses body with gzip.BestSpeed.
+func gzipped(body []byte) ([]byte, error) {
+	zw, _ := gzipWriters.Get().(*gzip.Writer)
+	defer func() {
+		zw.Reset(io.Discard) // the pool keeps no answer alive
+		gzipWriters.Put(zw)
+	}()
 	var buf bytes.Buffer
 	buf.Grow(len(body) / 4)
-	c.gz.Reset(&buf)
-	if _, err := c.gz.Write(body); err != nil {
-		b.err = err
-		return
+	zw.Reset(&buf)
+	if _, err := zw.Write(body); err != nil {
+		return nil, err
 	}
-	if err := c.gz.Close(); err != nil {
-		b.err = err
-		return
+	if err := zw.Close(); err != nil {
+		return nil, err
 	}
-	b.view, b.json, b.gz, b.etag, b.err = v, body, buf.Bytes(), boardETag(body), nil
+	return buf.Bytes(), nil
 }
 
 // etagSeed keys the validators of this process; the epoch in every answer

@@ -64,6 +64,13 @@ func (c *boardBuilds) wrapView(wrap func(func(string) board.View) func(string) b
 	c.view = wrap(c.view)
 }
 
+// wrapEncode replaces the function builds encode their answers with.
+func (c *boardBuilds) wrapEncode(wrap func(func(*boardBuild, board.View)) func(*boardBuild, board.View)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.encode = wrap(c.encode)
+}
+
 func (c *boardBuilds) entries() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -226,6 +233,59 @@ func TestBoardBuildsAreSpaced(t *testing.T) {
 	if got := p.sleeps(); got != want {
 		t.Fatalf("a build long after the last one waited: %v", got)
 	}
+}
+
+// Builds are spaced by how long they read the board, which holds its lock,
+// and not by how long they then take to encode what they read.
+func TestBoardSpacingCountsTheReadOnly(t *testing.T) {
+	ts := newTestServer(t)
+	var p fakePacing
+	p.install(ts.boards)
+	ts.boards.wrapView(func(view func(string) board.View) func(string) board.View {
+		return func(r string) board.View { p.advance(300 * time.Millisecond); return view(r) }
+	})
+	ts.boards.wrapEncode(func(encode func(*boardBuild, board.View)) func(*boardBuild, board.View) {
+		return func(b *boardBuild, v board.View) { p.advance(100 * time.Millisecond); encode(b, v) }
+	})
+	ts.getBoard(t, "bob") // reads for 300ms, then encodes for 100ms
+	ts.getBoard(t, "bob") // waits until 600ms after the first started
+	if got, want := p.sleeps(), fmt.Sprint([]time.Duration{200 * time.Millisecond}); got != want {
+		t.Fatalf("slept %v, want %v", got, want)
+	}
+}
+
+// The server's slot is for reading boards, not for encoding them: another
+// repository's build reads while one encodes.
+func TestBoardEncodingLeavesTheSlot(t *testing.T) {
+	ts := newTestServer(t)
+	encoding, release := make(chan struct{}), make(chan struct{})
+	free := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(free)
+	var calls atomic.Int64
+	ts.boards.wrapEncode(func(encode func(*boardBuild, board.View)) func(*boardBuild, board.View) {
+		return func(b *boardBuild, v board.View) {
+			if v.Repo == repo && calls.Add(1) == 1 {
+				close(encoding)
+				<-release
+			}
+			encode(b, v)
+		}
+	})
+	done := make(chan struct{}, 1)
+	go func() { ts.getBoard(t, "bob"); done <- struct{}{} }()
+	<-encoding
+	other := make(chan int, 1)
+	go func() { other <- ts.do(t, http.MethodGet, "/v1/board?repo=github.com/acme/other", "bob", nil, nil) }()
+	select {
+	case code := <-other:
+		if code != http.StatusOK {
+			t.Fatalf("the other repository's board: %d", code)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("a build waits for another repository's encoding")
+	}
+	free()
+	<-done
 }
 
 func TestBoardBuildsOneAtATime(t *testing.T) {
