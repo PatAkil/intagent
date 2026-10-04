@@ -142,12 +142,13 @@ func TestFootprintsKeepWithinTheirByteBudgets(t *testing.T) {
 			}
 		}
 	}
-	// An edit past the budget is not kept either, and still answered.
+	// An edit the agent makes past the budget is kept: a file git found
+	// makes room for it.
 	if res := h.at(KindPostEdit, "bot", "w0", "w0", "svc/new.go"); res.Decision != DecisionAllow {
 		t.Fatalf("a post_edit past the budget: %s", res.Decision)
 	}
-	if h.claimIn("bot", "w0").Footprint["svc/new.go"] != nil {
-		t.Fatal("a claim at its budget kept a new file")
+	if c := h.claimIn("bot", "w0"); c.Footprint["svc/new.go"] == nil || c.Footprint[files[10_000/cost-1]] != nil || c.fpBytes > 10_000 {
+		t.Fatalf("at its budget, an edit is kept in place of the last file git found: %d files, %d bytes", len(c.Footprint), c.fpBytes)
 	}
 	// Another member's budget is their own.
 	h.scanAt("alice", "w", "a", files[:10]...)
@@ -182,5 +183,63 @@ func TestOneMembersFootprintsAreBounded(t *testing.T) {
 	t.Logf("80 footprints of %d bytes: the member holds %d bytes, the largest claim %d", 300*footprintCost(fp.Files[0].Path, &touch{Area: fp.Files[0].Area}), sum, most)
 	if sum > memberBytes || most > claimBytes || sum < memberBytes-claimBytes {
 		t.Fatalf("the member holds %d bytes, a claim %d", sum, most)
+	}
+}
+
+// A change a hook reported is never lost to a footprint's bounds: a file
+// git found makes room for it, the greatest path first, and once none is
+// left the footprint keeps a quarter more; a scan cut short keeps what
+// hooks reported that it does not list. So a teammate's edit of the file is
+// still bumped, whether the edit came before or after the scan that filled
+// the footprint. Before, the edit was dropped once the footprint held 2000
+// files, and a scan cut short dropped it too.
+func TestHookChangesAreKeptPastTheBounds(t *testing.T) {
+	bulk := make([]string, 2000)
+	for i := range bulk {
+		bulk[i] = fmt.Sprintf("gen/f%04d.go", i)
+	}
+	scan := func(h *harness, truncated bool) {
+		w := whereOf("alice")
+		ev := HookEvent{Kind: KindHeartbeat, Member: "alice", Agent: AgentClaudeCode, SessionID: "a1", Where: w,
+			Footprint: &Footprint{Files: refs(bulk...), Truncated: truncated}}
+		if _, err := h.b.Hook(h.now, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, order := range []string{"edit then bulk", "bulk then edit"} {
+		h := newHarness(t)
+		if order == "edit then bulk" {
+			h.hook(KindPostEdit, "alice", "a1", "retry.go")
+			h.advance(time.Second)
+			scan(h, true) // the client cut 2050 changes to 2000, leaving the edit out
+		} else {
+			scan(h, false)
+			h.advance(time.Second)
+			h.hook(KindPostEdit, "alice", "a1", "retry.go")
+		}
+		c := h.b.findClaim("alice", whereOf("alice"))
+		if c.Footprint["retry.go"] == nil || len(c.Footprint) > 2000 {
+			t.Fatalf("%s: alice's footprint of %d files lost retry.go", order, len(c.Footprint))
+		}
+		if res := h.hook(KindPreEdit, "bob", "b1", "retry.go"); res.Decision != DecisionRefuse {
+			t.Errorf("%s: bob's edit of retry.go: %s", order, res.Decision)
+		}
+	}
+	// With no file git found left, a footprint keeps a quarter more.
+	h := newHarness(t, func(c *Config) { c.MaxFootprint = 12 })
+	for i := range 20 {
+		h.hook(KindPostEdit, "alice", "a1", fmt.Sprintf("x/f%02d.go", i))
+	}
+	c := h.b.findClaim("alice", whereOf("alice"))
+	if len(c.Footprint) != 15 || !c.FootprintTruncated {
+		t.Fatalf("20 edits at a cap of 12: %d kept, truncated %t; want 15", len(c.Footprint), c.FootprintTruncated)
+	}
+	// A scan that lists every change still drops what it does not list.
+	if _, err := h.b.Hook(h.now, HookEvent{Kind: KindHeartbeat, Member: "alice", Agent: AgentClaudeCode, SessionID: "a1",
+		Where: whereOf("alice"), Footprint: &Footprint{Files: refs("x/f00.go", "y.go")}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Footprint) != 2 || c.Footprint["x/f01.go"] != nil {
+		t.Fatalf("a full scan left %d files, x/f00.go %v", len(c.Footprint), c.Footprint["x/f00.go"])
 	}
 }

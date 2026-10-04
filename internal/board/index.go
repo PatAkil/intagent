@@ -162,6 +162,14 @@ func (b *Board) putTouch(c *claim, path string, t *touch) {
 	b.charge(c.Member, c.fpBytes-was)
 }
 
+// dropTouches takes paths, which it holds, out of c's footprint, and keeps
+// its member's byte count.
+func (b *Board) dropTouches(c *claim, paths []string) {
+	was := c.fpBytes
+	c.dropTouches(paths)
+	b.charge(c.Member, c.fpBytes-was)
+}
+
 // charge adds n to what member's claims' footprints count, which the board
 // keeps only for members whose claims have changed files.
 func (b *Board) charge(member string, n int) {
@@ -203,6 +211,24 @@ func (c *claim) putTouch(path string, t *touch) {
 		return
 	}
 	c.noteArea(t)
+}
+
+// dropTouches takes paths, which it holds, out of the claim's footprint,
+// copying a map a snapshot shares first, and indexes what is left once.
+func (c *claim) dropTouches(paths []string) {
+	if c.fpShared {
+		c.Footprint, c.fpShared = maps.Clone(c.Footprint), false
+	}
+	gone := make(map[string]bool, len(paths))
+	for _, p := range paths {
+		if t, ok := c.Footprint[p]; ok {
+			delete(c.Footprint, p)
+			c.fpBytes -= footprintCost(p, t)
+			gone[p] = true
+		}
+	}
+	c.sortedPaths = slices.DeleteFunc(c.sortedPaths, func(p string) bool { return gone[p] })
+	c.indexAreas()
 }
 
 // indexFootprint rebuilds the claim's indexes from its footprint.

@@ -166,7 +166,46 @@ const (
 )
 
 // footprintRoom is how many bytes claim c's footprint may hold: what its own
-// budget allows, and what its member's other claims leave of theirs.
-func (b *Board) footprintRoom(c *claim) int {
-	return min(b.cfg.MaxFootprintBytes, b.cfg.MemberFootprintBytes-(b.memberBytes[c.Member]-c.fpBytes))
+// budget allows, and what its member's other claims leave of theirs. The
+// changes hooks reported may take hookHeadroom past both (hooks).
+func (b *Board) footprintRoom(c *claim, hooks bool) int {
+	own, member := b.cfg.MaxFootprintBytes, b.cfg.MemberFootprintBytes
+	if hooks {
+		own, member = hookHeadroom(own), hookHeadroom(member)
+	}
+	return min(own, member-(b.memberBytes[c.Member]-c.fpBytes))
+}
+
+// hookHeadroom is a bound on a footprint, on its files or its bytes, raised
+// for the changes hooks report: a hook reports a change as it is made, and
+// the board lets go of the files git found to keep one, and past them keeps
+// a quarter more, so that it loses none an agent makes in the usual course.
+func hookHeadroom(n int) int { return n + n/4 }
+
+// makeRoom lets go of the files git found in claim c's footprint, the
+// greatest paths first, as far as it takes to keep files more files, of
+// bytes more bytes, that hooks reported within the footprint's bounds; all
+// at once, so the footprint is indexed again once.
+func (b *Board) makeRoom(c *claim, files, bytes int) {
+	overFiles := len(c.Footprint) + files - b.cfg.MaxFootprint
+	overBytes := c.fpBytes + bytes - b.footprintRoom(c, false)
+	var drop []string
+	for i := len(c.sortedPaths) - 1; i >= 0 && (overFiles > 0 || overBytes > 0); i-- {
+		p := c.sortedPaths[i]
+		if t := c.Footprint[p]; t.FromGit {
+			drop = append(drop, p)
+			overFiles, overBytes = overFiles-1, overBytes-footprintCost(p, t)
+		}
+	}
+	if len(drop) > 0 {
+		b.dropTouches(c, drop)
+		c.FootprintTruncated = true
+	}
+}
+
+// hookFits reports whether claim c's footprint has room for a change a hook
+// reported that costs cost, once makeRoom made what room it could: within
+// hookHeadroom past the footprint's bounds.
+func (b *Board) hookFits(c *claim, cost int) bool {
+	return len(c.Footprint) < hookHeadroom(b.cfg.MaxFootprint) && c.fpBytes+cost <= b.footprintRoom(c, true)
 }

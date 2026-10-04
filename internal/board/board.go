@@ -760,40 +760,18 @@ func firstLine(s string) string {
 }
 
 // reconcile replaces a claim's footprint with what git reports, as
-// HookEvent.clean left it.
+// HookEvent.clean left it, but never loses for it a change a hook reported
+// that the report may not show: one the list, cut short, leaves out.
 func (b *Board) reconcile(now time.Time, c *claim, s *session, fp *Footprint) {
 	if fp == nil {
 		return
 	}
-	files := fp.Files
-	next := make(map[string]*touch, len(files))
-	paths := make([]string, 0, len(files))
-	var added []PathRef
+	next, paths, added, cut := b.reconciled(now, c, fp)
 	moved := false // a file's area changed
-	// The files the claim keeps, in the order the client sends them, which
-	// puts first those it would least want left out, are those its byte
-	// budgets take.
-	room, cut := b.footprintRoom(c), false
-	for _, f := range files {
-		t, ok := c.Footprint[f.Path]
-		switch {
-		case !ok:
-			// Which session found a file in git says nothing about who
-			// changed it, so a touch from git names none.
-			t = &touch{Area: f.Area, At: now, FromGit: true}
-		case f.Area != "" && f.Area != t.Area:
-			t = &touch{Area: f.Area, At: t.At, Session: t.Session, FromGit: t.FromGit}
-		}
-		if room -= footprintCost(f.Path, t); room < 0 {
-			cut = true
-			break
-		}
-		paths = append(paths, f.Path)
-		next[f.Path] = t
-		if !ok {
-			added = append(added, f)
-		} else if t != c.Footprint[f.Path] {
+	for p, t := range next {
+		if old, ok := c.Footprint[p]; ok && old != t {
 			moved = true
+			break
 		}
 	}
 	// The files are distinct, so those kept are the ones not added.
@@ -815,6 +793,93 @@ func (b *Board) reconcile(now time.Time, c *claim, s *session, fp *Footprint) {
 		b.alertOthers(now, c, added)
 		b.tellShort(s)
 	}
+}
+
+// reconciled is the footprint a scan leaves claim c with, its paths, the
+// files git found that it did not have, and whether its bounds cut what it
+// keeps. It keeps the changes hooks reported first: those the list names,
+// and, when the list is cut short, those it says nothing of; when they are
+// more than the footprint's bounds, the newest first, up to hookHeadroom
+// past them. Then, in the order the client sent them, which puts first
+// those it would least want left out, the files git found, within the
+// bounds.
+func (b *Board) reconciled(now time.Time, c *claim, fp *Footprint) (map[string]*touch, []string, []PathRef, bool) {
+	var hooks, git []fileAt
+	listed := make(map[string]bool, len(fp.Files))
+	for _, f := range fp.Files {
+		listed[f.Path] = true
+		t, ok := c.Footprint[f.Path]
+		switch {
+		case !ok:
+			// Which session found a file in git says nothing about who
+			// changed it, so a touch from git names none.
+			t = &touch{Area: f.Area, At: now, FromGit: true}
+		case f.Area != "" && f.Area != t.Area:
+			t = &touch{Area: f.Area, At: t.At, Session: t.Session, FromGit: t.FromGit}
+		}
+		if t.FromGit {
+			git = append(git, fileAt{f.Path, t})
+		} else {
+			hooks = append(hooks, fileAt{f.Path, t})
+		}
+	}
+	if fp.Truncated {
+		for _, p := range c.sortedPaths {
+			if t := c.Footprint[p]; !t.FromGit && !listed[p] {
+				hooks = append(hooks, fileAt{p, t})
+			}
+		}
+	}
+	k := footprintKeeper{next: make(map[string]*touch, len(hooks)+len(git))}
+	files, room := b.cfg.MaxFootprint, b.footprintRoom(c, false)
+	if cost := footprintCostOf(hooks); len(hooks) > files || cost > room {
+		slices.SortFunc(hooks, newerFirst)
+		files, room = hookHeadroom(files), b.footprintRoom(c, true)
+	}
+	for _, f := range hooks {
+		k.keep(f, files, room)
+	}
+	files, room = b.cfg.MaxFootprint, b.footprintRoom(c, false)
+	var added []PathRef
+	for _, f := range git {
+		if !k.keep(f, files, room) {
+			break
+		}
+		if _, had := c.Footprint[f.path]; !had {
+			added = append(added, PathRef{Path: f.path, Area: f.t.Area})
+		}
+	}
+	return k.next, k.paths, added, k.cut
+}
+
+// footprintKeeper puts together the footprint a scan leaves a claim with.
+type footprintKeeper struct {
+	next  map[string]*touch
+	paths []string
+	bytes int  // what next costs
+	cut   bool // a file was left out
+}
+
+// keep adds f to the footprint if it then holds at most files files and
+// costs at most room, and reports whether it did.
+func (k *footprintKeeper) keep(f fileAt, files, room int) bool {
+	cost := footprintCost(f.path, f.t)
+	if len(k.next) >= files || k.bytes+cost > room {
+		k.cut = true
+		return false
+	}
+	k.next[f.path] = f.t
+	k.paths = append(k.paths, f.path)
+	k.bytes += cost
+	return true
+}
+
+func footprintCostOf(files []fileAt) int {
+	n := 0
+	for _, f := range files {
+		n += footprintCost(f.path, f.t)
+	}
+	return n
 }
 
 // tellShort tells s, with what it hears next, that the call stopped
@@ -853,6 +918,15 @@ func (b *Board) touch(now time.Time, c *claim, s *session, paths []PathRef) {
 	if len(paths) == 0 {
 		return
 	}
+	// A file an agent just wrote matters more than one git listed, which
+	// makes room for it if the footprint is full.
+	files, bytes := 0, 0
+	for _, p := range paths {
+		if _, ok := c.Footprint[p.Path]; !ok {
+			files, bytes = files+1, bytes+footprintCost(p.Path, &touch{Area: p.Area})
+		}
+	}
+	b.makeRoom(c, files, bytes)
 	var fresh []PathRef
 	for _, p := range paths {
 		if t, ok := c.Footprint[p.Path]; ok {
@@ -864,7 +938,7 @@ func (b *Board) touch(now time.Time, c *claim, s *session, paths []PathRef) {
 			continue
 		}
 		t := &touch{Area: p.Area, At: now, Session: s.Key}
-		if len(c.Footprint) >= b.cfg.MaxFootprint || footprintCost(p.Path, t) > b.footprintRoom(c)-c.fpBytes {
+		if !b.hookFits(c, footprintCost(p.Path, t)) {
 			c.FootprintTruncated = true
 			continue
 		}
