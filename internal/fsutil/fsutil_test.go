@@ -72,6 +72,71 @@ func TestWriteFileFuncFillsOrLeavesTheFile(t *testing.T) {
 	}
 }
 
+// RemoveTemps removes what writes of a file left behind, and nothing else:
+// not the file, nor another file's temporary files.
+func TestRemoveTempsLeavesOtherFiles(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "board.json")
+	if err := WriteFile(p, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stale := []string{tempName(dir, "board.json"), tempName(dir, "board.json")}
+	keep := []string{p, tempName(dir, "board.json.prev"), tempName(dir, "ui.key"), filepath.Join(dir, ".board.json.short.tmp"),
+		filepath.Join(dir, ".board.json.abcdefghijkl.tmp"), filepath.Join(dir, "ABCDEFGHIJKL.tmp")}
+	for _, f := range append(stale, keep[1:]...) {
+		if err := os.WriteFile(f, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	n, err := RemoveTemps(p)
+	if err != nil || n != len(stale) {
+		t.Fatalf("RemoveTemps = %d, %v; want %d", n, err, len(stale))
+	}
+	for _, f := range stale {
+		if _, err := os.Stat(f); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s is still there", f)
+		}
+	}
+	for _, f := range keep {
+		if _, err := os.Stat(f); err != nil {
+			t.Errorf("%s: %v", f, err)
+		}
+	}
+}
+
+// LinkAside keeps the file that a WriteFile then replaces, and replaces
+// what it kept before; with no file, it keeps what it had.
+func TestLinkAsideKeepsTheFileReplaced(t *testing.T) {
+	dir := t.TempDir()
+	p, prev := filepath.Join(dir, "board.json"), filepath.Join(dir, "board.json.prev")
+	if err := LinkAside(p, prev); err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range []string{"one", "two", "three"} {
+		if err := LinkAside(p, prev); err != nil {
+			t.Fatal(err)
+		}
+		if err := WriteFile(p, []byte(v), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, _ := os.ReadFile(prev); string(got) != "two" {
+		t.Fatalf("aside = %q, want the file before the last write", got)
+	}
+	if err := os.Remove(p); err != nil {
+		t.Fatal(err)
+	}
+	if err := LinkAside(p, prev); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(prev); string(got) != "two" {
+		t.Fatalf("aside = %q after its file went", got)
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 1 {
+		t.Fatalf("files left behind: %v", entries)
+	}
+}
+
 func TestWriteFileWritesThroughLinks(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symbolic links need privileges on Windows")

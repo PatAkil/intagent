@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // WriteFile replaces the file at path with data, atomically: it writes a
@@ -105,12 +106,79 @@ const maxLinks = 40
 // createTemp creates a new file beside name, with perm less the umask.
 func createTemp(dir, name string, perm fs.FileMode) (*os.File, error) {
 	for {
-		p := filepath.Join(dir, "."+name+"."+rand.Text()[:12]+".tmp")
-		f, err := os.OpenFile(p, os.O_RDWR|os.O_CREATE|os.O_EXCL, perm)
+		f, err := os.OpenFile(tempName(dir, name), os.O_RDWR|os.O_CREATE|os.O_EXCL, perm)
 		if !errors.Is(err, fs.ErrExist) {
 			return f, err
 		}
 	}
+}
+
+// tempName names a temporary file beside name, as isTemp recognises it.
+func tempName(dir, name string) string {
+	return filepath.Join(dir, "."+name+"."+rand.Text()[:tempRandom]+".tmp")
+}
+
+const tempRandom = 12 // characters of rand.Text in a temporary file's name
+
+// isTemp reports whether file is the name of a temporary file beside name.
+func isTemp(file, name string) bool {
+	mid, ok := strings.CutPrefix(file, "."+name+".")
+	if !ok {
+		return false
+	}
+	if mid, ok = strings.CutSuffix(mid, ".tmp"); !ok || len(mid) != tempRandom {
+		return false
+	}
+	return strings.Trim(mid, "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567") == "" // rand.Text's alphabet
+}
+
+// RemoveTemps removes the temporary files that writes of path left behind
+// when their process was killed before it could, and reports how many it
+// removed. It must not run while another process writes path.
+func RemoveTemps(path string) (int, error) {
+	dir, name := filepath.Split(path)
+	entries, err := os.ReadDir(filepath.Clean(dir))
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	var first error
+	for _, e := range entries {
+		if !e.Type().IsRegular() || !isTemp(e.Name(), name) {
+			continue
+		}
+		if err := os.Remove(filepath.Join(dir, e.Name())); err != nil {
+			if first == nil {
+				first = err
+			}
+			continue
+		}
+		n++
+	}
+	return n, first
+}
+
+// LinkAside makes aside another name for the file at path, replacing what
+// was at aside, so that the file outlives a WriteFile that replaces path. It
+// links under a temporary name and renames that into place, so aside is
+// always a whole file. A missing file at path leaves aside as it was.
+func LinkAside(path, aside string) error {
+	target, err := linkTarget(path) // WriteFile replaces the file a link names
+	if err != nil {
+		return err
+	}
+	tmp := tempName(filepath.Dir(aside), filepath.Base(aside))
+	if err := os.Link(target, tmp); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if err := os.Rename(tmp, aside); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 func write(f *os.File, fill func(io.Writer) error) error {

@@ -12,6 +12,9 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/patakil/intagent/internal/board"
+	"github.com/patakil/intagent/internal/fsutil"
 )
 
 // The board lives in memory, and a snapshot of it is saved to the data
@@ -35,6 +38,10 @@ const (
 )
 
 func (s *Server) snapshotPath() string { return filepath.Join(s.dataDir, "board.json") }
+
+// previousPath keeps the snapshot before the last, should the last be
+// damaged after it was written.
+func (s *Server) previousPath() string { return s.snapshotPath() + ".prev" }
 
 // saves follows the server's saves of its board: when the next is due, and
 // whether they fail.
@@ -143,31 +150,73 @@ func causeOf(err error) string {
 	return "the snapshot could not be written"
 }
 
-// load restores the board from the data directory, if a snapshot exists.
-// The snapshot is decoded as it is read, a claim at a time.
+// load restores the board from the data directory, if a snapshot exists,
+// decoding it as it is read. A damaged snapshot is set aside as
+// board.json.corrupt-<unix time>, and the one saved before it restored, or
+// none: every agent fails open while the server does not start. Any other
+// error stops the server, so that it does not overwrite a snapshot it
+// could not read: one of a newer format, say.
 func (s *Server) load() error {
 	if s.dataDir == "" {
 		return nil
 	}
-	f, err := os.Open(s.snapshotPath())
-	if errors.Is(err, fs.ErrNotExist) {
+	s.removeTemps()
+	path := s.snapshotPath()
+	err := s.restoreFrom(path)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return nil
+	case errors.Is(err, board.ErrCorruptSnapshot):
+	case err != nil:
+		return fmt.Errorf("%s: %w", path, err)
+	default:
+		s.saves.version = s.board.Version()
 		return nil
 	}
+	aside := fmt.Sprintf("%s.corrupt-%d", path, s.clock().Unix())
+	if rerr := os.Rename(path, aside); rerr != nil {
+		return fmt.Errorf("%s: %w, and it could not be set aside: %w", path, err, rerr)
+	}
+	s.log.Error("the board's snapshot is damaged, and was set aside", "file", aside, "err", err)
+	switch perr := s.restoreFrom(s.previousPath()); {
+	case perr == nil:
+		s.log.Warn("restored the snapshot saved before the damaged one: what changed after it is lost", "file", s.previousPath())
+		// Not the version saved, which is gone: the next save writes the
+		// board again.
+		s.saves.version = s.board.Version() - 1
+	case errors.Is(perr, fs.ErrNotExist) || errors.Is(perr, board.ErrCorruptSnapshot):
+		s.log.Error("starting with an empty board: no earlier snapshot could be restored", "err", perr)
+	default:
+		return fmt.Errorf("%s: %w", s.previousPath(), perr)
+	}
+	return nil
+}
+
+// restoreFrom restores the board from the snapshot at path.
+func (s *Server) restoreFrom(path string) error {
+	f, err := os.Open(path)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = f.Close() }()
-	if err := s.board.Restore(f); err != nil {
-		return fmt.Errorf("%s: %w", s.snapshotPath(), err)
+	return s.board.Restore(f)
+}
+
+// removeTemps removes the temporary files a save killed halfway left in the
+// data directory, best effort.
+func (s *Server) removeTemps() {
+	for _, p := range []string{s.snapshotPath(), s.previousPath(), filepath.Join(s.dataDir, "ui.key")} {
+		if n, err := fsutil.RemoveTemps(p); n > 0 || (err != nil && !errors.Is(err, fs.ErrNotExist)) {
+			s.log.Info("removed the temporary files of saves that did not finish", "file", p, "removed", n, "err", err)
+		}
 	}
-	s.saves.version = s.board.Version()
-	return nil
 }
 
 // save writes a snapshot if the board changed since the last one, and
 // records how it went. The snapshot is streamed to a temporary file beside
-// the last, which it then replaces (fsutil.WriteFileFunc). Once ctx ends,
-// the save is abandoned at its next write.
+// the last, which it then replaces (fsutil.WriteFileFunc); the one it
+// replaces is kept as board.json.prev. Once ctx ends, the save is abandoned
+// at its next write.
 func (s *Server) save(ctx context.Context) error {
 	if s.dataDir == "" || s.board.Version() == s.saves.saved() {
 		return nil
@@ -189,6 +238,9 @@ func (s *Server) save(ctx context.Context) error {
 func (s *Server) writeSnapshot(ctx context.Context) (uint64, error) {
 	if err := os.MkdirAll(s.dataDir, 0o700); err != nil {
 		return 0, err
+	}
+	if err := fsutil.LinkAside(s.snapshotPath(), s.previousPath()); err != nil {
+		s.log.Debug("the previous snapshot could not be kept", "err", err)
 	}
 	var version uint64
 	err := s.saveFile(s.snapshotPath(), 0o600, func(w io.Writer) error {

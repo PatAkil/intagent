@@ -168,7 +168,11 @@ before it next changes it, so the lock is held only to copy the claims and sessi
 at a time. Saves that fail are tried again after 1, 2, 4, 8 and 16 seconds, then every 30; the server logs the first
 failure, then one a minute, then the recovery, and `/healthz` says so. Stalled sessions are looked for on a goroutine of
 their own, so a slow or stuck disk does not delay the news. A clean stop abandons a save in flight, waits for the
-requests in flight, and saves once more; `serve` exits non-zero if that save fails. Beside its maps the board keeps
+requests in flight, and saves once more; `serve` exits non-zero if that save fails. Each save keeps the snapshot it
+replaces as `board.json.prev`, a hard link made before the new one is renamed in. At start, the temporary files of saves
+that were killed halfway are removed, and a snapshot that is cut short or damaged is set aside as
+`board.json.corrupt-<unix time>` and `board.json.prev` restored instead, or nothing: a server that will not start leaves
+every agent unchecked. A snapshot of a newer format, or one that cannot be read, still stops it. Beside its maps the board keeps
 indexes, rebuilt from the snapshot on a restart: each repository's claims, each claim's sessions, and for each claim
 the latest change in each area it changed files in and its changed paths in order. A check of a path then looks at
 each claim of its repository once, asks the sessions of only the claims that matter to it whether they are live, and

@@ -272,13 +272,20 @@ func (b *Board) Restore(r io.Reader) error {
 	return nil
 }
 
+// ErrCorruptSnapshot reports a snapshot that is not one: cut short, or
+// damaged by something other than the server, which writes it whole. A
+// snapshot of a newer format, or one that could not be read, is not
+// reported as corrupt.
+var ErrCorruptSnapshot = errors.New("the snapshot is damaged")
+
 // readSnapshot decodes a snapshot as WriteSnapshot writes it, or as
 // json.Marshal did, a claim, a session and an activity at a time: what it
 // holds of r at once is one of them, not the whole file, beside what it
 // decoded.
 func readSnapshot(r io.Reader) (snapshot, error) {
 	var s snapshot
-	dec := json.NewDecoder(r)
+	src := &sourceReader{r: r}
+	dec := json.NewDecoder(src)
 	err := readObject(dec, func(key string) error {
 		switch {
 		case strings.EqualFold(key, "format"):
@@ -308,22 +315,39 @@ func readSnapshot(r io.Reader) (snapshot, error) {
 		var skip json.RawMessage // a field from a newer server
 		return dec.Decode(&skip)
 	})
-	var unsupported unsupportedFormat
-	switch {
-	case errors.As(err, &unsupported):
-		return s, err
-	case err == nil && s.Format != snapshotFormat:
-		err = unsupportedFormat(s.Format)
-	case err == nil:
+	if err == nil {
 		// One object, as json.Unmarshal takes: anything after it is damage.
-		if _, end := dec.Token(); end != io.EOF {
+		if _, end := dec.Token(); !errors.Is(end, io.EOF) {
 			err = errors.New("data after the snapshot")
 		}
 	}
-	if err != nil {
-		return s, fmt.Errorf("read snapshot: %w", err)
+	if err == nil && s.Format != snapshotFormat {
+		err = fmt.Errorf("snapshot format %d", s.Format) // none, or one no server wrote
 	}
-	return s, nil
+	var unsupported unsupportedFormat
+	switch {
+	case err == nil:
+		return s, nil
+	case errors.As(err, &unsupported):
+		return s, fmt.Errorf("read snapshot: %w", err)
+	case src.err != nil:
+		return s, fmt.Errorf("read snapshot: %w", src.err)
+	}
+	return s, fmt.Errorf("%w: %w", ErrCorruptSnapshot, err)
+}
+
+// sourceReader keeps the error, other than the end, that reading r gave.
+type sourceReader struct {
+	r   io.Reader
+	err error
+}
+
+func (s *sourceReader) Read(p []byte) (int, error) {
+	n, err := s.r.Read(p)
+	if err != nil && !errors.Is(err, io.EOF) && s.err == nil {
+		s.err = err
+	}
+	return n, err
 }
 
 // unsupportedFormat is the format of a snapshot this board cannot read.

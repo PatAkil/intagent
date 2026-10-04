@@ -444,12 +444,6 @@ func TestPersistenceAcrossRestarts(t *testing.T) {
 	if v := again.Board().View(ts.now(), repo); len(v.Claims) != 1 || len(v.Claims[0].Files) != 1 {
 		t.Fatalf("restored view = %+v", v)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "board.json"), []byte("garbage"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := New(Options{Members: []Member{{Name: "alice", TokenSHA256: HashToken("x")}}, DataDir: dir}); err == nil {
-		t.Fatal("started from a corrupt snapshot without complaint")
-	}
 }
 
 func TestServeShutsDownAndSaves(t *testing.T) {

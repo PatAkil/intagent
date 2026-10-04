@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -351,5 +353,161 @@ func TestSlowSaveIsLogged(t *testing.T) {
 	}
 	if n := len(logs.lines("a snapshot of the board has been saving")); n != 1 {
 		t.Fatalf("a slow save was logged %d times, want once", n)
+	}
+}
+
+// Each save keeps the snapshot it replaces as board.json.prev.
+func TestSaveKeepsThePreviousSnapshot(t *testing.T) {
+	ts, clock, _ := persistServer(t)
+	var saved [][]byte
+	for n := range 3 {
+		ts.change(t, n)
+		clock.add(time.Minute)
+		if err := ts.save(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		data, err := os.ReadFile(ts.snapshotPath())
+		if err != nil {
+			t.Fatal(err)
+		}
+		saved = append(saved, data)
+	}
+	if prev, err := os.ReadFile(ts.previousPath()); err != nil || !bytes.Equal(prev, saved[1]) {
+		t.Fatalf("board.json.prev is not the snapshot before the last: %v", err)
+	}
+}
+
+// A damaged snapshot is set aside, and the server starts from the one saved
+// before it, or empty: before, it did not start at all, and every agent
+// went unchecked until someone removed the file. A snapshot it cannot read,
+// or of a newer format, still stops it, untouched.
+func TestDamagedSnapshotIsSetAside(t *testing.T) {
+	ts, clock, _ := persistServer(t)
+	dir := ts.dataDir
+	ts.change(t, 0)
+	if err := ts.save(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	ts.change(t, 1)
+	clock.add(time.Minute)
+	if err := ts.save(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	prev, err := os.ReadFile(ts.previousPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	restart := func() (*Server, *logRecorder, error) {
+		logs := &logRecorder{}
+		s, err := New(Options{Members: []Member{{Name: "alice", TokenSHA256: HashToken(ts.tokens["alice"])}}, DataDir: dir,
+			Logger: slog.New(logs), Now: ts.now})
+		return s, logs, err
+	}
+	damaged := []byte(`{"format":1,"claims":[{"id":"c_1","repo":`)
+	write := func(name string, data []byte) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setAside := func() []string {
+		t.Helper()
+		found, _ := filepath.Glob(filepath.Join(dir, "board.json.corrupt-*"))
+		for _, f := range found {
+			if data, _ := os.ReadFile(f); !bytes.Equal(data, damaged) {
+				t.Errorf("%s does not hold the damaged snapshot", f)
+			}
+			_ = os.Remove(f)
+		}
+		return found
+	}
+
+	write("board.json", damaged)
+	s, logs, err := restart()
+	if err != nil {
+		t.Fatalf("a damaged snapshot with a good previous one: %v", err)
+	}
+	want := board.New(board.DefaultConfig())
+	if err := want.Restore(bytes.NewReader(prev)); err != nil {
+		t.Fatal(err)
+	}
+	if got, w := jsonView(s.Board().View(ts.now(), repo)), jsonView(want.View(ts.now(), repo)); got != w {
+		t.Fatalf("restored\n%s\nwant the previous snapshot's\n%s", got, w)
+	}
+	if len(setAside()) != 1 || len(logs.lines("the board's snapshot is damaged")) != 1 {
+		t.Fatalf("not set aside, or not logged: %v", logs.lines(""))
+	}
+	if s.saves.saved() == s.Board().Version() {
+		t.Fatal("the board restored from the previous snapshot would not be saved")
+	}
+
+	write("board.json", damaged)
+	if err := os.Remove(ts.previousPath()); err != nil {
+		t.Fatal(err)
+	}
+	s, logs, err = restart()
+	if err != nil || len(s.Board().View(ts.now(), repo).Claims) != 0 || len(setAside()) != 1 ||
+		len(logs.lines("starting with an empty board")) != 1 {
+		t.Fatalf("a damaged snapshot alone: %v, %v", err, logs.lines(""))
+	}
+
+	write("board.json", []byte(`{"format":2,"claims":[]}`))
+	if _, _, err := restart(); err == nil || len(setAside()) != 0 {
+		t.Fatalf("a newer snapshot: %v", err)
+	}
+	if err := os.Remove(ts.snapshotPath()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(ts.snapshotPath(), 0o700); err != nil { // reads fail
+		t.Fatal(err)
+	}
+	if _, _, err := restart(); err == nil || len(setAside()) != 0 {
+		t.Fatalf("an unreadable snapshot: %v", err)
+	}
+}
+
+func jsonView(v board.View) string {
+	var b bytes.Buffer
+	writeJSON(&recorder{body: &b, header: http.Header{}}, http.StatusOK, v)
+	return b.String()
+}
+
+// recorder is the least of an http.ResponseWriter.
+type recorder struct {
+	body   *bytes.Buffer
+	header http.Header
+}
+
+func (r *recorder) Header() http.Header         { return r.header }
+func (r *recorder) Write(p []byte) (int, error) { return r.body.Write(p) }
+func (r *recorder) WriteHeader(int)             {}
+
+// The temporary files of saves killed halfway are removed at start, and
+// nothing else.
+func TestStartRemovesStaleTemporaryFiles(t *testing.T) {
+	ts, _, _ := persistServer(t)
+	ts.change(t, 0)
+	if err := ts.save(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	dir := ts.dataDir
+	stale := []string{".board.json.ABCDEFGHIJKL.tmp", ".board.json.prev.MNOPQRSTUVWX.tmp", ".ui.key.YZ234567ABCD.tmp"}
+	for _, f := range append(stale, "notes.txt") {
+		if err := os.WriteFile(filepath.Join(dir, f), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := New(Options{Members: []Member{{Name: "alice", TokenSHA256: HashToken("x")}}, DataDir: dir}); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range stale {
+		if _, err := os.Stat(filepath.Join(dir, f)); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("%s is still there", f)
+		}
+	}
+	for _, f := range []string{"board.json", "ui.key", "notes.txt"} {
+		if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
+			t.Errorf("%s: %v", f, err)
+		}
 	}
 }

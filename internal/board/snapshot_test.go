@@ -374,3 +374,49 @@ func TestRestoreSharesSessionKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// A snapshot cut short or damaged is reported as corrupt, which a server may
+// set aside; a newer format, or a read that failed, is not, and a server
+// must stop rather than lose it. Either way the board is left as it was.
+func TestRestoreTellsDamageFromOtherErrors(t *testing.T) {
+	h := newHarness(t)
+	h.edit("alice", "a1", "a/b.go")
+	data, _, err := h.b.Snapshot(h.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := New(DefaultConfig())
+	if err := b.Restore(bytes.NewReader(data)); err != nil {
+		t.Fatal(err)
+	}
+	broken := errors.New("input/output error")
+	for _, c := range []struct {
+		name    string
+		r       io.Reader
+		corrupt bool
+	}{
+		{"cut short", bytes.NewReader(data[:len(data)/2]), true},
+		{"garbage", strings.NewReader("\x00\x00\x00"), true},
+		{"empty", strings.NewReader(""), true},
+		{"no format", strings.NewReader(`{"claims":[]}`), true},
+		{"format 0", strings.NewReader(`{"format":0}`), true},
+		{"two objects", strings.NewReader(`{"format":1}{"format":1}`), true},
+		{"newer", strings.NewReader(`{"format":2,"claims":"anything"}`), false},
+		{"unreadable", io.MultiReader(bytes.NewReader(data[:100]), failingReader{broken}), false},
+	} {
+		err := b.Restore(c.r)
+		if err == nil || errors.Is(err, ErrCorruptSnapshot) != c.corrupt {
+			t.Errorf("%s: %v, want corrupt %t", c.name, err, c.corrupt)
+		}
+		if c.name == "unreadable" && !errors.Is(err, broken) {
+			t.Errorf("%s: %v does not carry the read's error", c.name, err)
+		}
+	}
+	if len(b.claims) != 1 || len(b.sessions) != 1 {
+		t.Fatalf("a failed restore changed the board: %d claims, %d sessions", len(b.claims), len(b.sessions))
+	}
+}
+
+type failingReader struct{ err error }
+
+func (f failingReader) Read([]byte) (int, error) { return 0, f.err }
