@@ -24,6 +24,10 @@ var streamWriteTimeout = 15 * time.Second
 // keeps reading a large catch-up slowly still gets all of it.
 const streamPiece = 64 << 10
 
+// streamRetryAfter is the Retry-After, in seconds, of a stream refused for
+// being over its limit.
+const streamRetryAfter = 30
+
 // maxKeptBuffer bounds the buffer a stream keeps between writes; a larger one,
 // grown for a burst, is let go.
 const maxKeptBuffer = 64 << 10

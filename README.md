@@ -92,7 +92,8 @@ docker run -d --name intagent -p 7400:7400 -v intagent:/data intagent
 
 Open `http://<server>:7400/` for the live dashboard and sign in with any member's token. Beyond a trusted
 network, serve HTTPS: `--tls-cert cert.pem --tls-key key.pem`, or a reverse proxy that terminates TLS and sets
-`X-Forwarded-Proto: https`.
+`X-Forwarded-Proto: https`. The server keeps up to 500 dashboards connected at once, 20 per member and 100 without a
+token; `--max-streams`, `--max-member-streams` and `--max-public-streams` change that.
 
 **Each repository, once** (one person; then commit the files it writes):
 

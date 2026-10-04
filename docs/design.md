@@ -147,7 +147,10 @@ many dashboards are open. A stream writes what is new in one write, then waits 1
 wakes each stream ten times a second rather than once per activity. A stream that falls more than 1024 publishes
 behind is ended and catches up with `Last-Event-ID`. A stream whose client takes no part of a write for 15 seconds is
 ended, and on Linux the kernel gives up on a connection whose peer acknowledges nothing for a minute, so a dashboard
-that went away does not hold the server's memory.
+that went away does not hold the server's memory. Streams are capped at 20 per member, 100 without a token on a board
+anyone may read, and 500 in all (`--max-member-streams`, `--max-public-streams`, `--max-streams`); a stream counts
+until its handler returns, and one over a cap is answered 429 with `Retry-After`, which the dashboard follows with its
+own backoff.
 
 ## API
 

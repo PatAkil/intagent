@@ -235,3 +235,97 @@ func TestStalledStreamIsReleased(t *testing.T) {
 	}
 	t.Logf("released %s after the activities were published, with a %s deadline", time.Since(start).Round(time.Millisecond), streamWriteTimeout)
 }
+
+// openStream opens a stream as member ("" for none) and returns the response,
+// whatever its status.
+func (ts *testServer) openStream(t *testing.T, member string) *http.Response {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodGet, ts.url+"/v1/stream", nil)
+	if member != "" {
+		req.Header.Set("Authorization", "Bearer "+ts.tokens[member])
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	return resp
+}
+
+// streamsOpen counts the streams whose handler has not returned.
+func (ts *testServer) streamsOpen() int {
+	ts.hub.mu.Lock()
+	defer ts.hub.mu.Unlock()
+	return ts.hub.total
+}
+
+// One token, or anyone on a public board, must not be able to open streams
+// without bound: 5000 from one token took 1.65 GB and let 62-99% of the
+// team's edits through unchecked.
+func TestStreamLimits(t *testing.T) {
+	ts := newTestServer(t, func(o *Options) {
+		o.PublicRead = true
+		o.Streams = StreamLimits{PerMember: 2, Anonymous: 1, Total: 4}
+	})
+	want := func(resp *http.Response, code int, what string) {
+		t.Helper()
+		if resp.StatusCode != code {
+			t.Fatalf("%s: status %d, want %d", what, resp.StatusCode, code)
+		}
+		if code == http.StatusTooManyRequests && resp.Header.Get("Retry-After") != "30" {
+			t.Fatalf("%s: Retry-After %q", what, resp.Header.Get("Retry-After"))
+		}
+	}
+	alice := ts.openStream(t, "alice")
+	want(alice, http.StatusOK, "alice's first")
+	want(ts.openStream(t, "alice"), http.StatusOK, "alice's second")
+	want(ts.openStream(t, "alice"), http.StatusTooManyRequests, "alice's third")
+	want(ts.openStream(t, ""), http.StatusOK, "the first without a token")
+	want(ts.openStream(t, ""), http.StatusTooManyRequests, "the second without a token")
+	want(ts.openStream(t, "bob"), http.StatusOK, "bob's first")
+	want(ts.openStream(t, "bob"), http.StatusTooManyRequests, "bob's second, over the total")
+
+	_ = alice.Body.Close()
+	for deadline := time.Now().Add(5 * time.Second); ts.streamsOpen() > 3; {
+		if time.Now().After(deadline) {
+			t.Fatal("a closed stream still holds its place")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	want(ts.openStream(t, "bob"), http.StatusOK, "bob's second, after alice closed one")
+}
+
+// stuckWriter is a client whose connection takes nothing until released.
+type stuckWriter struct {
+	*discardWriter
+	release chan struct{}
+}
+
+func (w stuckWriter) Write(p []byte) (int, error) {
+	<-w.release
+	return w.discardWriter.Write(p)
+}
+
+// A stream the hub has let go of still counts while its handler is stuck
+// writing to its client: otherwise one token could hold any number of
+// handlers, and their buffers, by never reading.
+func TestStreamHoldsItsPlaceUntilItsHandlerReturns(t *testing.T) {
+	ts := newTestServer(t, func(o *Options) { o.Streams = StreamLimits{PerMember: 1} })
+	w := stuckWriter{newDiscardWriter(), make(chan struct{})}
+	req := httptest.NewRequest(http.MethodGet, "/v1/stream", nil)
+	req.Header.Set("Authorization", "Bearer "+ts.tokens["bob"])
+	done := make(chan struct{})
+	go func() { defer close(done); ts.Handler().ServeHTTP(w, req) }()
+	for !ts.subscribed(1) {
+		time.Sleep(time.Millisecond)
+	}
+	ts.hub.closeAll() // as a token rotation does; the handler is stuck in its first write
+	if resp := ts.openStream(t, "bob"); resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("a second stream while the first is stuck: %d", resp.StatusCode)
+	}
+	close(w.release)
+	<-done
+	if resp := ts.openStream(t, "bob"); resp.StatusCode != http.StatusOK {
+		t.Fatalf("a stream after the stuck one returned: %d", resp.StatusCode)
+	}
+}

@@ -15,15 +15,44 @@ import (
 // dashboard reconnects and catches up from the last event it saw.
 const streamRing = 1024
 
+// StreamLimits caps the dashboard streams open at once. A stream counts until
+// its handler returns, so one stuck writing to a client that stopped reading
+// still holds its place. A field left at zero takes its default.
+type StreamLimits struct {
+	// PerMember caps one member's streams, one per open dashboard. Default 20.
+	PerMember int
+	// Anonymous caps the streams opened without a token, on a board anyone
+	// may read. Default 100.
+	Anonymous int
+	// Total caps every stream. Default 500.
+	Total int
+}
+
+func (l StreamLimits) withDefaults() StreamLimits {
+	if l.PerMember <= 0 {
+		l.PerMember = 20
+	}
+	if l.Anonymous <= 0 {
+		l.Anonymous = 100
+	}
+	if l.Total <= 0 {
+		l.Total = 500
+	}
+	return l
+}
+
 // hub fans activities out to dashboard streams. Publishing costs the same
 // however many streams are open: a publish goes into one ring that every
 // stream reads at its own pace, and wakes the streams waiting for it.
 type hub struct {
-	mu   sync.Mutex
-	ring [streamRing][]frame
-	next uint64        // publishes so far; the newest is ring[(next-1)%streamRing]
-	wake chan struct{} // closed at the next publish
-	subs map[*subscriber]struct{}
+	limits StreamLimits
+	mu     sync.Mutex
+	ring   [streamRing][]frame
+	next   uint64        // publishes so far; the newest is ring[(next-1)%streamRing]
+	wake   chan struct{} // closed at the next publish
+	subs   map[*subscriber]struct{}
+	open   map[string]int // streams whose handler has not returned, by member ("" for anonymous)
+	total  int            // and all of them
 }
 
 // frame is one server-sent event, encoded once for every stream that carries
@@ -60,7 +89,8 @@ func activityFrame(a board.Activity) (frame, bool) {
 }
 
 type subscriber struct {
-	repo string
+	repo   string
+	member string // who opened it; "" without a token
 	// pos is the first publish the stream takes, and wake is closed at it.
 	pos  uint64
 	wake <-chan struct{}
@@ -71,17 +101,28 @@ type subscriber struct {
 // carries reports whether a stream for repo ("" for all) sends f.
 func carries(repo string, f frame) bool { return repo == "" || f.all || f.repo == repo }
 
-func newHub() *hub {
-	return &hub{wake: make(chan struct{}), subs: map[*subscriber]struct{}{}}
+func newHub(limits StreamLimits) *hub {
+	return &hub{limits: limits.withDefaults(), wake: make(chan struct{}), subs: map[*subscriber]struct{}{}, open: map[string]int{}}
 }
 
-// subscribe adds a stream, which takes what is published from now on.
-func (h *hub) subscribe(repo string) *subscriber {
+// subscribe adds a stream, which takes what is published from now on, unless
+// member ("" without a token) or the server already has as many as allowed.
+// Every stream it adds must be unsubscribed.
+func (h *hub) subscribe(repo, member string) (*subscriber, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	s := &subscriber{repo: repo, pos: h.next, wake: h.wake, done: make(chan struct{})}
+	limit := h.limits.PerMember
+	if member == "" {
+		limit = h.limits.Anonymous
+	}
+	if h.total >= h.limits.Total || h.open[member] >= limit {
+		return nil, false
+	}
+	h.total++
+	h.open[member]++
+	s := &subscriber{repo: repo, member: member, pos: h.next, wake: h.wake, done: make(chan struct{})}
 	h.subs[s] = struct{}{}
-	return s
+	return s, true
 }
 
 // closeAll ends every stream; their clients reconnect and authenticate again.
@@ -99,10 +140,15 @@ func (h *hub) end(s *subscriber) {
 	delete(h.subs, s)
 }
 
+// unsubscribe removes a stream whose handler is returning, and frees its place.
 func (h *hub) unsubscribe(s *subscriber) {
 	h.mu.Lock()
+	defer h.mu.Unlock()
 	delete(h.subs, s)
-	h.mu.Unlock()
+	h.total--
+	if h.open[s.member]--; h.open[s.member] <= 0 {
+		delete(h.open, s.member)
+	}
 }
 
 // publish encodes activities once, outside the hub's lock, for every stream.

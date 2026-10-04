@@ -54,6 +54,8 @@ type Options struct {
 	Dashboard http.Handler
 	// Webhook sends selected activities to an endpoint. Zero sends nothing.
 	Webhook WebhookConfig
+	// Streams caps the dashboard streams open at once.
+	Streams StreamLimits
 }
 
 // Server serves one team's board.
@@ -91,7 +93,7 @@ const (
 // New builds a server and restores its board from DataDir.
 func New(o Options) (*Server, error) {
 	s := &Server{
-		hub:        newHub(),
+		hub:        newHub(o.Streams),
 		log:        o.Logger,
 		now:        o.Now,
 		dataDir:    o.DataDir,
@@ -473,7 +475,14 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	repo := board.RepoID(r.URL.Query().Get("repo"))
-	sub := s.hub.subscribe(repo)
+	sub, ok := s.hub.subscribe(repo, memberFrom(r))
+	if !ok {
+		// A dashboard's EventSource gives up on an error status, and the
+		// dashboard tries again after its own backoff.
+		w.Header().Set("Retry-After", strconv.Itoa(streamRetryAfter))
+		writeError(w, http.StatusTooManyRequests, "too many open streams; close a dashboard or try again later")
+		return
+	}
 	defer s.hub.unsubscribe(sub)
 
 	h := w.Header()

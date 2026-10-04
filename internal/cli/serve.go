@@ -26,6 +26,9 @@ func (a *App) serve(ctx context.Context, args []string) error {
 	level := fs.String("log-level", "info", "debug, info, warn or error")
 	tlsCert := fs.String("tls-cert", "", "serve HTTPS with this certificate chain (PEM), with --tls-key")
 	tlsKey := fs.String("tls-key", "", "the certificate's private key (PEM)")
+	maxStreams := fs.Int("max-streams", 500, "dashboards connected at once, in all; more are refused until one closes")
+	memberStreams := fs.Int("max-member-streams", 20, "dashboards one member may have connected at once")
+	publicStreams := fs.Int("max-public-streams", 100, "dashboards connected at once without a token, with --public-read")
 	if err := parse(fs, args); err != nil {
 		return err
 	}
@@ -48,6 +51,7 @@ func (a *App) serve(ctx context.Context, args []string) error {
 	srv, err := server.New(server.Options{
 		Members: fc.Members, Version: a.Version, Board: fc.BoardConfig(), DataDir: *data, PublicRead: *public,
 		Logger: logger, Dashboard: web.Handler(), Webhook: fc.Webhook,
+		Streams: server.StreamLimits{PerMember: *memberStreams, Anonymous: *publicStreams, Total: *maxStreams},
 	})
 	if err != nil {
 		return err
