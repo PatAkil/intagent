@@ -1,7 +1,9 @@
 package board
 
 import (
+	"slices"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -76,12 +78,9 @@ func (b *Board) View(now time.Time, repo string) View {
 	v := View{Repo: repo, At: now, Policy: b.cfg.Policy, LastSeq: b.seq, Claims: []ClaimView{}, Recent: []Activity{}}
 	live := b.liveClaims(now)
 	members := map[string]bool{}
-	bySession := map[string][]SessionView{}
+	bySession := map[string][]*session{}
 	for _, s := range b.sessions {
-		st := b.state(now, s)
-		bySession[s.ClaimID] = append(bySession[s.ClaimID], SessionView{
-			ID: s.ID, Agent: s.Agent, State: st, Tool: s.Tool, ToolSince: s.ToolSince, StartedAt: s.StartedAt, LastSeen: s.LastSeen,
-		})
+		bySession[s.ClaimID] = append(bySession[s.ClaimID], s)
 	}
 	claims := b.claimsInRepo(repo)
 	changedBy := map[string]int{} // how many claims changed each file
@@ -95,12 +94,8 @@ func (b *Board) View(now time.Time, repo string) View {
 		cv := ClaimView{
 			ID: c.ID, Member: c.Member, Host: c.Host, Worktree: c.Worktree, Branch: c.Branch, Task: c.Task,
 			Active: live[c.ID], Intents: append([]Intent{}, c.Intents...), Truncated: c.FootprintTruncated,
-			Sessions: bySession[c.ID], CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt, Files: []FileView{},
+			Sessions: b.sessionViews(now, bySession[c.ID]), CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt, Files: []FileView{},
 		}
-		if cv.Sessions == nil {
-			cv.Sessions = []SessionView{}
-		}
-		sort.Slice(cv.Sessions, func(i, j int) bool { return cv.Sessions[i].LastSeen.After(cv.Sessions[j].LastSeen) })
 		for _, s := range cv.Sessions {
 			if s.State.Live() {
 				v.Sessions++
@@ -113,9 +108,8 @@ func (b *Board) View(now time.Time, repo string) View {
 			// are the ones anyone acts on, and contested ones are hot spots.
 			files = capFiles(files, changedBy)
 		}
-		for _, p := range files {
-			t := c.Footprint[p]
-			cv.Files = append(cv.Files, FileView{Path: p, Area: t.Area, At: t.At, FromGit: t.FromGit})
+		for _, f := range files {
+			cv.Files = append(cv.Files, FileView{Path: f.path, Area: f.t.Area, At: f.t.At, FromGit: f.t.FromGit})
 		}
 		for _, it := range c.Inbox {
 			if now.Sub(it.At) < inboxTTL && len(it.DeliveredTo) == 0 {
@@ -172,7 +166,29 @@ func (b *Board) Repos(now time.Time) []RepoSummary {
 	for _, r := range byRepo {
 		out = append(out, *r)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].UpdatedAt.After(out[j].UpdatedAt) })
+	slices.SortFunc(out, func(x, y RepoSummary) int {
+		if c := y.UpdatedAt.Compare(x.UpdatedAt); c != 0 {
+			return c
+		}
+		return strings.Compare(x.Repo, y.Repo)
+	})
+	return out
+}
+
+// sessionViews shows a claim's sessions, the most recently seen first, and
+// those seen at the same moment by key.
+func (b *Board) sessionViews(now time.Time, ss []*session) []SessionView {
+	slices.SortFunc(ss, func(x, y *session) int {
+		if c := y.LastSeen.Compare(x.LastSeen); c != 0 {
+			return c
+		}
+		return strings.Compare(x.Key, y.Key)
+	})
+	out := make([]SessionView, 0, len(ss))
+	for _, s := range ss {
+		out = append(out, SessionView{ID: s.ID, Agent: s.Agent, State: b.state(now, s), Tool: s.Tool, ToolSince: s.ToolSince,
+			StartedAt: s.StartedAt, LastSeen: s.LastSeen})
+	}
 	return out
 }
 
@@ -199,14 +215,14 @@ func (v View) Text() string { return renderView(v) }
 // again that another claim also changed: the dashboard finds hot spots in the
 // files a view lists. Every claim's files are capped while the board is
 // locked, so this does no more than a map lookup per file.
-func capFiles(files []string, changedBy map[string]int) []string {
+func capFiles(files []fileAt, changedBy map[string]int) []fileAt {
 	out := files[:maxViewFiles:maxViewFiles]
-	for _, p := range files[maxViewFiles:] {
+	for _, f := range files[maxViewFiles:] {
 		if len(out) == 2*maxViewFiles {
 			break
 		}
-		if changedBy[p] > 1 {
-			out = append(out, p)
+		if changedBy[f.path] > 1 {
+			out = append(out, f)
 		}
 	}
 	return out

@@ -206,7 +206,12 @@ func (b *Board) record(a Activity) {
 	a.Seq = b.seq
 	b.recent = append(b.recent, a)
 	if over := len(b.recent) - b.cfg.KeepActivities; over > 0 {
-		b.recent = append(b.recent[:0:0], b.recent[over:]...)
+		// Slice past the oldest rather than copy the feed: append moves it to
+		// a new array only when it runs out of room, about once in
+		// KeepActivities records. Clear what is dropped, so the old array
+		// does not keep it alive meanwhile.
+		clear(b.recent[:over])
+		b.recent = b.recent[over:]
 	}
 	b.pending = append(b.pending, a)
 }
@@ -341,6 +346,9 @@ func (b *Board) state(now time.Time, s *session) State {
 func (b *Board) liveClaims(now time.Time) map[string]bool {
 	live := map[string]bool{}
 	for _, s := range b.sessions {
+		if trace != nil {
+			trace.sessionVisits++
+		}
 		if b.state(now, s).Live() {
 			live[s.ClaimID] = true
 		}
@@ -351,6 +359,9 @@ func (b *Board) liveClaims(now time.Time) map[string]bool {
 func (b *Board) liveSessions(now time.Time) map[string]bool {
 	live := map[string]bool{}
 	for k, s := range b.sessions {
+		if trace != nil {
+			trace.sessionVisits++
+		}
 		if b.state(now, s).Live() {
 			live[k] = true
 		}
@@ -680,28 +691,29 @@ func (b *Board) reportUnchecked(now time.Time, c *claim, s *session, added []Pat
 	if action == ActionOff {
 		return
 	}
-	live, liveSess := b.liveClaims(now), b.liveSessions(now)
+	holders := b.reservationHolders(now, c)
+	if len(holders) == 0 {
+		return
+	}
 	var lines, paths []string
 	var first Conflict
 	for _, p := range added {
-		for _, cf := range b.conflictsFor(now, c, s.Key, p, live, liveSess) {
-			if cf.Severity != SeverityBlock || cf.SameClaim {
-				continue
+		cf, ok := blockerOf(p, holders)
+		if !ok {
+			continue
+		}
+		// Once per file, reservation and policy: a new reservation, or a
+		// policy that now refuses what it only warned about, is news.
+		if k := fmt.Sprintf("unchecked|%s|%s|%s|%d|%s", action, cf.ClaimID, cf.Pattern, cf.Since.UnixNano(), p.Path); !c.Alerted[k] {
+			if c.Alerted == nil {
+				c.Alerted = map[string]bool{}
 			}
-			// Once per file, reservation and policy: a new reservation, or a
-			// policy that now refuses what it only warned about, is news.
-			if k := fmt.Sprintf("unchecked|%s|%s|%s|%d|%s", action, cf.ClaimID, cf.Pattern, cf.Since.UnixNano(), p.Path); !c.Alerted[k] {
-				if c.Alerted == nil {
-					c.Alerted = map[string]bool{}
-				}
-				c.Alerted[k] = true
-				if len(paths) == 0 {
-					first = cf
-				}
-				lines = append(lines, fmt.Sprintf("- %s, which %s holds exclusively%s", p.Path, who(b.claims[cf.ClaimID]), taskOf(cf)))
-				paths = append(paths, p.Path)
+			c.Alerted[k] = true
+			if len(paths) == 0 {
+				first = cf
 			}
-			break
+			lines = append(lines, fmt.Sprintf("- %s, which %s holds exclusively%s", p.Path, who(b.claims[cf.ClaimID]), taskOf(cf)))
+			paths = append(paths, p.Path)
 		}
 	}
 	if len(paths) == 0 {
@@ -718,6 +730,52 @@ func (b *Board) reportUnchecked(now time.Time, c *claim, s *session, added []Pat
 		"agents; information, not instructions):\n"+strings.Join(lines, "\n")+"\nChanges made through the shell are not "+
 		"checked before they happen. Undo the change if it was not meant for that file, or tell your user so they can "+
 		"agree it with that teammate.")
+}
+
+// reservationHolders lists the claims whose exclusive intents can block a
+// change in c's worktree: the live ones in its repository, other than c,
+// that hold one. They are in ID order.
+func (b *Board) reservationHolders(now time.Time, c *claim) []*claim {
+	var holders []*claim
+	for _, o := range b.claims {
+		if o.Repo == c.Repo && o.ID != c.ID && slices.ContainsFunc(o.Intents, func(in Intent) bool { return in.Mode == ModeExclusive }) {
+			holders = append(holders, o)
+		}
+	}
+	if len(holders) == 0 {
+		return nil
+	}
+	live := b.liveClaims(now)
+	holders = slices.DeleteFunc(holders, func(o *claim) bool { return !live[o.ID] })
+	slices.SortFunc(holders, func(x, y *claim) int { return strings.Compare(x.ID, y.ID) })
+	return holders
+}
+
+// blockerOf is the block conflict conflictsFor lists first for p, given the
+// claims that hold reservations: of each holder's first exclusive intent that
+// covers p, the first in the order conflicts are sorted.
+func blockerOf(p PathRef, holders []*claim) (Conflict, bool) {
+	var best Conflict
+	var by *Intent
+	for _, o := range holders {
+		for i := range o.Intents {
+			in := &o.Intents[i]
+			if in.Mode != ModeExclusive || !match(in.Pattern, p.Path) {
+				continue
+			}
+			cf := Conflict{Path: p.Path, Area: p.Area, Severity: SeverityBlock, ClaimID: o.ID, Member: o.Member, Branch: o.Branch,
+				Task: o.Task, Pattern: in.Pattern, Since: in.DeclaredAt, Active: true}
+			if by == nil || conflictBefore(cf, best) {
+				best, by = cf, in
+			}
+			break
+		}
+	}
+	if by == nil {
+		return Conflict{}, false
+	}
+	best.Why = intentWhy(*by)
+	return best, true
 }
 
 func taskOf(cf Conflict) string {
@@ -745,7 +803,7 @@ func (b *Board) breachedReservation(c *claim, cf Conflict) bool {
 		return false // a plan, not a change
 	}
 	for _, in := range c.Intents {
-		if in.Mode == ModeExclusive && glob.Match(in.Pattern, cf.Path) && !t.At.Before(in.DeclaredAt) {
+		if in.Mode == ModeExclusive && match(in.Pattern, cf.Path) && !t.At.Before(in.DeclaredAt) {
 			return true
 		}
 	}
@@ -754,7 +812,7 @@ func (b *Board) breachedReservation(c *claim, cf Conflict) bool {
 
 func coveredByIntent(c *claim, path string) bool {
 	for _, in := range c.Intents {
-		if glob.Match(in.Pattern, path) {
+		if match(in.Pattern, path) {
 			return true
 		}
 	}
@@ -793,6 +851,9 @@ func (b *Board) conflictsFor(now time.Time, self *claim, selfSession string, p P
 	if self != nil {
 		repo = self.Repo
 	}
+	if trace != nil {
+		trace.conflictsFor++
+	}
 	var out []Conflict
 	for _, o := range b.claims {
 		if o.Repo != repo || (self != nil && o.ID == self.ID) {
@@ -817,6 +878,9 @@ func (b *Board) conflictsFor(now time.Time, self *claim, selfSession string, p P
 }
 
 func (b *Board) conflictWith(now time.Time, o *claim, p PathRef, active bool) (Conflict, bool) {
+	if trace != nil {
+		trace.conflictWith++
+	}
 	best := Conflict{Path: p.Path, Area: p.Area, ClaimID: o.ID, Member: o.Member, Branch: o.Branch, Task: o.Task, Active: active}
 	consider := func(sev Severity, why, pattern string, since time.Time) {
 		if sev > best.Severity {
@@ -824,18 +888,14 @@ func (b *Board) conflictWith(now time.Time, o *claim, p PathRef, active bool) (C
 		}
 	}
 	for _, in := range o.Intents {
-		if !glob.Match(in.Pattern, p.Path) {
+		if !match(in.Pattern, p.Path) {
 			continue
 		}
 		sev := SeverityOverlap
 		if in.Mode == ModeExclusive && active {
 			sev = SeverityBlock
 		}
-		why := fmt.Sprintf("declared %s intent %s", in.Mode, in.Pattern)
-		if in.Summary != "" {
-			why += ": " + quote(in.Summary)
-		}
-		consider(sev, why, in.Pattern, in.DeclaredAt)
+		consider(sev, intentWhy(in), in.Pattern, in.DeclaredAt)
 	}
 	if t, ok := o.Footprint[p.Path]; ok {
 		sev := SeverityOverlap
@@ -854,8 +914,21 @@ func (b *Board) conflictWith(now time.Time, o *claim, p PathRef, active bool) (C
 	return best, best.Severity > SeverityNone
 }
 
+// intentWhy says why an intent makes a conflict.
+func intentWhy(in Intent) string {
+	why := fmt.Sprintf("declared %s intent %s", in.Mode, in.Pattern)
+	if in.Summary != "" {
+		why += ": " + quote(in.Summary)
+	}
+	return why
+}
+
 // workedInArea reports whether a claim changed or declared anything in area.
 func workedInArea(c *claim, area string) (time.Time, bool) {
+	if trace != nil {
+		trace.workedInArea++
+		trace.areaVisits += len(c.Footprint)
+	}
 	var latest time.Time
 	found := false
 	for _, t := range c.Footprint {
@@ -868,7 +941,7 @@ func workedInArea(c *claim, area string) (time.Time, bool) {
 		if dir == "" {
 			continue
 		}
-		if glob.Match(area, dir) || glob.Match(dir, area) {
+		if match(area, dir) || match(dir, area) {
 			if in.DeclaredAt.After(latest) {
 				latest = in.DeclaredAt
 			}
@@ -879,15 +952,33 @@ func workedInArea(c *claim, area string) (time.Time, bool) {
 }
 
 func sortConflicts(cs []Conflict) {
-	sort.SliceStable(cs, func(i, j int) bool {
-		if cs[i].Severity != cs[j].Severity {
-			return cs[i].Severity > cs[j].Severity
-		}
-		if cs[i].Active != cs[j].Active {
-			return cs[i].Active
-		}
-		return cs[i].Since.After(cs[j].Since)
-	})
+	sort.SliceStable(cs, func(i, j int) bool { return conflictBefore(cs[i], cs[j]) })
+}
+
+// conflictBefore orders conflicts as agents read them: the most severe
+// first, then those of running agents, then the newest. Conflicts that tie
+// go by member, branch, path and claim, so the order never depends on how
+// the board happened to find them.
+func conflictBefore(a, b Conflict) bool {
+	if a.Severity != b.Severity {
+		return a.Severity > b.Severity
+	}
+	if a.Active != b.Active {
+		return a.Active
+	}
+	if c := a.Since.Compare(b.Since); c != 0 {
+		return c > 0
+	}
+	if a.Member != b.Member {
+		return a.Member < b.Member
+	}
+	if a.Branch != b.Branch {
+		return a.Branch < b.Branch
+	}
+	if a.Path != b.Path {
+		return a.Path < b.Path
+	}
+	return a.ClaimID < b.ClaimID
 }
 
 // ackKey names what an agent has been told about a conflict: a file, or for
@@ -1224,7 +1315,7 @@ func (b *Board) exclusiveClash(self *claim, pattern string, live map[string]bool
 			continue
 		}
 		for _, in := range o.Intents {
-			if in.Mode == ModeExclusive && glob.Overlap(in.Pattern, pattern) {
+			if in.Mode == ModeExclusive && overlap(in.Pattern, pattern) {
 				return Conflict{Path: pattern, Severity: SeverityBlock, ClaimID: o.ID, Member: o.Member, Branch: o.Branch, Task: o.Task,
 					Why: "holds exclusive intent " + in.Pattern, Pattern: in.Pattern, Since: in.DeclaredAt, Active: true}, true
 			}
@@ -1255,7 +1346,7 @@ func (b *Board) intentOverlaps(c *claim, in Intent, live map[string]bool) []Conf
 		}
 		cf := Conflict{Path: in.Pattern, ClaimID: o.ID, Member: o.Member, Branch: o.Branch, Task: o.Task, Active: live[o.ID]}
 		for _, oi := range o.Intents {
-			if glob.Overlap(oi.Pattern, in.Pattern) {
+			if overlap(oi.Pattern, in.Pattern) {
 				sev := SeverityOverlap
 				if oi.Mode == ModeExclusive && cf.Active {
 					sev = SeverityBlock
@@ -1270,7 +1361,7 @@ func (b *Board) intentOverlaps(c *claim, in Intent, live map[string]bool) []Conf
 			var hit []string
 			var since time.Time
 			for p, t := range o.Footprint {
-				if glob.Match(in.Pattern, p) {
+				if match(in.Pattern, p) {
 					hit = append(hit, p)
 					if t.At.After(since) {
 						since = t.At
@@ -1531,8 +1622,15 @@ func (b *Board) Sweep(now time.Time) {
 		}
 		return strings.Compare(x, y)
 	})
+	// Which claims still have a session, and which a live one, once old
+	// sessions are dropped: gathered in this pass, not by a search of every
+	// session for every claim.
+	live, held := map[string]bool{}, make(map[string]bool, len(b.claims))
 	for _, k := range keys {
 		s := b.sessions[k]
+		if trace != nil {
+			trace.sessionVisits++
+		}
 		st := b.state(now, s)
 		if st != s.Reported {
 			if st == StateStalled || st == StateGone {
@@ -1557,9 +1655,13 @@ func (b *Board) Sweep(now time.Time) {
 		if !st.Live() && now.Sub(s.LastSeen) > keepEndedFor && (st == StateEnded || now.Sub(s.LastSeen) > b.cfg.IdleAfter+keepEndedFor) {
 			delete(b.sessions, k)
 			changed = true
+			continue
+		}
+		held[s.ClaimID] = true
+		if st.Live() {
+			live[s.ClaimID] = true
 		}
 	}
-	live := b.liveClaims(now)
 	ids := make([]string, 0, len(b.claims))
 	for id := range b.claims {
 		ids = append(ids, id)
@@ -1571,7 +1673,7 @@ func (b *Board) Sweep(now time.Time) {
 			continue
 		}
 		switch {
-		case len(c.Intents) == 0 && len(c.Footprint) == 0 && !b.hasSessions(c.ID):
+		case len(c.Intents) == 0 && len(c.Footprint) == 0 && !held[c.ID]:
 			b.deleteClaim(now, c, ActivityClaimReleased)
 			changed = true
 		case now.Sub(c.UpdatedAt) > b.cfg.ForgetAfter:
@@ -1587,15 +1689,6 @@ func (b *Board) Sweep(now time.Time) {
 	if changed {
 		b.changed()
 	}
-}
-
-func (b *Board) hasSessions(claimID string) bool {
-	for _, s := range b.sessions {
-		if s.ClaimID == claimID {
-			return true
-		}
-	}
-	return false
 }
 
 func pathsOf(ps []PathRef) []string {
