@@ -1511,10 +1511,36 @@ func (b *Board) enqueue(now time.Time, c *claim, it InboxItem) {
 		}
 	}
 	keep = append(keep, it)
-	if over := len(keep) - maxInbox; over > 0 {
-		keep = keep[over:]
+	for len(keep) > maxInbox {
+		i := evictIndex(keep)
+		keep = slices.Delete(keep, i, i+1)
 	}
 	c.Inbox = keep
+}
+
+// evictIndex picks the item a full inbox lets go of: the oldest one some
+// session was already shown; else the oldest of the sender with the most
+// items, an alert before a note when senders tie. So a flood of alerts from
+// one teammate's worktrees, or of their notes, pushes out their own items,
+// not a note from someone else the agent has not heard yet.
+func evictIndex(in []InboxItem) int {
+	for i := range in {
+		if len(in[i].DeliveredTo) > 0 {
+			return i
+		}
+	}
+	held := make(map[string]int, len(in))
+	for _, it := range in {
+		held[it.From]++
+	}
+	best := 0
+	for i := 1; i < len(in); i++ {
+		n, m := held[in[i].From], held[in[best].From]
+		if n > m || (n == m && in[best].Kind == "note" && in[i].Kind != "note") {
+			best = i
+		}
+	}
+	return best
 }
 
 // deliver renders what this session has not been told yet: context held back

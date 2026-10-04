@@ -335,3 +335,171 @@ func TestSharedFootprintsAreRememberedPerPair(t *testing.T) {
 		t.Errorf("the board grew by %.1f MB, want under 50", float64(heap)/(1<<20))
 	}
 }
+
+// inboxRig is a waiting agent sent a note, then a flood of other news
+// before its next hook: the scale review's inbox scenarios.
+type inboxRig struct {
+	*harness
+	victim Where
+}
+
+const floodNote = "please do not merge retry.go before 5pm, migration running"
+
+func floodWhere(m string, i int) Where {
+	return Where{Repo: repo, Host: m + "-host", Worktree: fmt.Sprintf("/w/%s/%d", m, i), Branch: "feat/" + m}
+}
+
+func (r *inboxRig) post(m, session string, w Where, paths ...string) HookResult {
+	r.t.Helper()
+	res, err := r.b.Hook(r.now, HookEvent{Kind: KindPostEdit, Member: m, Agent: AgentClaudeCode, SessionID: session, Where: w,
+		Tool: "Edit", Paths: refs(paths...)})
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	return res
+}
+
+// newInboxRig: the victim's agent changed files (and may have declared a
+// shared intent), stopped and waits for its person; carol sends it a note.
+func newInboxRig(t *testing.T, files []string, intent string) *inboxRig {
+	r := &inboxRig{harness: newHarness(t), victim: floodWhere("victim", 0)}
+	for _, f := range files {
+		r.post("victim", "v", r.victim, f)
+	}
+	if intent != "" {
+		if _, err := r.b.Declare(r.now, DeclareRequest{Member: "victim", Where: r.victim, Patterns: []string{intent}, Mode: ModeShared}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := r.b.Hook(r.now, HookEvent{Kind: KindStop, Member: "victim", Agent: AgentClaudeCode, SessionID: "v", Where: r.victim}); err != nil {
+		t.Fatal(err)
+	}
+	r.advance(time.Minute)
+	if res, err := r.b.Note(r.now, NoteRequest{Member: "carol", Where: floodWhere("carol", 0), To: "victim", Text: floodNote}); err != nil || len(res.Delivered) != 1 {
+		t.Fatalf("note: %+v, %v", res, err)
+	}
+	return r
+}
+
+// heard runs the victim's next 20 prompts and reports whether its agent
+// heard the note.
+func (r *inboxRig) heard() bool {
+	r.advance(time.Minute)
+	for range 20 {
+		res, err := r.b.Hook(r.now, HookEvent{Kind: KindPrompt, Member: "victim", Agent: AgentClaudeCode, SessionID: "v", Where: r.victim})
+		if err != nil {
+			r.t.Fatal(err)
+		}
+		if strings.Contains(res.Context, "migration running") {
+			return true
+		}
+	}
+	return false
+}
+
+// A note waiting for an agent survives whatever else fills its inbox before
+// the agent's next hook: a flood from one teammate's many worktrees, from
+// one worktree, of intents, of notes, and the ordinary news of fifty
+// teammates. Each used to push it out of the 50-item inbox unheard.
+func TestNoteSurvivesAFullInbox(t *testing.T) {
+	files := func(n int) []string {
+		out := make([]string, n)
+		for i := range out {
+			out[i] = fmt.Sprintf("services/payments/f%02d.go", i)
+		}
+		return out
+	}
+	retry := []string{"services/payments/retry.go"}
+	for _, sc := range []struct {
+		name   string
+		files  []string
+		intent string
+		flood  func(r *inboxRig)
+	}{
+		{"A: one post_edit of retry.go from each of 50 worktrees of one member", retry, "", func(r *inboxRig) {
+			for i := range 50 {
+				r.post("evil", fmt.Sprint("e", i), floodWhere("evil", i), retry...)
+			}
+		}},
+		{"B: 50 post_edits of the victim's 50 files from one worktree", files(50), "", func(r *inboxRig) {
+			for _, f := range files(50) {
+				r.post("evil", "e", floodWhere("evil", 0), f)
+			}
+		}},
+		{"C: 50 post_edits of new files under the victim's shared intent", retry, "services/payments/**", func(r *inboxRig) {
+			for i := range 50 {
+				r.post("evil", "e", floodWhere("evil", 0), fmt.Sprintf("services/payments/new%02d.go", i))
+			}
+		}},
+		{"D: the same shared intent declared 50 times", retry, "", func(r *inboxRig) {
+			for range 50 {
+				if _, err := r.b.Declare(r.now, DeclareRequest{Member: "evil", Where: floodWhere("evil", 0),
+					Patterns: []string{"services/payments/**"}, Mode: ModeShared}); err != nil {
+					r.t.Fatal(err)
+				}
+			}
+		}},
+		{"E: 50 notes from one member, within the rate limit", retry, "", func(r *inboxRig) {
+			for i := range 50 {
+				r.advance(3 * time.Second)
+				if _, err := r.b.Note(r.now, NoteRequest{Member: "evil", Where: floodWhere("evil", 0), To: "victim", Text: fmt.Sprint("ping ", i)}); err != nil {
+					r.t.Fatal(err)
+				}
+			}
+		}},
+		{"F: 50 members' agents each change go.mod once over 8 hours", append(retry, "go.mod"), "", func(r *inboxRig) {
+			for i := range 50 {
+				r.advance(8 * time.Hour / 50)
+				m := fmt.Sprintf("m%02d", i)
+				r.post(m, "s", floodWhere(m, 0), "go.mod")
+			}
+		}},
+		{"H: one teammate refactors 50 files under the victim's shared intent", retry, "services/payments/**", func(r *inboxRig) {
+			w := floodWhere("bob", 0)
+			for i := range 50 {
+				r.advance(2 * time.Hour / 50)
+				f := fmt.Sprintf("services/payments/ledger/l%02d.go", i)
+				ev := HookEvent{Kind: KindPreEdit, Member: "bob", Agent: AgentClaudeCode, SessionID: "b", Where: w, Tool: "Edit", Paths: refs(f)}
+				for range 2 { // a refusal, then its retry
+					if res, err := r.b.Hook(r.now, ev); err != nil || res.Decision == DecisionAllow {
+						break
+					}
+				}
+				r.post("bob", "b", w, f)
+			}
+		}},
+	} {
+		r := newInboxRig(t, sc.files, sc.intent)
+		sc.flood(r)
+		if !r.heard() {
+			t.Errorf("%s: the victim's agent never heard carol's note", sc.name)
+		}
+	}
+}
+
+// A full inbox lets go first of an item some session was shown, then of the
+// oldest item of the sender holding the most, an alert before a note when
+// senders tie.
+func TestInboxEvictionOrder(t *testing.T) {
+	item := func(from, kind string, shown bool) InboxItem {
+		it := InboxItem{From: from, Kind: kind}
+		if shown {
+			it.DeliveredTo = map[string]bool{"s": true}
+		}
+		return it
+	}
+	for _, tc := range []struct {
+		in   []InboxItem
+		want int
+	}{
+		{[]InboxItem{item("a", "note", false), item("b", "overlap", false), item("b", "overlap", true)}, 2},
+		{[]InboxItem{item("a", "note", false), item("b", "overlap", false), item("b", "note", false)}, 1},
+		{[]InboxItem{item("a", "note", false), item("b", "overlap", false)}, 1},
+		{[]InboxItem{item("a", "intent", false), item("b", "overlap", false)}, 0},
+		{[]InboxItem{item("a", "note", false), item("b", "note", false)}, 0},
+	} {
+		if got := evictIndex(tc.in); got != tc.want {
+			t.Errorf("evictIndex(%+v) = %d, want %d", tc.in, got, tc.want)
+		}
+	}
+}
