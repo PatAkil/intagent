@@ -652,7 +652,7 @@ func compose(items []*pendingItem, counted counts) message {
 			tell(summarise(g.kind, g.acts), g.acts...)
 		default:
 			for _, a := range g.acts {
-				tell(describeActivity(a), a)
+				tell(batchLine(a), a)
 			}
 		}
 	}
@@ -899,19 +899,32 @@ func plural(n int, one, many string) string {
 // own wording uses none of them.
 var slackText = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
 
+// batchLine is an activity's line in a message about several, where a
+// recovery reads as a sentence beside the stall it follows. Told alone, an
+// activity keeps the line it always had.
+func batchLine(a board.Activity) string {
+	if a.Kind == board.ActivitySessionRecovered {
+		return fmt.Sprintf("intagent: %s in %s is reporting again.", whose(a), a.Repo)
+	}
+	return describeActivity(a)
+}
+
+// whose names an activity's agent: "alice's codex agent".
+func whose(a board.Activity) string {
+	if a.Agent == "" {
+		return a.Member + "'s agent"
+	}
+	return fmt.Sprintf("%s's %s agent", a.Member, a.Agent)
+}
+
 // describeActivity writes one line a person can act on.
 func describeActivity(a board.Activity) string {
-	who := a.Member + "'s agent"
-	if a.Agent != "" {
-		who = fmt.Sprintf("%s's %s agent", a.Member, a.Agent)
-	}
+	who := whose(a)
 	switch a.Kind {
 	case board.ActivitySessionStalled:
 		return fmt.Sprintf("intagent: %s in %s looks stuck: %s.", who, a.Repo, a.Text)
 	case board.ActivitySessionGone:
 		return fmt.Sprintf("intagent: %s in %s stopped reporting (%s) without ending its session.", who, a.Repo, a.Text)
-	case board.ActivitySessionRecovered:
-		return fmt.Sprintf("intagent: %s in %s is reporting again.", who, a.Repo)
 	case board.ActivityConflict:
 		verb := "was refused an edit"
 		switch {

@@ -735,11 +735,11 @@ func TestWebhookPairsRecoveriesWithAnnouncedStalls(t *testing.T) {
 	}
 	s.at(stormStart.Add(10*time.Second), stall("erin", repo, "e1"))
 	s.until(stormStart.Add(time.Minute))
-	want := strings.Join([]string{
+	want := strings.Join([]string{ // each one alone, so each the line it always was
 		"intagent: alice's claude-code agent in github.com/acme/mono looks stuck: silent for 10m.",
-		"intagent: alice's claude-code agent in github.com/acme/mono is reporting again.",
+		"intagent: alice's claude-code agent in github.com/acme/mono: session.recovered ",
 		"intagent: erin's claude-code agent in github.com/acme/mono looks stuck: silent for 10m.",
-		"intagent: erin's claude-code agent in github.com/acme/mono is reporting again.",
+		"intagent: erin's claude-code agent in github.com/acme/mono: session.recovered ",
 	}, "\n")
 	if got := texts(s.ep.delivered); got != want {
 		t.Errorf("sent\n%s\nwant\n%s", got, want)

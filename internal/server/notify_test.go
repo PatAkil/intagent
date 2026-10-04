@@ -149,10 +149,12 @@ func TestWebhookEscapesSlackMarkup(t *testing.T) {
 	if strings.ContainsAny(got, "<>") || !strings.Contains(got, "&lt;!channel&gt; &amp; &lt;https://evil.example|the runbook&gt;") {
 		t.Fatalf("text = %s", got)
 	}
-	for _, kind := range []board.ActivityKind{"session.stalled", "session.gone", "conflict", "other"} {
+	for _, kind := range []board.ActivityKind{"session.stalled", "session.gone", "session.recovered", "conflict", "other"} {
 		a := board.Activity{Kind: kind, Member: "m", Agent: "a", Repo: "r", Text: "t"}
-		if s := describeActivity(a); strings.ContainsAny(s, "<>&") {
-			t.Errorf("%s: the template itself uses Slack markup: %s", kind, s)
+		for _, s := range []string{describeActivity(a), batchLine(a)} {
+			if strings.ContainsAny(s, "<>&") {
+				t.Errorf("%s: the template itself uses Slack markup: %s", kind, s)
+			}
 		}
 	}
 }
@@ -184,8 +186,14 @@ func TestWebhookOneActivityIsTheMessageItAlwaysWas(t *testing.T) {
 				Agent: board.AgentCodex, Text: "silent for 11m"},
 			`{"text":"intagent: alice's codex agent in github.com/acme/mono looks stuck: silent for 11m.","activity":{"seq":7,"at":"2026-10-02T09:30:05Z","kind":"session.stalled","repo":"github.com/acme/mono","member":"alice","claim_id":"c-al1","session":"a1","agent":"codex","text":"silent for 11m"}}`,
 		},
+		{
+			board.Activity{Seq: 9, At: at, Kind: board.ActivitySessionRecovered, Repo: "github.com/acme/mono", Member: "alice", ClaimID: "c-al1", Session: "a1",
+				Agent: board.AgentCodex},
+			`{"text":"intagent: alice's codex agent in github.com/acme/mono: session.recovered ","activity":{"seq":9,"at":"2026-10-02T09:30:05Z","kind":"session.recovered","repo":"github.com/acme/mono","member":"alice","claim_id":"c-al1","session":"a1","agent":"codex"}}`,
+		},
 	} {
-		n := newNotifier(WebhookConfig{URL: hook.URL}, nil)
+		n := newNotifier(WebhookConfig{URL: hook.URL, Events: []board.ActivityKind{c.a.Kind}}, nil)
+		n.told.add(sessionOf(c.a)) // a recovery is sent only for an agent announced as quiet
 		n.enqueue([]board.Activity{c.a})
 		n.flush(context.Background())
 		if string(got) != c.want {
@@ -198,8 +206,8 @@ func TestWebhookOneActivityIsTheMessageItAlwaysWas(t *testing.T) {
 }
 
 // Several activities make one message: collisions first, a group of more than
-// five summed up, smaller ones told line by line, and what could not be
-// queued counted.
+// five summed up, smaller ones told line by line, a recovery as a sentence of
+// its own, and what could not be queued counted.
 func TestWebhookBatchMessage(t *testing.T) {
 	at := time.Date(2026, 10, 2, 9, 30, 5, 0, time.UTC)
 	var items []*pendingItem
@@ -218,9 +226,10 @@ func TestWebhookBatchMessage(t *testing.T) {
 	}
 	add(board.Activity{Kind: board.ActivitySessionGone, Repo: "github.com/acme/web", Member: "erin", Agent: board.AgentCursor, Text: "silent for 2h"})
 	add(stall("frank", "github.com/acme/web", "f1"))
+	add(recovery("gina", "github.com/acme/web", "g1"))
 	var counted counts
 	for i, kind := range []board.ActivityKind{board.ActivitySessionStalled, board.ActivityConflict, board.ActivitySessionStalled, board.ActivitySessionStalled} {
-		counted.add(board.Activity{Seq: uint64(10 + i), Kind: kind})
+		counted.add(board.Activity{Seq: uint64(11 + i), Kind: kind})
 	}
 	m := compose(items, counted)
 
@@ -229,6 +238,7 @@ func TestWebhookBatchMessage(t *testing.T) {
 		"intagent: alice's claude-code agent in github.com/acme/web looks stuck: silent for 10m.",
 		"intagent: frank's claude-code agent in github.com/acme/web looks stuck: silent for 10m.",
 		"intagent: erin's cursor agent in github.com/acme/web stopped reporting (silent for 2h) without ending its session.",
+		"intagent: gina's claude-code agent in github.com/acme/web is reporting again.",
 		"intagent: 4 more came while the webhook was behind, too many to list: 1 collision, 3 stuck agents. " +
 			"Some of these agents may have reported again since; the dashboard shows which.",
 	}, "\n")
@@ -244,7 +254,7 @@ func TestWebhookBatchMessage(t *testing.T) {
 	for _, a := range p.Activities {
 		order += fmt.Sprint(a.Seq, " ")
 	}
-	if p.Count != 13 || p.More != 4 || order != "2 3 4 5 6 7 1 9 8 " || p.Activity == nil || p.Activity.Seq != 2 || m.key != "1-13-13" {
+	if p.Count != 14 || p.More != 4 || order != "2 3 4 5 6 7 1 9 8 10 " || p.Activity == nil || p.Activity.Seq != 2 || m.key != "1-14-14" {
 		t.Errorf("count %d, more %d, activities %s, first %+v, key %s", p.Count, p.More, order, p.Activity, m.key)
 	}
 }
