@@ -118,6 +118,16 @@ const (
 // snapshot and every stream carry them; MorePaths counts the rest.
 const maxShownPaths = 200
 
+// maxCheckPaths bounds the paths of one edit, or one check, compared with
+// teammates' work. Each path costs a pass over the repository's claims and,
+// for its area, over each claim's files, all under the board's lock: on a
+// repository of 300 claims of 50 files, 200 paths hold it for 75 ms and 2000
+// for 750 ms, with ten times the conflicts in the answer. It can rise to
+// MaxFootprint once a claim's areas are indexed and answers are bounded.
+// Past it, an edit's agent is told what was not checked, and a check is
+// refused.
+const maxCheckPaths = 200
+
 // Board holds every claim and session the server knows about.
 type Board struct {
 	mu       sync.Mutex
@@ -405,9 +415,10 @@ func (b *Board) Hook(now time.Time, ev HookEvent) (HookResult, error) {
 		startTool(now, s, ev.Tool, ev.ToolUseID)
 		res = b.decide(now, c, s, ev.Paths, ev.NoAsk)
 		res.ClaimID = c.ID
-		if named > b.cfg.MaxFootprint {
+		if len(ev.Paths) > maxCheckPaths || named > b.cfg.MaxFootprint {
 			res.Context = joinBlocks(res.Context, fmt.Sprintf("[intagent] This edit names %d files; intagent checked only "+
-				"the first %d against teammates' work.", named, b.cfg.MaxFootprint))
+				"the first %d against teammates' work. Check the others with the intagent check_paths tool, %d at a time, "+
+				"or tell your user.", named, min(len(ev.Paths), maxCheckPaths), maxCheckPaths))
 		}
 		if res.Decision == DecisionRefuse || (res.Decision == DecisionAsk && ev.NoAsk) {
 			// The edit does not run, so no tool end will follow it. (An ask that
@@ -482,7 +493,8 @@ func (ev HookEvent) clean(maxFootprint int) (HookEvent, error) {
 		ev.Footprint = &Footprint{Files: files, Truncated: fp.Truncated || len(fp.Files) > len(files)}
 	}
 	ev.Prompt = PromptLine(ev.Prompt)
-	// An edit is checked in full: as many paths as a claim keeps.
+	// A post_edit's paths join the claim's files, as many as it keeps; a
+	// pre_edit's first maxCheckPaths are checked.
 	ev.Paths, err = cleanPaths(ev.Paths, maxFootprint)
 	return ev, err
 }
@@ -960,12 +972,13 @@ func (v verdict) acted() []Conflict {
 }
 
 // decide answers an agent about to write, and counts and announces the edit
-// if it runs into a collision this session has not been told about.
+// if it runs into a collision this session has not been told about. It checks
+// the first maxCheckPaths paths, and the announcement names them all.
 func (b *Board) decide(now time.Time, c *claim, s *session, paths []PathRef, noAsk bool) HookResult {
 	if s.Acked == nil {
 		s.Acked = map[string]bool{}
 	}
-	v := b.judge(now, c, s, paths, noAsk)
+	v := b.judge(now, c, s, paths[:min(len(paths), maxCheckPaths)], noAsk)
 	res := b.answer(now, s, v)
 	// A retry that meets the same conflicts again is checked, but it is not
 	// a new collision: counting it, or announcing it, would inflate both.
@@ -1426,10 +1439,10 @@ func (b *Board) Check(now time.Time, r CheckRequest) ([]Conflict, error) {
 	}
 	// Checked in full, or not at all: a check that left paths out would
 	// pass them unsaid.
-	if len(r.Paths) > b.cfg.MaxFootprint {
-		return nil, fmt.Errorf("%w: %d paths; check at most %d at a time", ErrInvalid, len(r.Paths), b.cfg.MaxFootprint)
+	if len(r.Paths) > maxCheckPaths {
+		return nil, fmt.Errorf("%w: %d paths; check at most %d at a time", ErrInvalid, len(r.Paths), maxCheckPaths)
 	}
-	paths, err := cleanPaths(r.Paths, b.cfg.MaxFootprint)
+	paths, err := cleanPaths(r.Paths, maxCheckPaths)
 	if err != nil {
 		return nil, err
 	}

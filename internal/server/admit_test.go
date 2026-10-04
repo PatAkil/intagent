@@ -316,15 +316,14 @@ func TestPacingForgetsIdleWorktrees(t *testing.T) {
 	}
 }
 
-// A check names at most as many paths as a claim keeps, and is refused
-// rather than cut short.
+// A check names at most 200 paths, and is refused rather than cut short.
 func TestOversizedCheckIsRefused(t *testing.T) {
 	ts := newTestServer(t)
-	if code, _ := ts.post(t, "/v1/check", "alice", checkReq("alice", "/w/a", 2000)); code != http.StatusOK {
-		t.Fatalf("2000 paths: %d", code)
+	if code, _ := ts.post(t, "/v1/check", "alice", checkReq("alice", "/w/a", 200)); code != http.StatusOK {
+		t.Fatalf("200 paths: %d", code)
 	}
 	var e ErrorResponse
-	if code := ts.do(t, "POST", "/v1/check", "alice", checkReq("alice", "/w/a", 2001), &e); code != http.StatusBadRequest || !strings.Contains(e.Error, "at most 2000") {
-		t.Fatalf("2001 paths: %d %q", code, e.Error)
+	if code := ts.do(t, "POST", "/v1/check", "alice", checkReq("alice", "/w/a", 201), &e); code != http.StatusBadRequest || !strings.Contains(e.Error, "at most 200") {
+		t.Fatalf("201 paths: %d %q", code, e.Error)
 	}
 }

@@ -3,6 +3,7 @@ package board
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -31,10 +32,10 @@ func reservedBoard(t *testing.T, n, at int) (*Board, time.Time, []PathRef) {
 
 var bob = Where{Repo: "r", Host: "hb", Worktree: "/b"}
 
-// A check covers every path it names, up to the most a claim keeps, and
-// refuses more rather than leave some unchecked without saying so.
+// A check covers every path it names, up to maxCheckPaths, and refuses more
+// rather than leave some unchecked without saying so.
 func TestCheckCoversEveryPath(t *testing.T) {
-	for _, tc := range []struct{ n, at int }{{1, 0}, {201, 200}, {2000, 1999}} {
+	for _, tc := range []struct{ n, at int }{{1, 0}, {maxCheckPaths, maxCheckPaths - 1}} {
 		b, now, paths := reservedBoard(t, tc.n, tc.at)
 		cs, err := b.Check(now, CheckRequest{Member: "bob", Where: bob, Paths: paths})
 		if err != nil {
@@ -44,15 +45,16 @@ func TestCheckCoversEveryPath(t *testing.T) {
 			t.Errorf("%d paths, the reserved one at %d: conflicts %+v", tc.n, tc.at, cs)
 		}
 	}
-	b, now, paths := reservedBoard(t, 2001, 0)
+	b, now, paths := reservedBoard(t, maxCheckPaths+1, 0)
 	if _, err := b.Check(now, CheckRequest{Member: "bob", Where: bob, Paths: paths}); !errors.Is(err, ErrInvalid) {
-		t.Fatalf("2001 paths: %v", err)
+		t.Fatalf("%d paths: %v", maxCheckPaths+1, err)
 	}
 }
 
-// An edit is checked on every path it names, up to the most a claim keeps;
-// past that, the agent is told what was not checked.
-func TestEditsAreCheckedInFull(t *testing.T) {
+// An edit is checked on its first maxCheckPaths paths; past that, the agent
+// is told how many were not checked, and the conflict's activity still
+// counts every file the edit named.
+func TestEditsAreCheckedUpToTheCap(t *testing.T) {
 	edit := func(b *Board, now time.Time, paths []PathRef) HookResult {
 		t.Helper()
 		res, err := b.Hook(now, HookEvent{Kind: KindPreEdit, Member: "bob", Agent: AgentCodex, SessionID: "b", Where: bob, Tool: "apply_patch", Paths: paths})
@@ -61,19 +63,48 @@ func TestEditsAreCheckedInFull(t *testing.T) {
 		}
 		return res
 	}
-	b, now, paths := reservedBoard(t, 1500, 1400)
+	b, now, paths := reservedBoard(t, maxCheckPaths, maxCheckPaths-1)
+	if res := edit(b, now, paths); res.Decision != DecisionRefuse || strings.Contains(res.Context, "checked only") {
+		t.Fatalf("the reserved path last of %d: %s %q", maxCheckPaths, res.Decision, res.Context)
+	}
+	b, now, paths = reservedBoard(t, 1500, maxCheckPaths/2)
 	if res := edit(b, now, paths); res.Decision != DecisionRefuse {
-		t.Fatalf("the reserved path at 1400 of 1500: %+v", res.Decision)
+		t.Fatalf("the reserved path at %d of 1500: %s", maxCheckPaths/2, res.Decision)
 	}
-	b, now, paths = reservedBoard(t, 2100, 0)
-	res := edit(b, now, paths)
-	if res.Decision != DecisionRefuse {
-		t.Fatalf("the reserved path first of 2100: %+v", res.Decision)
+	var conflict *Activity
+	for _, a := range b.View(now, "r").Recent {
+		if a.Kind == ActivityConflict {
+			conflict = &a
+		}
 	}
-	b, now, paths = reservedBoard(t, 2100, 2050)
-	res = edit(b, now, paths)
-	if res.Decision != DecisionAllow || !strings.Contains(res.Context, "names 2100 files") || !strings.Contains(res.Context, "first 2000") {
-		t.Fatalf("the reserved path past the limit: %s %q", res.Decision, res.Context)
+	if conflict == nil || !slices.Contains(conflict.Paths, "svc/pay/retry.go") || len(conflict.Paths)+conflict.MorePaths != 1500 {
+		t.Fatalf("the refused edit's activity: %+v", conflict)
+	}
+	for _, n := range []int{maxCheckPaths + 1, 2100} {
+		b, now, paths = reservedBoard(t, n, n-1)
+		res := edit(b, now, paths)
+		if res.Decision != DecisionAllow || !strings.Contains(res.Context, fmt.Sprintf("names %d files", n)) ||
+			!strings.Contains(res.Context, fmt.Sprintf("first %d", maxCheckPaths)) {
+			t.Fatalf("the reserved path last of %d: %s %q", n, res.Decision, res.Context)
+		}
+	}
+}
+
+// What an edit costs under the lock grows with the paths it checks, not with
+// those it names: on a board where every path is a teammate's, a pre_edit
+// naming 2000 meets as many conflicts as one naming maxCheckPaths.
+func TestEditCostIsBounded(t *testing.T) {
+	b, now, paths := reservedBoard(t, 2000, 0)
+	alice := Where{Repo: "r", Host: "ha", Worktree: "/a"}
+	if _, err := b.Hook(now, HookEvent{Kind: KindPostEdit, Member: "alice", Agent: AgentClaudeCode, SessionID: "a", Where: alice, Paths: paths}); err != nil {
+		t.Fatal(err)
+	}
+	res, err := b.Hook(now, HookEvent{Kind: KindPreEdit, Member: "bob", Agent: AgentCodex, SessionID: "b", Where: bob, Tool: "apply_patch", Paths: paths})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Conflicts) != maxCheckPaths {
+		t.Fatalf("a pre_edit of 2000 of alice's files met %d conflicts, want %d", len(res.Conflicts), maxCheckPaths)
 	}
 }
 
