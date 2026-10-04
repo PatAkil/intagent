@@ -106,7 +106,6 @@ const (
 	maxPrompt    = 8 << 10 // the part of a prompt's first line the board reads
 	maxNoteLen   = 600
 	maxBranchLen = 120
-	maxPaths     = 200
 	maxIntents   = 50
 	maxInbox     = 50
 	inboxTTL     = 24 * time.Hour
@@ -114,6 +113,10 @@ const (
 	noteWindow   = time.Minute
 	idLen        = 8 // characters of an ID after its prefix
 )
+
+// maxShownPaths bounds the paths an activity lists, since the feed, the
+// snapshot and every stream carry them; MorePaths counts the rest.
+const maxShownPaths = 200
 
 // Board holds every claim and session the server knows about.
 type Board struct {
@@ -205,6 +208,9 @@ func (b *Board) unlock() {
 func (b *Board) record(a Activity) {
 	b.seq++
 	a.Seq = b.seq
+	if over := len(a.Paths) - maxShownPaths; over > 0 {
+		a.Paths, a.MorePaths = slices.Clone(a.Paths[:maxShownPaths]), a.MorePaths+over
+	}
 	b.recent = append(b.recent, a)
 	if over := len(b.recent) - b.cfg.KeepActivities; over > 0 {
 		b.recent = append(b.recent[:0:0], b.recent[over:]...)
@@ -227,10 +233,9 @@ func cleanWhere(w Where) (Where, error) {
 	return w, nil
 }
 
-func cleanPaths(in []PathRef) ([]PathRef, error) {
-	if len(in) > maxPaths {
-		in = in[:maxPaths]
-	}
+// cleanPaths keeps the valid, distinct paths among the first limit.
+func cleanPaths(in []PathRef, limit int) ([]PathRef, error) {
+	in = in[:min(len(in), limit)]
 	out := make([]PathRef, 0, len(in))
 	seen := map[string]bool{}
 	var first error
@@ -365,6 +370,7 @@ func (b *Board) liveSessions(now time.Time) map[string]bool {
 // It never refuses on error: callers should allow the agent to continue.
 func (b *Board) Hook(now time.Time, ev HookEvent) (HookResult, error) {
 	allow := HookResult{Decision: DecisionAllow}
+	named := len(ev.Paths)
 	ev, err := ev.clean(b.cfg.MaxFootprint) // the config never changes after New
 	if err != nil {
 		return allow, err
@@ -399,6 +405,10 @@ func (b *Board) Hook(now time.Time, ev HookEvent) (HookResult, error) {
 		startTool(now, s, ev.Tool, ev.ToolUseID)
 		res = b.decide(now, c, s, ev.Paths, ev.NoAsk)
 		res.ClaimID = c.ID
+		if named > b.cfg.MaxFootprint {
+			res.Context = joinBlocks(res.Context, fmt.Sprintf("[intagent] This edit names %d files; intagent checked only "+
+				"the first %d against teammates' work.", named, b.cfg.MaxFootprint))
+		}
 		if res.Decision == DecisionRefuse || (res.Decision == DecisionAsk && ev.NoAsk) {
 			// The edit does not run, so no tool end will follow it. (An ask that
 			// the person answers runs, or not, and the agent reports either.)
@@ -475,7 +485,8 @@ func (ev HookEvent) clean(maxFootprint int) (HookEvent, error) {
 	if ev.Prompt = firstLine(ev.Prompt); len(ev.Prompt) > maxPrompt {
 		ev.Prompt = ev.Prompt[:maxPrompt]
 	}
-	ev.Paths, err = cleanPaths(ev.Paths)
+	// An edit is checked in full: as many paths as a claim keeps.
+	ev.Paths, err = cleanPaths(ev.Paths, maxFootprint)
 	return ev, err
 }
 
@@ -1406,7 +1417,12 @@ func (b *Board) Check(now time.Time, r CheckRequest) ([]Conflict, error) {
 	if err != nil {
 		return nil, err
 	}
-	paths, err := cleanPaths(r.Paths)
+	// Checked in full, or not at all: a check that left paths out would
+	// pass them unsaid.
+	if len(r.Paths) > b.cfg.MaxFootprint {
+		return nil, fmt.Errorf("%w: %d paths; check at most %d at a time", ErrInvalid, len(r.Paths), b.cfg.MaxFootprint)
+	}
+	paths, err := cleanPaths(r.Paths, b.cfg.MaxFootprint)
 	if err != nil {
 		return nil, err
 	}

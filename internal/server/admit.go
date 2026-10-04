@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"sync"
 	"time"
+
+	"github.com/patakil/intagent/internal/board"
 )
 
 // Large request bodies are metered before they are read. A session start's or
@@ -19,6 +21,17 @@ const (
 	memberByteRate  = 4 << 20  // bytes a second, per member
 	memberByteBurst = 32 << 20 // a fleet's session starts at once, under one token
 	largeBodyWait   = time.Second
+)
+
+// Checks and declarations are paced per member and worktree: one at a time,
+// at callRate a second with a burst of callBurst. Each holds the board's lock
+// for as long as its paths and patterns take, so an agent that loops on them
+// is answered 429 rather than keep the lock from everyone's hooks; an
+// orchestrator's agents, each in its own worktree, are paced apart. Hooks are
+// never paced: an edit must not go unchecked, or be refused, for load.
+const (
+	callRate  = 5
+	callBurst = 20
 )
 
 // bucket is a token bucket that refills with the server's clock.
@@ -52,12 +65,17 @@ type admission struct {
 	// that their memory and CPU are bounded whoever sends them.
 	large     chan struct{}
 	largeWait time.Duration
+	// calls and busy pace checks and declarations, by member and worktree.
+	calls   map[string]*bucket
+	busy    map[string]bool
+	pruneAt int
 }
 
 func newAdmission() *admission {
 	return &admission{
 		bytes: map[string]*bucket{}, byteRate: memberByteRate, byteCap: memberByteBurst,
 		large: make(chan struct{}, runtime.GOMAXPROCS(0)), largeWait: largeBodyWait,
+		calls: map[string]*bucket{}, busy: map[string]bool{}, pruneAt: minPrune,
 	}
 }
 
@@ -108,4 +126,62 @@ func (s *Server) admitBody(w http.ResponseWriter, r *http.Request, member string
 	case <-r.Context().Done():
 	}
 	return nil, false
+}
+
+// minPrune is how many paced worktrees are kept before refilled ones are
+// dropped.
+const minPrune = 1024
+
+// call admits a check or a declaration with key, its member and worktree, or
+// says why not.
+func (a *admission) call(key string, now time.Time) (release func(), why string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.busy[key] {
+		return nil, "another check or declaration from this worktree is still running; try again when it ends"
+	}
+	b, ok := a.calls[key]
+	if !ok {
+		a.prune(now)
+		b = &bucket{tokens: callBurst, at: now}
+		a.calls[key] = b
+	}
+	if !b.take(now, 1, callRate, callBurst) {
+		return nil, "too many checks and declarations from this worktree; try again in a second"
+	}
+	a.busy[key] = true
+	return func() {
+		a.mu.Lock()
+		delete(a.busy, key)
+		a.mu.Unlock()
+	}, ""
+}
+
+// prune drops the buckets that have refilled, which are as good as none, once
+// there are many of them: their keys come from what clients send.
+func (a *admission) prune(now time.Time) {
+	if len(a.calls) < a.pruneAt {
+		return
+	}
+	refill := time.Duration(float64(callBurst) / callRate * float64(time.Second))
+	for k, b := range a.calls {
+		if now.Sub(b.at) >= refill {
+			delete(a.calls, k)
+		}
+	}
+	a.pruneAt = max(minPrune, 2*len(a.calls))
+}
+
+// admitCall paces a check or a declaration from where, and answers it with
+// 429 when it must wait.
+func (s *Server) admitCall(w http.ResponseWriter, member string, where board.Where) (release func(), ok bool) {
+	// Cleaned as the board cleans them, so the key names the claim's worktree.
+	key := member + "\x00" + board.Clean(where.Host, 100) + "\x00" + board.Clean(where.Worktree, 500)
+	release, why := s.admit.call(key, s.now())
+	if why != "" {
+		w.Header().Set("Retry-After", "1")
+		writeError(w, http.StatusTooManyRequests, why)
+		return nil, false
+	}
+	return release, true
 }

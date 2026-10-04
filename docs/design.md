@@ -150,7 +150,7 @@ All endpoints take and return JSON and require `Authorization: Bearer <token>`, 
 | `POST /v1/hook` | hooks | One normalised lifecycle event in, a decision and context out. |
 | `POST /v1/intents` | MCP, CLI | Declare intents for a claim. Returns overlaps. |
 | `POST /v1/intents/release` | MCP, CLI | Release some or all intents. |
-| `POST /v1/check` | MCP, CLI, guard | Who else claims or touched these paths. Read-only. |
+| `POST /v1/check` | MCP, CLI, guard | Who else claims or touched these paths, up to 2000 (more is a 400). Read-only. |
 | `POST /v1/notes` | MCP, CLI | Send a note to a claim or a member. |
 | `GET /v1/board` | CLI, dashboard | Every claim and session in a repo, with derived states. |
 | `GET /v1/stream` | dashboard | Server-sent events. |
@@ -178,6 +178,11 @@ All endpoints take and return JSON and require `Authorization: Bearer <token>`, 
   after a second's wait). The hooks that check edits are a few hundred bytes and are never metered, so no edit is
   refused for load under `INTAGENT_FAIL=closed`. Footprints and prompts are cut to size before the board's lock is
   taken: a footprint to its first 2000 entries, duplicates and invalid paths included.
+- An edit is checked on every path it names, up to 2000; past that its agent is told how many were not checked. A
+  check of more than 2000 paths is refused rather than cut short. Checks and declarations are paced per member and
+  worktree, one at a time and five a second with a burst of 20 (429 past that), since each holds the board's lock for
+  as long as its paths and patterns take; an orchestrator's agents, each in its own worktree, are paced apart. Hooks
+  are never paced: an edit must not go unchecked, or be refused, for load.
 - A client has 15 seconds to send a whole request and 16 KB for its headers, and past 4096 open connections
   (`serve --max-connections`) the server closes new ones as soon as it accepts them, so a client that sends slowly, or
   opens many connections, with a token or without, cannot use up the server's file descriptors and memory. A hook

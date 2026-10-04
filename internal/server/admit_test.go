@@ -120,3 +120,111 @@ func TestSlowLargeBodyHoldsNoSlot(t *testing.T) {
 		t.Fatalf("large body while others are sent slowly: %d", code)
 	}
 }
+
+func checkReq(member, worktree string, paths int) board.CheckRequest {
+	w := where(member)
+	w.Worktree = worktree
+	req := board.CheckRequest{Where: w}
+	for i := range paths {
+		req.Paths = append(req.Paths, board.PathRef{Path: fmt.Sprintf("docs/%d.md", i)})
+	}
+	return req
+}
+
+// Checks and declarations from one worktree are paced: a burst, then a few a
+// second. Other worktrees, other members and hooks are not held back.
+func TestChecksArePacedPerWorktree(t *testing.T) {
+	ts := newTestServer(t)
+	for i := range callBurst {
+		if code, _ := ts.post(t, "/v1/check", "alice", checkReq("alice", "/w/a", 1)); code != http.StatusOK {
+			t.Fatalf("check %d: %d", i, code)
+		}
+	}
+	if code, retry := ts.post(t, "/v1/check", "alice", checkReq("alice", "/w/a", 1)); code != http.StatusTooManyRequests || retry != "1" {
+		t.Fatalf("check past the burst: %d, Retry-After %q", code, retry)
+	}
+	declare := board.DeclareRequest{Where: checkReq("alice", "/w/a", 0).Where, Patterns: []string{"a/**"}}
+	if code, _ := ts.post(t, "/v1/intents", "alice", declare); code != http.StatusTooManyRequests {
+		t.Fatalf("declare past the burst: %d", code)
+	}
+	for _, c := range []struct{ member, worktree string }{{"alice", "/w/a2"}, {"bob", "/w/a"}} {
+		if code, _ := ts.post(t, "/v1/check", c.member, checkReq(c.member, c.worktree, 1)); code != http.StatusOK {
+			t.Fatalf("%s's check from %s: %d", c.member, c.worktree, code)
+		}
+	}
+	pre := hookEv(board.KindPreEdit, "alice", "a1", "a/b.go")
+	pre.Where.Worktree = "/w/a"
+	if code, _ := ts.post(t, "/v1/hook", "alice", pre); code != http.StatusOK {
+		t.Fatalf("a hook from the paced worktree: %d", code)
+	}
+	ts.mu.Lock()
+	ts.clock = ts.clock.Add(time.Second)
+	ts.mu.Unlock()
+	for i := range callRate {
+		if code, _ := ts.post(t, "/v1/check", "alice", checkReq("alice", "/w/a", 1)); code != http.StatusOK {
+			t.Fatalf("check %d a second later: %d", i, code)
+		}
+	}
+	if code, _ := ts.post(t, "/v1/check", "alice", checkReq("alice", "/w/a", 1)); code != http.StatusTooManyRequests {
+		t.Fatalf("check past the rate: %d", code)
+	}
+}
+
+// One check or declaration at a time from a worktree.
+func TestOneCheckAtATimePerWorktree(t *testing.T) {
+	ts := newTestServer(t)
+	req := checkReq("alice", "/w/a", 1)
+	release, why := ts.admit.call("alice\x00"+req.Where.Host+"\x00/w/a", ts.now())
+	if why != "" {
+		t.Fatal(why)
+	}
+	var e ErrorResponse
+	if code := ts.do(t, "POST", "/v1/check", "alice", req, &e); code != http.StatusTooManyRequests || !strings.Contains(e.Error, "still running") {
+		t.Fatalf("check while another runs: %d %q", code, e.Error)
+	}
+	release()
+	if code, _ := ts.post(t, "/v1/check", "alice", req); code != http.StatusOK {
+		t.Fatalf("check after the other ended: %d", code)
+	}
+}
+
+// Paced worktrees that have refilled are dropped once there are many: the
+// buckets kept are at most about twice those in use.
+func TestPacingForgetsIdleWorktrees(t *testing.T) {
+	a := newAdmission()
+	now := time.Date(2026, 10, 2, 9, 0, 0, 0, time.UTC)
+	call := func(key string, at time.Time) {
+		release, why := a.call(key, at)
+		if why != "" {
+			t.Fatal(why)
+		}
+		release()
+	}
+	for i := range 3 * minPrune {
+		call(fmt.Sprint("early", i), now)
+	}
+	most := 0
+	for i := range 3 * minPrune {
+		call(fmt.Sprint("late", i), now.Add(time.Minute))
+		most = max(most, len(a.calls))
+	}
+	if n := len(a.calls); n != 3*minPrune {
+		t.Fatalf("%d buckets after the early ones refilled, want %d", n, 3*minPrune)
+	}
+	if most > 2*3*minPrune {
+		t.Fatalf("up to %d buckets for %d in use", most, 3*minPrune)
+	}
+}
+
+// A check names at most as many paths as a claim keeps, and is refused
+// rather than cut short.
+func TestOversizedCheckIsRefused(t *testing.T) {
+	ts := newTestServer(t)
+	if code, _ := ts.post(t, "/v1/check", "alice", checkReq("alice", "/w/a", 2000)); code != http.StatusOK {
+		t.Fatalf("2000 paths: %d", code)
+	}
+	var e ErrorResponse
+	if code := ts.do(t, "POST", "/v1/check", "alice", checkReq("alice", "/w/a", 2001), &e); code != http.StatusBadRequest || !strings.Contains(e.Error, "at most 2000") {
+		t.Fatalf("2001 paths: %d %q", code, e.Error)
+	}
+}

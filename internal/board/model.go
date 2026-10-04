@@ -400,4 +400,7 @@ type Activity struct {
 	// Also names the other teammates a collision newly ran into, besides the
 	// one Text names: "carol on c/y.go: has unmerged changes to this file".
 	Also []string `json:"also,omitempty"`
+	// MorePaths counts the paths the event named beyond those Paths lists,
+	// which are at most 200.
+	MorePaths int `json:"more_paths,omitempty"`
 }

@@ -455,6 +455,11 @@ func (s *Server) handleDeclare(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Member = memberFrom(r)
+	release, ok := s.admitCall(w, req.Member, req.Where)
+	if !ok {
+		return
+	}
+	defer release()
 	res, err := s.board.Declare(s.now(), req)
 	if err != nil {
 		writeBoardError(w, err)
@@ -483,6 +488,11 @@ func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Member = memberFrom(r)
+	release, ok := s.admitCall(w, req.Member, req.Where)
+	if !ok {
+		return
+	}
+	defer release()
 	now := s.now()
 	cs, err := s.board.Check(now, req)
 	if err != nil {
