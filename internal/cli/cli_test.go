@@ -1152,6 +1152,48 @@ func TestServeReloadsMembers(t *testing.T) {
 	}
 }
 
+// A stream cap of 0 allows no dashboards, as it reads: --max-public-streams
+// 0 used to allow 100 without a token, the default, and said nothing.
+func TestServeStreamCapsOfZeroAllowNone(t *testing.T) {
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "team.json")
+	var out, errb bytes.Buffer
+	app := &App{In: strings.NewReader(""), Out: &out, Err: &errb, Version: "test", Dir: dir}
+	if code := app.Run(context.Background(), []string{"token", "add", "alice", "--config", cfg}); code != 0 {
+		t.Fatalf("token add: %s", errb.String())
+	}
+	alice := strings.TrimSpace(strings.Split(out.String(), "\n")[2])
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second) // a server that starts stops
+	defer cancel()
+	if code := app.Run(ctx, []string{"serve", "--config", cfg, "--data", "", "--addr", "127.0.0.1:0", "--max-streams", "-1"}); code == 0 ||
+		!strings.Contains(errb.String(), "--max-streams cannot be negative") {
+		t.Fatalf("a negative cap: %d %s", code, errb.String())
+	}
+	addr := startServe(t, &App{In: strings.NewReader(""), Out: &out, Err: &errb, Version: "test", Dir: dir},
+		"--config", cfg, "--public-read", "--max-public-streams", "0")
+	stream := func(token string) int {
+		t.Helper()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/v1/stream", nil)
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+	if code := stream(""); code != http.StatusTooManyRequests {
+		t.Fatalf("a stream without a token, with --max-public-streams 0: %d", code)
+	}
+	if code := stream(alice); code != http.StatusOK {
+		t.Fatalf("alice's stream: %d", code)
+	}
+}
+
 // A broken .intagent.json is not "outside a repository": doctor names it,
 // the hook logs it, and fail-closed refuses edits instead of passing them.
 func TestBrokenRepoFileIsReported(t *testing.T) {

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -94,24 +93,17 @@ type answers struct {
 	mu       sync.Mutex
 	degraded bool
 	since    time.Time
-	changed  chan struct{} // closed, and replaced, when degraded changes
 }
 
-func newAnswers() *answers { return &answers{changed: make(chan struct{})} }
+func newAnswers() *answers { return &answers{} }
 
 // status reports the state and the last minute's counts at now.
 func (l *answers) status(now time.Time) LoadStatus {
-	st, _ := l.watch(now)
-	return st
-}
-
-// watch reports the status, and a channel closed when it next changes.
-func (l *answers) watch(now time.Time) (LoadStatus, <-chan struct{}) {
 	l.mu.Lock()
-	st, changed := LoadStatus{Degraded: l.degraded, Since: l.since}, l.changed
+	st := LoadStatus{Degraded: l.degraded, Since: l.since}
 	l.mu.Unlock()
 	st.PreEdits60s, st.Unchecked60s = l.preEdits.sum(now, statusWindow), l.unchecked.sum(now, statusWindow)
-	return st, changed
+	return st
 }
 
 // tick moves the state on, once a second. It reports the new status, and
@@ -129,8 +121,6 @@ func (l *answers) tick(now time.Time) (st LoadStatus, lasted time.Duration, chan
 			lasted = now.Sub(l.since)
 		}
 		l.degraded, l.since = !l.degraded, now
-		close(l.changed)
-		l.changed = make(chan struct{})
 	}
 	l.mu.Unlock()
 	if changed {
@@ -184,11 +174,16 @@ func (s *Server) watchLoad(ctx context.Context) {
 	}
 }
 
-// checkLoad logs and announces a change of state.
+// checkLoad logs and announces a change of state: to the dashboards, whose
+// streams each take one encoding of it whatever their repository, and to the
+// webhook.
 func (s *Server) checkLoad(now time.Time) {
 	st, lasted, changed := s.answers.tick(now)
 	if !changed {
 		return
+	}
+	if ev := statusEvent(st); ev != nil {
+		s.hub.send([]frame{{all: true, data: ev}})
 	}
 	a := board.Activity{At: now, Kind: board.ActivityServerRecovered, Text: fmt.Sprintf("after %s", lasted.Round(time.Second))}
 	if st.Degraded {
@@ -203,13 +198,13 @@ func (s *Server) checkLoad(now time.Time) {
 	}
 }
 
-// sendStatus writes the load status as a server-sent "status" event. It has
-// no id: it is not an activity, and a reconnecting stream asks for none.
-func sendStatus(w io.Writer, st LoadStatus) bool {
+// statusEvent is the load status as a server-sent "status" event, or nil if
+// it cannot be encoded. It has no id: it is not an activity, and a
+// reconnecting stream asks for none.
+func statusEvent(st LoadStatus) []byte {
 	data, err := json.Marshal(st)
 	if err != nil {
-		return false
+		return nil
 	}
-	_, err = fmt.Fprintf(w, "event: status\ndata: %s\n\n", data)
-	return err == nil
+	return appendEvent(nil, "status", 0, data)
 }

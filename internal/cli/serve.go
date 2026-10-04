@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
 	"os"
 	"strings"
 	"time"
@@ -27,8 +26,29 @@ func (a *App) serve(ctx context.Context, args []string) error {
 	level := fs.String("log-level", "info", "debug, info, warn or error")
 	tlsCert := fs.String("tls-cert", "", "serve HTTPS with this certificate chain (PEM), with --tls-key")
 	tlsKey := fs.String("tls-key", "", "the certificate's private key (PEM)")
+	maxStreams := fs.Int("max-streams", 500, "dashboards connected at once, in all (0 for none); more are refused until one closes")
+	memberStreams := fs.Int("max-member-streams", 20, "dashboards one member may have connected at once (0 for none)")
+	publicStreams := fs.Int("max-public-streams", 100, "dashboards connected at once without a token, with --public-read (0 for none)")
 	if err := parse(fs, args); err != nil {
 		return err
+	}
+	var streams server.StreamLimits
+	for _, l := range []struct {
+		flag  string
+		n     int
+		field *int
+	}{
+		{"max-streams", *maxStreams, &streams.Total},
+		{"max-member-streams", *memberStreams, &streams.PerMember},
+		{"max-public-streams", *publicStreams, &streams.Anonymous},
+	} {
+		if l.n < 0 {
+			return fmt.Errorf("--%s cannot be negative: 0 allows no dashboards", l.flag)
+		}
+		*l.field = l.n
+		if l.n == 0 {
+			*l.field = -1 // in StreamLimits zero takes the default, and less allows none
+		}
 	}
 	if (*tlsCert == "") != (*tlsKey == "") {
 		return errors.New("--tls-cert and --tls-key go together")
@@ -49,6 +69,7 @@ func (a *App) serve(ctx context.Context, args []string) error {
 	srv, err := server.New(server.Options{
 		Members: fc.Members, Version: a.Version, Board: fc.BoardConfig(), DataDir: *data, PublicRead: *public,
 		Logger: logger, Dashboard: web.Handler(), Webhook: fc.Webhook,
+		Streams: streams,
 	})
 	if err != nil {
 		return err
@@ -63,7 +84,7 @@ func (a *App) serve(ctx context.Context, args []string) error {
 		// allow only six connections to a server.
 		tlsConfig = &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12, NextProtos: []string{"h2", "http/1.1"}}
 	}
-	ln, err := new(net.ListenConfig).Listen(ctx, "tcp", *addr)
+	ln, err := server.Listen(ctx, *addr)
 	if err != nil {
 		return err
 	}

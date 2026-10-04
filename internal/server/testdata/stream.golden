@@ -1,0 +1,27 @@
+retry: 3000
+: connected
+
+id: 1
+event: activity
+data: {"seq":1,"at":"2026-10-02T09:00:00Z","kind":"claim.opened","repo":"github.com/acme/mono","member":"alice","claim_id":"c-alice","text":"b-alice"}
+
+id: 2
+event: activity
+data: {"seq":2,"at":"2026-10-02T09:00:00Z","kind":"session.started","repo":"github.com/acme/mono","member":"alice","claim_id":"c-alice","session":"a1","agent":"claude-code"}
+
+id: 3
+event: activity
+data: {"seq":3,"at":"2026-10-02T09:00:00Z","kind":"file.changed","repo":"github.com/acme/mono","member":"alice","claim_id":"c-alice","session":"a1","agent":"claude-code","paths":["x/y.go"]}
+
+--- reconnected with Last-Event-ID: 2
+retry: 3000
+: connected
+
+id: 3
+event: activity
+data: {"seq":3,"at":"2026-10-02T09:00:00Z","kind":"file.changed","repo":"github.com/acme/mono","member":"alice","claim_id":"c-alice","session":"a1","agent":"claude-code","paths":["x/y.go"]}
+
+id: 4
+event: activity
+data: {"seq":4,"at":"2026-10-02T09:00:00Z","kind":"file.changed","repo":"github.com/acme/mono","member":"alice","claim_id":"c-alice","session":"a1","agent":"claude-code","paths":["x/z.go"]}
+

@@ -136,6 +136,14 @@ type Board struct {
 	// unheard is set while Hook records an event whose answer nobody will
 	// read: nothing is delivered in it.
 	unheard bool
+
+	// dropped is, by repository, the seq of the newest activity the feed has
+	// let go of, and droppedAll the newest of all; droppedFloor covers what a
+	// restart let go of, whose repositories are not known. A replay from an
+	// older seq misses something.
+	dropped      map[string]uint64
+	droppedAll   uint64
+	droppedFloor uint64
 }
 
 // Option configures a Board.
@@ -158,6 +166,7 @@ func New(cfg Config, opts ...Option) *Board {
 		sessions: map[string]*session{},
 		notes:    map[string][]time.Time{},
 		stats:    map[string]*Stats{},
+		dropped:  map[string]uint64{},
 		newID:    randomID,
 	}
 	for _, o := range opts {
@@ -215,11 +224,30 @@ func (b *Board) record(a Activity) {
 		// Slice past the oldest rather than copy the feed: append moves it to
 		// a new array only when it runs out of room, about once in
 		// KeepActivities records. Clear what is dropped, so the old array
-		// does not keep it alive meanwhile.
+		// does not keep it alive meanwhile; letGo notes its seqs first.
+		b.letGo(b.recent[:over])
 		clear(b.recent[:over])
 		b.recent = b.recent[over:]
 	}
 	b.pending = append(b.pending, a)
+}
+
+// maxDroppedRepos bounds the repositories the board remembers dropping
+// activities of; past it they are folded into one floor, which can only make
+// a replay say it misses something when it does not.
+const maxDroppedRepos = 1000
+
+// letGo notes the activities the feed lets go of, so a replay can tell when
+// it misses one.
+func (b *Board) letGo(acts []Activity) {
+	for _, a := range acts {
+		b.dropped[a.Repo] = a.Seq
+		b.droppedAll = a.Seq
+	}
+	if len(b.dropped) > maxDroppedRepos {
+		b.droppedFloor = b.droppedAll
+		clear(b.dropped)
+	}
 }
 
 func (b *Board) changed() { b.version++ }

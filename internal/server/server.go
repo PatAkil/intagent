@@ -54,6 +54,8 @@ type Options struct {
 	Dashboard http.Handler
 	// Webhook sends selected activities to an endpoint. Zero sends nothing.
 	Webhook WebhookConfig
+	// Streams caps the dashboard streams open at once.
+	Streams StreamLimits
 }
 
 // Server serves one team's board.
@@ -101,7 +103,7 @@ const (
 // New builds a server and restores its board from DataDir.
 func New(o Options) (*Server, error) {
 	s := &Server{
-		hub:        newHub(),
+		hub:        newHub(o.Streams),
 		log:        o.Logger,
 		now:        o.Now,
 		clock:      time.Now,
@@ -192,19 +194,19 @@ func (s *Server) session(m memberHash) string {
 }
 
 // sessionMember finds the member a dashboard cookie belongs to.
-func (s *Server) sessionMember(cookie string) (string, bool) {
+func (s *Server) sessionMember(cookie string) (memberHash, bool) {
 	got, err := hex.DecodeString(cookie)
 	if err != nil || len(got) != sha256.Size {
-		return "", false
+		return memberHash{}, false
 	}
-	name := ""
+	var found memberHash
 	for _, m := range *s.members.Load() {
 		want, _ := hex.DecodeString(s.session(m))
 		if hmac.Equal(got, want) {
-			name = m.name
+			found = m
 		}
 	}
-	return name, name != ""
+	return found, found.name != ""
 }
 
 // SetMembers replaces who may use the server: new members can sign in, and a
@@ -223,10 +225,27 @@ func (s *Server) SetMembers(ms []Member) error {
 	}
 	if s.members.Swap(&list) != nil {
 		// Streams were authorised against the old list: a revoked token must
-		// not keep one open.
-		s.hub.closeAll()
+		// not keep one open, and the others stay, so adding a member or a
+		// touch of the file disconnects nobody. The list is swapped first:
+		// handleStream checks a stream that subscribes after this against it.
+		s.hub.closeUnless(s.admits)
 	}
 	return nil
+}
+
+// admits reports whether the credential that authorised a request is still
+// listed: the same member with the same token, or nobody on a board open to
+// all, which the member list does not change.
+func (s *Server) admits(who memberHash) bool {
+	if who.name == "" {
+		return true
+	}
+	for _, m := range *s.members.Load() {
+		if m.name == who.name && subtle.ConstantTimeCompare(m.hash, who.hash) == 1 {
+			return true
+		}
+	}
+	return false
 }
 
 // Board exposes the board, for tests and embedding.
@@ -307,24 +326,29 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 
 type ctxKey struct{}
 
-func memberFrom(r *http.Request) string {
-	m, _ := r.Context().Value(ctxKey{}).(string)
+// memberFrom is the member a request was authorised as; "" for nobody, on a
+// board open to all.
+func memberFrom(r *http.Request) string { return authorityFrom(r).name }
+
+// authorityFrom is the member and token hash a request was authorised by.
+func authorityFrom(r *http.Request) memberHash {
+	m, _ := r.Context().Value(ctxKey{}).(memberHash)
 	return m
 }
 
 // authenticate resolves a token to a member, comparing in constant time.
-func (s *Server) authenticate(token string) (string, bool) {
+func (s *Server) authenticate(token string) (memberHash, bool) {
 	if token == "" {
-		return "", false
+		return memberHash{}, false
 	}
 	got, _ := hex.DecodeString(HashToken(token))
-	name := ""
+	var found memberHash
 	for _, m := range *s.members.Load() {
 		if subtle.ConstantTimeCompare(got, m.hash) == 1 {
-			name = m.name
+			found = m
 		}
 	}
-	return name, name != ""
+	return found, found.name != ""
 }
 
 func bearer(r *http.Request) string {
@@ -338,12 +362,12 @@ func bearer(r *http.Request) string {
 // write admits only bearer tokens, so a browser cookie can never cause a write.
 func (s *Server) write(h http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		name, ok := s.authenticate(bearer(r))
+		who, ok := s.authenticate(bearer(r))
 		if !ok {
 			writeError(w, http.StatusUnauthorized, "missing or unknown token")
 			return
 		}
-		h(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, name)))
+		h(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, who)))
 	})
 }
 
@@ -351,9 +375,9 @@ func (s *Server) write(h http.HandlerFunc) http.Handler {
 func (s *Server) read(h http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token := bearer(r)
-		name, ok := s.authenticate(token)
+		who, ok := s.authenticate(token)
 		if c, err := r.Cookie(cookieName); !ok && token == "" && err == nil {
-			name, ok = s.sessionMember(c.Value)
+			who, ok = s.sessionMember(c.Value)
 		}
 		// A board open to all still rejects a token it does not know: its
 		// owner must find out, not be treated as anonymous.
@@ -361,23 +385,18 @@ func (s *Server) read(h http.HandlerFunc) http.Handler {
 			writeError(w, http.StatusUnauthorized, "missing or unknown token")
 			return
 		}
-		h(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, name)))
+		h(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, who)))
 	})
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 4096)
-	name, ok := s.authenticate(strings.TrimSpace(r.FormValue("token")))
+	who, ok := s.authenticate(strings.TrimSpace(r.FormValue("token")))
 	if !ok {
 		http.Redirect(w, r, "/?login=failed", http.StatusSeeOther)
 		return
 	}
-	var session string
-	for _, m := range *s.members.Load() {
-		if m.name == name {
-			session = s.session(m)
-		}
-	}
+	session := s.session(who)
 	// Behind a proxy that terminates TLS, the proxy says so; a client that
 	// claims it can only make its own cookie stricter.
 	secure := r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
@@ -649,17 +668,34 @@ func etagMatch(header, tag string) bool {
 }
 
 // handleStream sends activities as server-sent events. A client reconnecting
-// with Last-Event-ID first receives what it missed.
+// with Last-Event-ID first receives what it missed, after a gap event when the
+// board no longer holds all of it.
 func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
-	flusher, ok := w.(http.Flusher)
-	if !ok {
+	if _, ok := w.(http.Flusher); !ok {
 		writeError(w, http.StatusInternalServerError, "streaming unsupported")
 		return
 	}
 	repo := board.RepoID(r.URL.Query().Get("repo"))
-	sub := s.hub.subscribe(repo)
+	who := authorityFrom(r)
+	sub, ok := s.hub.subscribe(repo, who)
+	if !ok {
+		// A dashboard's EventSource gives up on an error status, and the
+		// dashboard tries again after its own backoff.
+		w.Header().Set("Retry-After", strconv.Itoa(streamRetryAfter))
+		writeError(w, http.StatusTooManyRequests, "too many open streams; close a dashboard or try again later")
+		return
+	}
 	defer s.hub.unsubscribe(sub)
-	status, statusChanged := s.answers.watch(s.clock())
+	// SetMembers may have swapped the list after this request was
+	// authorised, and closed what it no longer admits before this stream
+	// subscribed; it is checked here against the new list instead.
+	if !s.admits(who) {
+		writeError(w, http.StatusUnauthorized, "missing or unknown token")
+		return
+	}
+	// Read after subscribing: a change from now on reaches the stream through
+	// the hub, so none falls between the two.
+	status := s.answers.status(s.clock())
 
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream")
@@ -667,62 +703,83 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	h.Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 
-	fmt.Fprint(w, "retry: 3000\n: connected\n\n")
-	if status.Degraded && !sendStatus(w, status) {
-		return
+	out := newStreamWriter(w, repo)
+	out.raw("retry: 3000\n: connected\n\n")
+	if status.Degraded {
+		out.add(statusEvent(status))
 	}
-	last, _ := strconv.ParseUint(r.Header.Get("Last-Event-ID"), 10, 64)
-	if last > 0 {
-		for _, a := range s.board.Since(repo, last) {
-			if !sendEvent(w, a) {
-				return
+	if last, _ := strconv.ParseUint(r.Header.Get("Last-Event-ID"), 10, 64); last > 0 {
+		out.last = last
+		acts, complete := s.board.Replay(repo, last)
+		if !complete {
+			// The board no longer holds all the client missed. A dashboard
+			// marks the hole and reloads the board; older ones listen only for
+			// activities and ignore this.
+			out.event("gap", fmt.Appendf(nil, `{"after":%d}`, last))
+		}
+		for _, a := range acts {
+			if f, ok := activityFrame(a); ok {
+				out.frames([]frame{f})
 			}
-			last = a.Seq
 		}
 	}
-	flusher.Flush()
+	if out.flush() != nil {
+		return
+	}
 
 	keep := time.NewTicker(sseKeepAway)
 	defer keep.Stop()
+	// After each write the stream lingers before it takes more: what is
+	// published meanwhile waits in the hub and goes out in the next write.
+	linger := time.NewTimer(streamLinger)
+	linger.Stop()
+	defer linger.Stop()
+	pos, wake, lingering := sub.pos, sub.wake, false
+	var batches [][]frame
 	for {
+		next := wake
+		if lingering {
+			next = nil
+		}
 		select {
 		case <-r.Context().Done():
+			// The client has gone, and the goodbye goes nowhere, or an
+			// http.Server other than Serve's ends its requests as it stops.
+			out.goodbye(sub.retry)
 			return
 		case <-s.closing:
+			// Serve is stopping. Its requests keep their context while it
+			// does, so this, not the context, ends the stream.
+			out.goodbye(sub.retry)
 			return
-		case <-sub.dropped:
+		case <-sub.done:
+			out.goodbye(sub.retry)
 			return
+		case <-linger.C:
+			lingering = false
 		case <-keep.C:
-			if _, err := fmt.Fprint(w, ": keep-alive\n\n"); err != nil {
+			out.raw(": keep-alive\n\n")
+			if out.flush() != nil {
 				return
 			}
-			flusher.Flush()
-		case <-statusChanged:
-			status, statusChanged = s.answers.watch(s.clock())
-			if !sendStatus(w, status) {
+		case <-next:
+			var ok bool
+			batches, pos, wake, ok = s.hub.since(pos, batches[:0])
+			if !ok {
+				out.goodbye(sub.retry) // too far behind: the client reconnects and catches up
 				return
 			}
-			flusher.Flush()
-		case a := <-sub.ch:
-			if a.Seq <= last {
-				continue
+			for _, b := range batches {
+				out.frames(b)
 			}
-			if !sendEvent(w, a) {
+			clear(batches)
+			if out.flush() != nil {
 				return
 			}
-			last = a.Seq
-			flusher.Flush()
+			lingering = true
+			linger.Reset(streamLinger)
 		}
 	}
-}
-
-func sendEvent(w io.Writer, a board.Activity) bool {
-	data, err := json.Marshal(a)
-	if err != nil {
-		return false
-	}
-	_, err = fmt.Fprintf(w, "id: %d\nevent: activity\ndata: %s\n\n", a.Seq, data)
-	return err == nil
 }
 
 // --- plumbing ------------------------------------------------------------
@@ -824,6 +881,12 @@ func (w *statusWriter) Flush() {
 	if f, ok := w.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
 	}
+}
+
+// FlushError flushes, and says when the client could not be written to: a
+// stream whose write deadline passed ends at once.
+func (w *statusWriter) FlushError() error {
+	return http.NewResponseController(w.ResponseWriter).Flush()
 }
 
 // Unwrap supports http.ResponseController.

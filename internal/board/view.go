@@ -199,6 +199,15 @@ func (b *Board) sessionViews(now time.Time, ss []*session) []SessionView {
 
 // Since returns activities after seq for a repository ("" for all).
 func (b *Board) Since(repo string, seq uint64) []Activity {
+	acts, _ := b.Replay(repo, seq)
+	return acts
+}
+
+// Replay returns activities after seq for a repository ("" for all), and
+// whether they are all of them: false when the feed has already let go of an
+// activity after seq for that repository, so a client that saw seq last has
+// missed something it cannot be sent.
+func (b *Board) Replay(repo string, seq uint64) ([]Activity, bool) {
 	if repo != "" {
 		repo = RepoID(repo)
 	}
@@ -210,7 +219,13 @@ func (b *Board) Since(repo string, seq uint64) []Activity {
 			out = append(out, a)
 		}
 	}
-	return out
+	lost := b.droppedFloor
+	if repo == "" {
+		lost = max(lost, b.droppedAll)
+	} else {
+		lost = max(lost, b.dropped[repo])
+	}
+	return out, lost <= seq
 }
 
 // Text renders a view for a person or an agent reading a terminal.

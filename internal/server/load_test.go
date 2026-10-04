@@ -126,7 +126,6 @@ func TestDegradedComesAndGoesWithHysteresis(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			a := newAnswers()
-			_, changed := a.watch(t0)
 			var flips []int
 			for sec := range 90 {
 				at := t0.Add(time.Duration(sec) * time.Second)
@@ -139,16 +138,6 @@ func TestDegradedComesAndGoesWithHysteresis(t *testing.T) {
 				}
 				if _, _, ok := a.tick(at); ok {
 					flips = append(flips, sec)
-				}
-			}
-			select {
-			case <-changed:
-				if len(flips) == 0 {
-					t.Error("watchers were told of a change that did not happen")
-				}
-			default:
-				if len(flips) > 0 {
-					t.Error("watchers were not told of the change")
 				}
 			}
 			if st := a.status(t0.Add(89 * time.Second)); !equalInts(flips, tc.changes) || st.Degraded != tc.finalState {
@@ -268,6 +257,46 @@ func TestDashboardHearsTheServerIsDegraded(t *testing.T) {
 	ts.checkLoad(at.Add(time.Minute))
 	if st := status(r); st.Degraded {
 		t.Fatalf("recovery on the stream: %+v", st)
+	}
+}
+
+// Each change of state is one publish, an event without an id that a stream
+// for any repository carries, and a check that changes nothing publishes
+// nothing.
+func TestLoadChangesArePublishedOnceForEveryStream(t *testing.T) {
+	ts := newTestServer(t)
+	sub, ok := ts.hub.subscribe("github.com/acme/elsewhere", memberHash{name: "bob"})
+	if !ok {
+		t.Fatal("not subscribed")
+	}
+	defer ts.hub.unsubscribe(sub)
+	published := func() (frames []frame, events []string) {
+		t.Helper()
+		batches, _, _, ok := ts.hub.since(sub.pos, nil)
+		if !ok {
+			t.Fatal("the ring let go of the stream's place")
+		}
+		for _, b := range batches {
+			for _, f := range b {
+				frames, events = append(frames, f), append(events, string(f.data))
+			}
+		}
+		return frames, events
+	}
+	at := ts.requestClock()
+	for range 20 {
+		ts.answers.preEdits.add(at)
+	}
+	ts.checkLoad(at)
+	if _, events := published(); len(events) != 0 {
+		t.Fatalf("a check that changed nothing published %q", events)
+	}
+	degrade(ts, at)
+	ts.checkLoad(at.Add(time.Second))
+	got, events := published()
+	if len(got) != 1 || !carries(sub.repo, got[0]) || got[0].seq != 0 ||
+		!strings.HasPrefix(events[0], "event: status\ndata: {\"degraded\":true,") {
+		t.Fatalf("published %q, want one status event that every stream carries", events)
 	}
 }
 

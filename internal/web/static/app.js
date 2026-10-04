@@ -540,6 +540,18 @@
       mergeFeed([a], true);
       scheduleRefresh();
     });
+    // The server no longer holds all that happened since the last event this
+    // page saw: mark the hole in the feed, and reload the board, which is
+    // whole.
+    es.addEventListener('gap', (ev) => {
+      if (S.es !== es || !S.repo) return;
+      let g;
+      try { g = JSON.parse(ev.data); } catch (_) { return; }
+      const after = Number(g && g.after);
+      if (!Number.isFinite(after)) return;
+      mergeFeed([{ seq: after + 0.5, kind: 'gap', repo: S.repo, at: new Date(Date.now() + S.skew).toISOString() }], false);
+      scheduleRefresh();
+    });
     es.onerror = () => {
       if (S.es !== es) return;
       if (es.readyState === EventSource.CLOSED) {
@@ -1344,7 +1356,7 @@
     const list = $('feed-body');
     const empty = $('feed-empty');
     const items = Array.from(S.feed.values())
-      .filter((a) => S.filter === 'all' || a.kind === 'conflict')
+      .filter((a) => S.filter === 'all' || a.kind === 'conflict' || a.kind === 'gap')
       .sort((x, y) => y.seq - x.seq);
     list.replaceChildren(...items.map(feedItem));
     list.hidden = !items.length;
@@ -1366,7 +1378,7 @@
     'claim.opened': 'flag', 'claim.released': 'check', 'claim.forgotten': 'clock',
     'session.started': 'play', 'session.ended': 'stop', 'session.stalled': 'warn', 'session.gone': 'xcircle',
     'session.recovered': 'recover', 'file.changed': 'pencil', 'footprint.reconciled': 'sync',
-    'intent.declared': 'lock', 'intent.released': 'unlock', 'note.sent': 'note',
+    'intent.declared': 'lock', 'intent.released': 'unlock', 'note.sent': 'note', gap: 'warn',
   };
 
   function feedItem(a) {
@@ -1447,6 +1459,7 @@
           : [m, ' sent ', strong(mm[1]), ' a note: ', el('q', null, mm[2])];
       }
       case 'conflict': return conflictSentence(a);
+      case 'gap': return ['Some activity is missing here: the live stream was away for longer than the server keeps it. The board is up to date.'];
       default: return [m, ' ', code(String(a.kind || 'event')), text ? ': ' + text : ''];
     }
   }
