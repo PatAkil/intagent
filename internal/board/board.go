@@ -489,8 +489,12 @@ func (ev HookEvent) clean(maxFootprint int) (HookEvent, error) {
 		return ev, fmt.Errorf("%w: unknown event kind %q", ErrInvalid, ev.Kind)
 	}
 	if fp := ev.Footprint; fp != nil {
-		files := cleanFootprint(fp.Files, maxFootprint)
-		ev.Footprint = &Footprint{Files: files, Truncated: fp.Truncated || len(fp.Files) > len(files)}
+		// A copy, so that the caller's is left as it was, with every field
+		// clean does not know of kept.
+		cut := *fp
+		cut.Files = cleanFootprint(fp.Files, maxFootprint)
+		cut.Truncated = fp.Truncated || len(fp.Files) > len(cut.Files)
+		ev.Footprint = &cut
 	}
 	ev.Prompt = PromptLine(ev.Prompt)
 	// A post_edit's paths join the claim's files, as many as it keeps; a

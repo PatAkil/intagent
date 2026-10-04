@@ -1,6 +1,7 @@
 package board
 
 import (
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -52,6 +53,37 @@ func TestCleanBoundsWhatClientsSend(t *testing.T) {
 		if got, _ := ev.clean(2000); got.Prompt != want {
 			t.Errorf("prompt of %d bytes cleaned to %d bytes", len(prompt), len(got.Prompt))
 		}
+	}
+}
+
+// clean bounds a footprint's files and keeps the rest of it as the client
+// sent it, every field, including ones added after clean was written.
+func TestCleanKeepsEveryFootprintField(t *testing.T) {
+	var fp Footprint
+	v := reflect.ValueOf(&fp).Elem()
+	for i := range v.NumField() {
+		f := v.Field(i)
+		switch {
+		case f.Kind() == reflect.Bool:
+			f.SetBool(true)
+		case f.Kind() == reflect.Int:
+			f.SetInt(1)
+		case f.Kind() == reflect.String:
+			f.SetString("x")
+		case f.Type() == reflect.TypeFor[[]PathRef]():
+			f.Set(reflect.ValueOf([]PathRef{{Path: "a/x.go", Area: "a"}}))
+		default:
+			t.Fatalf("Footprint.%s is a %s, which this test cannot fill: teach it", v.Type().Field(i).Name, f.Type())
+		}
+	}
+	ev := HookEvent{Kind: KindHeartbeat, Member: "alice", Agent: AgentClaudeCode, SessionID: "s",
+		Where: Where{Repo: "r", Host: "h", Worktree: "/w"}, Footprint: &fp}
+	got, err := ev.clean(2000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(*got.Footprint, fp) {
+		t.Fatalf("clean turned %+v into %+v", fp, *got.Footprint)
 	}
 }
 
