@@ -529,6 +529,10 @@ func TestMCPToolsAgainstServer(t *testing.T) {
 			t.Errorf("call %d: %q does not contain %q", i+1, texts[i], want)
 		}
 	}
+	// team_board asks for the work nearest the caller's, bounded, not the whole board.
+	if !strings.Contains(texts[2], "Other agents' work in ") || strings.Contains(texts[2], "alice on") {
+		t.Errorf("team_board: %q", texts[2])
+	}
 	if strings.Contains(texts[0], "svc/svc") || !strings.Contains(texts[1], "svc/pay/retry.go") {
 		t.Errorf("paths resolved against the start directory: %q / %q", texts[0], texts[1])
 	}
@@ -1299,4 +1303,15 @@ func TestSlowGitStillReportsTheFootprint(t *testing.T) {
 	}
 	logged, _ := os.ReadFile(filepath.Join(os.Getenv("XDG_CACHE_HOME"), "intagent", "hook.log"))
 	t.Fatalf("no footprint reached the board; hook log:\n%s", logged)
+}
+
+func TestCapTextCutsAtALine(t *testing.T) {
+	text := "head\n- one\n- two\n- three"
+	if got := capText(text, len(text)); got != text {
+		t.Fatalf("cut a text that fits: %q", got)
+	}
+	got := capText(text, 14)
+	if got != "head\n- one\n- and more; use the intagent check_paths tool for the files you plan to change." {
+		t.Fatalf("capText = %q", got)
+	}
 }

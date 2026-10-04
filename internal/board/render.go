@@ -150,7 +150,7 @@ func (b *Board) renderStart(now time.Time, c *claim) string {
 		lines = append(lines, fmt.Sprintf("Other work in this repository %s:", dataNotice))
 		for i, o := range others {
 			if i == maxBoardRows {
-				lines = append(lines, fmt.Sprintf("- and %d more; call the intagent team_board tool to see all.", len(others)-maxBoardRows))
+				lines = append(lines, fmt.Sprintf("- and %d more; the intagent team_board tool lists more, and check_paths checks the files you plan to change.", len(others)-maxBoardRows))
 				break
 			}
 			lines = append(lines, b.summarizeClaim(now, o, live[o.ID]))

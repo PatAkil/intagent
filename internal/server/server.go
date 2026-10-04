@@ -465,6 +465,10 @@ func (s *Server) handleBoard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	text := q.Get("format") == "text"
+	if text && q.Has("limit") {
+		s.handleAgentBoard(w, r, repo)
+		return
+	}
 	b, err := s.boards.get(r.Context(), repo)
 	if err != nil {
 		if r.Context().Err() == nil {
@@ -509,6 +513,19 @@ func writeBoard(w http.ResponseWriter, r *http.Request, b *boardBuild) {
 	h.Set("Content-Length", strconv.Itoa(len(body)))
 	w.WriteHeader(http.StatusOK)
 	_, _ = progress(w).Write(body)
+}
+
+// handleAgentBoard answers an agent asking about its teammates' work: the
+// claims nearest the caller's first, at most limit of them.
+func (s *Server) handleAgentBoard(w http.ResponseWriter, r *http.Request, repo string) {
+	q := r.URL.Query()
+	limit, err := strconv.Atoi(q.Get("limit"))
+	if err != nil || limit < 1 {
+		writeError(w, http.StatusBadRequest, "limit must be a whole number above zero")
+		return
+	}
+	where := board.Where{Repo: repo, Host: q.Get("host"), Worktree: q.Get("worktree")}
+	writeText(w, s.board.AgentText(s.now(), where, memberFrom(r), limit)+"\n")
 }
 
 func (s *Server) handleRepos(w http.ResponseWriter, _ *http.Request) {

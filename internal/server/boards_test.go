@@ -511,3 +511,34 @@ func TestEpoch(t *testing.T) {
 		t.Fatal("two server processes share an epoch")
 	}
 }
+
+func TestAgentBoardText(t *testing.T) {
+	ts := newTestServer(t)
+	ts.do(t, "POST", "/v1/hook", "alice", hookEv(board.KindPostEdit, "alice", "a1", "x/y.go"), nil)
+	ts.do(t, "POST", "/v1/hook", "bob", hookEv(board.KindPostEdit, "bob", "b1", "x/z.go"), nil)
+	text := func(query string) (int, string) {
+		req, _ := http.NewRequest(http.MethodGet, ts.url+"/v1/board?format=text&repo="+repo+query, nil)
+		req.Header.Set("Authorization", "Bearer "+ts.tokens["bob"])
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		body, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(body)
+	}
+	w := where("bob")
+	code, got := text("&host=" + w.Host + "&worktree=" + w.Worktree + "&limit=20")
+	if code != http.StatusOK || !strings.Contains(got, "alice on b-alice") || strings.Contains(got, "bob on b-bob") {
+		t.Fatalf("agent text: %d %s", code, got)
+	}
+	// Without a limit the text is the whole board, as before.
+	if _, full := text(""); full != ts.Board().View(ts.now(), repo).Text()+"\n" {
+		t.Fatalf("full text changed: %s", full)
+	}
+	for _, bad := range []string{"&limit=0", "&limit=-1", "&limit=x", "&limit="} {
+		if code, _ := text(bad); code != http.StatusBadRequest {
+			t.Errorf("%s: %d", bad, code)
+		}
+	}
+}

@@ -158,7 +158,7 @@ All endpoints take and return JSON and require `Authorization: Bearer <token>`, 
 | `POST /v1/intents/release` | MCP, CLI | Release some or all intents. |
 | `POST /v1/check` | MCP, CLI, guard | Who else claims or touched these paths. Read-only. |
 | `POST /v1/notes` | MCP, CLI | Send a note to a claim or a member. |
-| `GET /v1/board` | CLI, dashboard | Every claim and session in a repo, with derived states. Gzip when the client takes it, and a weak `ETag` for `If-None-Match`. Its `epoch` changes when the server restarts. |
+| `GET /v1/board` | CLI, dashboard | Every claim and session in a repo, with derived states. Gzip when the client takes it, and a weak `ETag` for `If-None-Match`. Its `epoch` changes when the server restarts. With `format=text`, the board as text; adding `limit`, `host` and `worktree` gives an agent at most `limit` claims (16 KB), those sharing files or areas with its own first, as the MCP `team_board` tool shows them. |
 | `GET /v1/repos` | dashboard | The repositories with claims, each with the server's `epoch`. |
 | `GET /v1/stream` | dashboard | Server-sent events. |
 | `GET /v1/whoami` | CLI | The member a token belongs to. |
