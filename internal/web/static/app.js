@@ -9,7 +9,9 @@
 (function () {
   const REFRESH_MS = 15000;
   const RELTIME_MS = 10000;
-  const DEBOUNCE_MS = 300;
+  const DEBOUNCE_MS = 300; // after the first event of a burst
+  const RELOAD_GAP_MS = 1000; // between board reloads, at least
+  const RELOAD_JITTER_MS = 500;
   const FEED_CAP = 200;
   const FILES_SHOWN = 8;
   const HOT_SHOWN = 8;
@@ -48,6 +50,9 @@
     debounce: 0,
     inflight: false,
     again: false,
+    lastFetchAt: 0, // when the latest board reload started
+    lastFetchMs: 0, // and how long it took
+    etag: '', // the validator of the board in S.view
     skew: 0,
     epoch: '', // the server process the board came from
     boardError: '',
@@ -297,22 +302,35 @@
   const FETCH_TIMEOUT_MS = 15000;
 
   // The timeout covers the body too: a response that stalls halfway is as
-  // stuck as one that never starts.
-  async function getJSON(url) {
+  // stuck as one that never starts. read turns the response into the result.
+  async function request(url, headers, read) {
     const ctl = typeof AbortController === 'function' ? new AbortController() : null;
     const timer = ctl ? setTimeout(() => ctl.abort(), FETCH_TIMEOUT_MS) : 0;
     try {
-      const r = await fetch(url, { credentials: 'same-origin', cache: 'no-store', headers: { Accept: 'application/json' }, signal: ctl ? ctl.signal : undefined });
+      const r = await fetch(url, {
+        credentials: 'same-origin', cache: 'no-store', signal: ctl ? ctl.signal : undefined,
+        headers: Object.assign({ Accept: 'application/json' }, headers),
+      });
       if (r.status === 401) throw new AuthError('not signed in');
-      if (!r.ok) {
+      if (!r.ok && r.status !== 304) {
         let msg = 'HTTP ' + r.status;
         try { const b = await r.json(); if (b && typeof b.error === 'string') msg = b.error; } catch (_) { /* keep status */ }
         throw new Error(msg);
       }
-      return await r.json();
+      return await read(r);
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  const getJSON = (url) => request(url, {}, (r) => r.json());
+
+  // A repository's board, or null when the server says the one the page holds
+  // (etag) is still current. The page sets If-None-Match itself, so the
+  // browser hands the 304 over rather than a stored copy with an old "at".
+  function getBoard(repo, etag) {
+    return request('/v1/board?repo=' + encodeURIComponent(repo), etag ? { 'If-None-Match': etag } : {},
+      async (r) => (r.status === 304 ? null : { view: await r.json(), etag: r.headers.get('ETag') || '' }));
   }
 
   // --- people ----------------------------------------------------------------
@@ -406,7 +424,7 @@
     show('foot', true);
     $('foot-text').replaceChildren(
       'intagent ', S.version ? code(S.version) : '', ' · ', location.host,
-      ' · board refreshes on every event and every 15 s');
+      ' · board refreshes a second or so after events, and every 15 s');
   }
 
   function toLogin() {
@@ -418,7 +436,7 @@
 
   function startLive() {
     stopLive();
-    S.timers.push(setInterval(() => { refreshBoard(); loadRepos(); }, REFRESH_MS));
+    S.timers.push(setInterval(() => { scheduleRefresh(); loadRepos(); }, REFRESH_MS));
     S.timers.push(setInterval(updateTimes, RELTIME_MS));
   }
 
@@ -502,10 +520,16 @@
   }
 
   // Throttled, not debounced: under steady activity a debounce would never
-  // fire, and the board would sit still while the feed moved.
+  // fire, and the board would sit still while the feed moved. Reloads are a
+  // second apart and up to half a second more, so tabs on one board drift
+  // apart, and twice as far apart as the last one took, drawing included, so
+  // neither a slow server nor a slow laptop is asked to go faster than it can.
+  // The feed itself is live.
   function scheduleRefresh() {
     if (S.debounce) return;
-    S.debounce = setTimeout(() => { S.debounce = 0; refreshBoard(); }, DEBOUNCE_MS);
+    const gap = Math.max(RELOAD_GAP_MS + Math.random() * RELOAD_JITTER_MS, 2 * S.lastFetchMs);
+    const wait = Math.max(DEBOUNCE_MS, S.lastFetchAt + gap - Date.now());
+    S.debounce = setTimeout(() => { S.debounce = 0; refreshBoard(); }, wait);
   }
 
   // --- repositories ------------------------------------------------------------
@@ -558,6 +582,7 @@
     S.repo = repo;
     S.view = null;
     S.viewKey = '';
+    S.etag = '';
     S.feed = new Map();
     S.fresh.clear();
     S.expanded.clear();
@@ -579,31 +604,43 @@
     // Every event seen so far happened before this request, so the board it
     // gets back counts at least this far.
     const seenSeq = S.feed.size ? Math.max(...S.feed.keys()) : 0;
+    const started = Date.now();
+    S.lastFetchAt = started;
     try {
-      const v = await getJSON('/v1/board?repo=' + encodeURIComponent(repo));
+      const got = await getBoard(repo, S.view ? S.etag : '');
       if (repo !== S.repo) return;
+      S.lastOk = Date.now();
+      setBoardError('');
+      if (!got) {
+        // Unchanged since the board the page shows: only its age is new.
+        asOf(S.lastOk + S.skew);
+        updateTimes();
+        return;
+      }
+      const v = got.view;
+      S.etag = got.etag;
       const at = tsOf(v.at);
       if (Number.isFinite(at)) S.skew = at - Date.now();
       S.view = normalise(v);
-      S.lastOk = Date.now();
       if (restarted(S.view, seenSeq)) {
         S.feed = new Map();
         S.fresh.clear();
         connectStream();
       }
-      setBoardError('');
       mergeFeed(S.view.recent, false);
       const key = JSON.stringify([S.view.claims, S.view.stats, S.view.policy, S.view.live_sessions]);
       if (key !== S.viewKey) {
         S.viewKey = key;
         renderBoard();
       } else {
+        asOf(at);
         updateTimes();
       }
     } catch (e) {
       if (e instanceof AuthError) { toLogin(); return; }
       lostContact(e);
     } finally {
+      S.lastFetchMs = Date.now() - started;
       S.inflight = false;
       if (S.again) { S.again = false; scheduleRefresh(); }
     }
@@ -621,6 +658,17 @@
     const reused = v.recent.some((a) => a && S.feed.has(a.seq) &&
       (S.feed.get(a.seq).at !== a.at || S.feed.get(a.seq).kind !== a.kind));
     return v.last_seq < seenSeq || reused;
+  }
+
+  // Moves the "as of" time of a board that did not change otherwise.
+  function asOf(t) {
+    if (!S.view || !Number.isFinite(t)) return;
+    S.view.at = new Date(t).toISOString();
+    const n = $('as-of');
+    if (!n) return;
+    n.dataset.ts = String(t);
+    n.setAttribute('datetime', S.view.at);
+    n.title = 'Board read at ' + absTime(t);
   }
 
   const arr = (x) => (Array.isArray(x) ? x : []);
@@ -883,7 +931,7 @@
       el('span', { class: 'meta-strong' }, active + ' active'),
       idle ? ' · ' + idle + ' not running' : '',
       ' · ' + v.live_sessions + ' live session' + (v.live_sessions === 1 ? '' : 's'),
-      ' · as of ', timeNode(v.at, 'ago', 'Board read at') || 'now');
+      ' · as of ', asOfNode(v.at));
     if (!v.claims.length) {
       body.replaceChildren(connectHelp(false));
       return;
@@ -891,6 +939,13 @@
     const list = el('ol', { class: 'claim-list' });
     for (const c of v.claims) list.appendChild(el('li', null, claimCard(c, ax)));
     body.replaceChildren(list);
+  }
+
+  function asOfNode(at) {
+    const n = timeNode(at, 'ago', 'Board read at');
+    if (!n) return 'now';
+    n.id = 'as-of';
+    return n;
   }
 
   function connectHelp(noRepos) {
