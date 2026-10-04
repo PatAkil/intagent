@@ -297,6 +297,41 @@ func TestWebhookCountsOnlyMessage(t *testing.T) {
 	}
 }
 
+// The server's own news (server.degraded, server.recovered) has no seq: the
+// board does not number it. Each message about it still has a key of its own,
+// so an endpoint that drops posts it has seen does not drop the next one,
+// and a retry keeps its key.
+func TestWebhookKeysTheServersOwnNews(t *testing.T) {
+	at := time.Date(2026, 10, 2, 9, 30, 5, 0, time.UTC)
+	news := func(kind board.ActivityKind, after time.Duration) *pendingItem {
+		return &pendingItem{act: board.Activity{At: at.Add(after), Kind: kind, Text: "after 1m"}}
+	}
+	refused := refusal("bob", "github.com/acme/mono", "b1", "svc/x.go")
+	refused.Seq, refused.At = 5, at
+	keys := map[string]int{}
+	for i, items := range [][]*pendingItem{
+		{news(board.ActivityServerDegraded, 0)},
+		{news(board.ActivityServerRecovered, time.Minute)},
+		{news(board.ActivityServerDegraded, 2*time.Minute)},
+		{{act: refused}, news(board.ActivityServerDegraded, 0)},
+		{{act: refused}, news(board.ActivityServerDegraded, 2*time.Minute)},
+		{news(board.ActivityServerDegraded, 0), news(board.ActivityServerRecovered, time.Minute)},
+		{news(board.ActivityServerDegraded, 2*time.Minute), news(board.ActivityServerRecovered, 3*time.Minute)},
+	} {
+		m := compose(items, counts{})
+		if again := compose(items, counts{}); again.key != m.key {
+			t.Errorf("message %d: a retry is keyed %q, the first post %q", i, again.key, m.key)
+		}
+		if j, ok := keys[m.key]; ok {
+			t.Errorf("messages %d and %d share Idempotency-Key %q", j, i, m.key)
+		}
+		keys[m.key] = i
+	}
+	if m := compose([]*pendingItem{{act: refused}}, counts{}); m.key != "5" {
+		t.Errorf("an activity with a seq is keyed %q, want 5", m.key)
+	}
+}
+
 // However many repositories and activities, a message stays readable: at most
 // 40 lines and 12,000 characters as sent, Slack's markup escaped, and what
 // does not fit is counted.

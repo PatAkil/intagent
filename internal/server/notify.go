@@ -619,7 +619,7 @@ func (m message) payload() ([]byte, error) {
 func compose(items []*pendingItem, counted counts) message {
 	if len(items) == 1 && counted.empty() {
 		a := items[0].act
-		return message{text: slackText.Replace(describeActivity(a)), acts: []board.Activity{a}, count: 1, key: strconv.FormatUint(a.Seq, 10)}
+		return message{text: slackText.Replace(describeActivity(a)), acts: []board.Activity{a}, count: 1, key: activityKey(a)}
 	}
 	var m message
 	var lines []string
@@ -674,16 +674,37 @@ func compose(items []*pendingItem, counted counts) message {
 	return m
 }
 
+// activityKey names a message about one activity: its seq or, for the
+// server's own news (server.degraded, server.recovered), which the board does
+// not number, its kind and time. They come at most once a second.
+func activityKey(a board.Activity) string {
+	if a.Seq == 0 {
+		return fmt.Sprintf("%s-%d", a.Kind, a.At.UnixNano())
+	}
+	return strconv.FormatUint(a.Seq, 10)
+}
+
 // batchKey names a message by the activities it covers, listed or counted:
-// the lowest and highest of their seqs, and how many. A retry of the same
-// message carries the same key; one that grew or shrank does not, nor does
-// any other message.
+// the lowest and highest of their seqs, and how many, and the time of the
+// latest of the server's own news it lists, which has no seq. A retry of the
+// same message carries the same key; one that grew or shrank does not, nor
+// does any other message.
 func batchKey(acts []board.Activity, counted counts, count int) string {
 	span := counts{lo: counted.lo, hi: counted.hi}
+	var own time.Time
+	ownNews := false
 	for _, a := range acts {
-		span.cover(a.Seq, a.Seq)
+		if a.Seq != 0 {
+			span.cover(a.Seq, a.Seq)
+		} else if !ownNews || a.At.After(own) {
+			own, ownNews = a.At, true
+		}
 	}
-	return fmt.Sprintf("%d-%d-%d", span.lo, span.hi, count)
+	key := fmt.Sprintf("%d-%d-%d", span.lo, span.hi, count)
+	if ownNews {
+		key += fmt.Sprintf("-%d", own.UnixNano())
+	}
+	return key
 }
 
 // group is the activities of one kind in one repository, in the order they
