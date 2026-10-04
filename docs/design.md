@@ -179,8 +179,10 @@ went ahead without an answer, per worktree and session, and tells them at the se
 
 The server counts, per second over the last minute, the `pre_edit`s that arrive and those whose agent went ahead
 unchecked. It is degraded once more than 5% of the last 10 seconds' (and at least 3) went unchecked, and recovers
-once fewer than 1% of the last 30 seconds' did. It says so in `/healthz`, on the dashboard (a `status` event on the
-stream, and `server` in `/v1/board`), in its log and, if asked, by webhook.
+once it has been degraded for 30 seconds and fewer than 1% of the last 30 seconds', and of the last 10 seconds', did:
+traffic falls in a stall, as agents wait out their timeouts, and a share over a longer window alone would let the
+state flip every second. It says so in `/healthz`, on the dashboard (a `status` event on the stream, and `server` in
+`/v1/board`), in its log and, if asked, by webhook.
 
 ## Security model
 

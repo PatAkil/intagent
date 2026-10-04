@@ -95,6 +95,34 @@ func TestDegradedComesAndGoesWithHysteresis(t *testing.T) {
 			}
 			return 0, 0
 		}, []int{10, 44}, false},
+		// Agents waiting out their timeouts send fewer edits: the last 30
+		// seconds' share counts the traffic from before the trouble.
+		{"traffic falls as answers stop", func(sec int) (int, int) {
+			switch {
+			case sec < 20:
+				return 20, 0
+			case sec >= 27 && sec < 30:
+				return 1, 1
+			}
+			return 1, 0
+		}, []int{29, 59}, false},
+		// At 69 the burst at 39 has left the last 30 seconds, where the last
+		// three unchecked edits are few, but they are most of the last 10's.
+		{"a long stall ends as traffic falls", func(sec int) (int, int) {
+			n := 100
+			if sec >= 60 {
+				n = 1
+			}
+			switch sec {
+			case 10:
+				return n, 100
+			case 39:
+				return n, 50
+			case 66, 67, 68:
+				return n, 1
+			}
+			return n, 0
+		}, []int{10, 78}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			a := newAnswers()

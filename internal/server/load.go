@@ -21,8 +21,14 @@ import (
 const (
 	// The server is degraded once more than 1 in 20 of the last
 	// degradedWindow seconds' pre_edits went unchecked, and at least
-	// minUnchecked of them, and recovers once fewer than 1 in 100 of the last
-	// recoveredWindow seconds' did.
+	// minUnchecked of them. It recovers once it has been degraded for
+	// recoveredWindow seconds and fewer than 1 in 100 went unchecked, both of
+	// the last recoveredWindow seconds' pre_edits and of the last
+	// degradedWindow seconds'. The first keeps traffic from before the
+	// trouble out of the share; the second keeps a recovery from meeting the
+	// test to degrade at once, as when traffic falls and the last few seconds'
+	// unchecked edits, a small share of the last 30 seconds', are a large one
+	// of the last 10.
 	degradedWindow  = 10
 	recoveredWindow = 30
 	minUnchecked    = 3
@@ -113,8 +119,7 @@ func (l *answers) watch(now time.Time) (LoadStatus, <-chan struct{}) {
 func (l *answers) tick(now time.Time) (st LoadStatus, lasted time.Duration, changed bool) {
 	l.mu.Lock()
 	if l.degraded {
-		n, gone := l.preEdits.sum(now, recoveredWindow), l.unchecked.sum(now, recoveredWindow)
-		changed = gone == 0 || gone*100 < n
+		changed = now.Sub(l.since) >= recoveredWindow*time.Second && l.few(now, recoveredWindow) && l.few(now, degradedWindow)
 	} else {
 		n, gone := l.preEdits.sum(now, degradedWindow), l.unchecked.sum(now, degradedWindow)
 		changed = gone >= minUnchecked && gone*20 > n
@@ -132,6 +137,13 @@ func (l *answers) tick(now time.Time) (st LoadStatus, lasted time.Duration, chan
 		st = l.status(now)
 	}
 	return st, lasted, changed
+}
+
+// few reports whether fewer than 1 in 100 of the last n seconds' pre_edits
+// went unchecked, or none did.
+func (l *answers) few(now time.Time, n int) bool {
+	gone := l.unchecked.sum(now, n)
+	return gone == 0 || gone*100 < l.preEdits.sum(now, n)
 }
 
 // watchCall counts a pre_edit, and counts it unchecked if its client gives
