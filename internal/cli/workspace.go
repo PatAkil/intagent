@@ -159,12 +159,25 @@ func (w *workspace) footprint(ctx context.Context) (*board.Footprint, error) {
 	if truncated {
 		files = files[:maxFootprint]
 	}
-	fp := &board.Footprint{Files: make([]board.PathRef, 0, len(files)), Truncated: truncated}
+	kept := files[:0]
 	for _, f := range files {
-		if w.ignored(f) {
-			continue
+		if !w.ignored(f) {
+			kept = append(kept, f)
 		}
-		fp.Files = append(fp.Files, board.PathRef{Path: f, Area: w.areas.Of(f)})
 	}
-	return fp, nil
+	return &board.Footprint{Files: w.pathRefs(ctx, kept), Truncated: truncated}, nil
+}
+
+// pathRefs gives files their areas while ctx lasts, which is git's time: the
+// files left when it ends go without one, which the server reads as an area
+// it does not know, rather than not at all.
+func (w *workspace) pathRefs(ctx context.Context, files []string) []board.PathRef {
+	refs := make([]board.PathRef, len(files))
+	for i, f := range files {
+		refs[i].Path = f
+		if ctx.Err() == nil {
+			refs[i].Area = w.areas.Of(f)
+		}
+	}
+	return refs
 }
