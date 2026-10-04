@@ -13,6 +13,7 @@
   const RELOAD_GAP_MS = 1000; // between board reloads, at least
   const RELOAD_JITTER_MS = 500;
   const FEED_CAP = 200;
+  const FEED_REDRAW_MS = 250; // between redraws of the feed, at least
   const FILES_SHOWN = 8;
   const HOT_SHOWN = 8;
   const STORE_KEY = 'intagent.repo';
@@ -53,6 +54,8 @@
     lastFetchAt: 0, // when the latest board reload started
     lastFetchMs: 0, // and how long it took
     etag: '', // the validator of the board in S.view
+    feedTimer: 0,
+    feedAt: 0, // when the feed was last drawn
     skew: 0,
     epoch: '', // the server process the board came from
     boardError: '',
@@ -195,9 +198,14 @@
     }
   }
 
+  // One formatter for every tooltip: toLocaleString with options builds a new
+  // one on each call, and a busy board shows thousands of times.
+  let absFormat = null;
+
   function absTime(t) {
     try {
-      return new Date(t).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'medium' });
+      absFormat = absFormat || new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'medium' });
+      return absFormat.format(new Date(t));
     } catch (_) {
       return new Date(t).toISOString();
     }
@@ -275,23 +283,47 @@
     return re;
   }
 
-  function matchSegs(p, s) {
-    while (p.length > 0) {
-      if (p[0] === '**') {
-        for (let k = 0; k <= s.length; k++) if (matchSegs(p.slice(1), s.slice(k))) return true;
+  function matchSegs(p, s, i, j) {
+    for (; i < p.length; i++, j++) {
+      if (p[i] === '**') {
+        for (let k = j; k <= s.length; k++) if (matchSegs(p, s, i + 1, k)) return true;
         return false;
       }
-      if (s.length === 0) return false;
-      const re = segRegExp(p[0]);
-      if (!re || !re.test(s[0])) return false;
-      p = p.slice(1);
-      s = s.slice(1);
+      if (j >= s.length) return false;
+      const re = segRegExp(p[i]);
+      if (!re || !re.test(s[j])) return false;
     }
     return true;
   }
 
-  function globMatch(pattern, name) {
-    return matchSegs(String(pattern).split('/'), String(name).split('/'));
+  // The directory a pattern is rooted in: its leading segments without
+  // wildcards, as internal/glob's LiteralDir has it. Every name the pattern
+  // matches is that directory or below it.
+  function literalDir(pattern) {
+    const segs = String(pattern).split('/');
+    let n = 0;
+    while (n < segs.length && !/[*?[\\]/.test(segs[n])) n++;
+    return segs.slice(0, n).join('/');
+  }
+
+  // The paths in sorted that are dir or below it ('' is everything).
+  function under(sorted, dir) {
+    if (!dir) return sorted;
+    const from = (x) => {
+      let lo = 0;
+      let hi = sorted.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >>> 1;
+        if (sorted[mid] < x) lo = mid + 1; else hi = mid;
+      }
+      return lo;
+    };
+    const out = [];
+    const i = from(dir);
+    if (sorted[i] === dir) out.push(dir);
+    const below = dir + '/';
+    for (let j = from(below); j < sorted.length && sorted[j].startsWith(below); j++) out.push(sorted[j]);
+    return out;
   }
 
   // --- API -------------------------------------------------------------------
@@ -446,6 +478,8 @@
     clearTimeout(S.reconnectTimer);
     clearTimeout(S.debounce);
     S.debounce = 0;
+    clearTimeout(S.feedTimer);
+    S.feedTimer = 0;
     if (S.es) { S.es.close(); S.es = null; }
   }
 
@@ -785,6 +819,22 @@
         if (!byPath.has(p)) byPath.set(p, []);
       }
     }
+    // Which intents cover which of these paths. Each pattern is matched once
+    // against the paths under its directory, not every path against every
+    // pattern; the lists keep the claims' order, then each claim's intents'.
+    const sorted = Array.from(byPath.keys()).sort();
+    const segs = new Map(sorted.map((p) => [p, p.split('/')]));
+    const covered = new Map();
+    for (const c of claims) {
+      for (const it of c.intents) {
+        const pat = String(it.pattern).split('/');
+        for (const p of under(sorted, literalDir(it.pattern))) {
+          if (!matchSegs(pat, segs.get(p), 0, 0)) continue;
+          if (!covered.has(p)) covered.set(p, []);
+          covered.get(p).push([c, it]);
+        }
+      }
+    }
     const files = new Map();
     for (const [path, touchers] of byPath) {
       const involved = new Map();
@@ -794,9 +844,7 @@
       };
       for (const c of touchers) role(c).changed = true;
       for (const [id, how] of stoppedAt.get(path) || []) role(byId.get(id)).stopped = how;
-      for (const c of claims) {
-        for (const it of c.intents) if (globMatch(it.pattern, path)) role(c).intents.push(it);
-      }
+      for (const [c, it] of covered.get(path) || []) role(c).intents.push(it);
       if (involved.size < 2) continue;
       files.set(path, { path, involved, severity: spotSeverity(involved) });
     }
@@ -1245,10 +1293,19 @@
       const seqs = Array.from(S.feed.keys()).sort((x, y) => x - y);
       for (const s of seqs.slice(0, S.feed.size - FEED_CAP)) S.feed.delete(s);
     }
-    if (added) renderFeed();
+    if (added) scheduleFeed();
+  }
+
+  // A busy repository has tens of events a second, and each redraw rebuilds
+  // the whole list: events arriving close together are drawn together.
+  function scheduleFeed() {
+    if (S.feedTimer) return;
+    const wait = Math.max(0, S.feedAt + FEED_REDRAW_MS - Date.now());
+    S.feedTimer = setTimeout(() => { S.feedTimer = 0; renderFeed(); }, wait);
   }
 
   function renderFeed() {
+    S.feedAt = Date.now();
     const list = $('feed-body');
     const empty = $('feed-empty');
     const items = Array.from(S.feed.values())
