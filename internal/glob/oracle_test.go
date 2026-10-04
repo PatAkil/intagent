@@ -3,6 +3,7 @@ package glob
 import (
 	"math/rand"
 	"path"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -88,8 +89,9 @@ var (
 	nameSegments = []string{"a", "b", "ab", "abc", "svc", "x.go", "y.go", "", "*", "[", "]", `\`, "ac", "bb"}
 )
 
-func randomPath(rng *rand.Rand, segs []string) string {
-	n := rng.Intn(7)
+// randomPath joins fewer than most segments drawn from segs.
+func randomPath(rng *rand.Rand, segs []string, most int) string {
+	n := rng.Intn(most)
 	parts := make([]string, n)
 	for i := range parts {
 		parts[i] = segs[rng.Intn(len(segs))]
@@ -102,7 +104,7 @@ func TestMatchAgreesWithTheOracle(t *testing.T) {
 	rng := rand.New(rand.NewSource(1))
 	matched := 0
 	for range 300_000 {
-		p, n := randomPath(rng, patternSegments), randomPath(rng, nameSegments)
+		p, n := randomPath(rng, patternSegments, 7), randomPath(rng, nameSegments, 7)
 		got, want := Match(p, n), oldMatch(p, n)
 		if got != want {
 			t.Fatalf("Match(%q, %q) = %v, the old matcher says %v", p, n, got, want)
@@ -150,12 +152,35 @@ func TestOverlapAndLiteralDirAgreeWithTheOracle(t *testing.T) {
 	t.Parallel()
 	rng := rand.New(rand.NewSource(2))
 	for range 100_000 {
-		a, b := randomPath(rng, patternSegments), randomPath(rng, patternSegments)
+		a, b := randomPath(rng, patternSegments, 7), randomPath(rng, patternSegments, 7)
 		if got, want := Overlap(a, b), oldOverlap(a, b); got != want {
 			t.Fatalf("Overlap(%q, %q) = %v, the old overlapper says %v", a, b, got, want)
 		}
 		if got, want := LiteralDir(a), oldLiteralDir(a); got != want {
 			t.Fatalf("LiteralDir(%q) = %q, was %q", a, got, want)
+		}
+	}
+	// Segments that overlap often, so that pairs go far in step before they
+	// part or reach a **.
+	alike := []string{"a", "*", "a*", "*a", "?", "[ab]", "**"}
+	for range 50_000 {
+		a, b := randomPath(rng, alike, 16), randomPath(rng, alike, 16)
+		if got, want := Overlap(a, b), oldOverlap(a, b); got != want {
+			t.Fatalf("Overlap(%q, %q) = %v, the old overlapper says %v", a, b, got, want)
+		}
+	}
+}
+
+// Every pattern of up to five characters from a*/? against every pattern of
+// up to four from ab*/.
+func TestOverlapAgreesWithTheOracleExhaustively(t *testing.T) {
+	t.Parallel()
+	bs := allStrings("ab*/", 4)
+	for _, a := range allStrings("a*/?", 5) {
+		for _, b := range bs {
+			if got, want := Overlap(a, b), oldOverlap(a, b); got != want {
+				t.Fatalf("Overlap(%q, %q) = %v, the old overlapper says %v", a, b, got, want)
+			}
 		}
 	}
 }
@@ -186,6 +211,48 @@ func TestMatchDoesNotAllocate(t *testing.T) {
 	})
 	if allocs != 0 {
 		t.Fatalf("matching %d realistic pairs made %.0f allocations", len(realistic), allocs)
+	}
+}
+
+// Pairs the board compares when a member declares: patterns that part at
+// once or share a directory, ** against a file, wildcard segments.
+var realisticOverlaps = [][2]string{
+	{"services/payments/**", "services/billing/**"},
+	{"services/payments/**", "services/payments/retry.go"},
+	{"**/*.proto", "api/v1/payments.proto"},
+	{"services/*/client.go", "services/billing/**"},
+	{"libs/*/src/**", "libs/common/**/trim.go"},
+}
+
+// Overlap allocates nothing, on the pairs people write and on the longest
+// patterns CleanPattern accepts: the board compares every declared pattern
+// with every intent of every other worktree, under its lock.
+func TestOverlapDoesNotAllocate(t *testing.T) {
+	long := func(seg string) string { return strings.Repeat(seg+"/", 500) + "**" } // 1002 bytes
+	pairs := append(slices.Clip(realisticOverlaps), [2]string{long("a"), long("b")}, [2]string{long("a"), long("*")})
+	allocs := testing.AllocsPerRun(100, func() {
+		for _, p := range pairs {
+			Overlap(p[0], p[1])
+		}
+	})
+	if allocs != 0 {
+		t.Fatalf("Overlap made %.0f allocations on %d pairs", allocs, len(pairs))
+	}
+}
+
+func BenchmarkOverlap(b *testing.B) {
+	for _, o := range []struct {
+		name    string
+		overlap func(a, b string) bool
+	}{{"old", oldOverlap}, {"new", Overlap}} {
+		b.Run(o.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for range b.N {
+				for _, p := range realisticOverlaps {
+					o.overlap(p[0], p[1])
+				}
+			}
+		})
 	}
 }
 

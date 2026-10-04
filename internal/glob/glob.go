@@ -209,45 +209,29 @@ func starMatch(pattern, name string) bool {
 // Overlap reports whether some path could be covered by both patterns. It
 // errs towards true when two wildcard segments might intersect, because a
 // missed overlap is worse than an extra warning.
+//
+// It compares the patterns a segment at a time, in step, and allocates
+// nothing. Once either reaches a **, they overlap: the ** can take every
+// segment the other pattern has left and then go on below it, as a pattern
+// covers everything below what it matches. Once either is used up, they
+// overlap too, since a name without wildcards may be a directory
+// (src/Acme.Payments, conf.d). This makes **/*.proto overlap
+// docs/readme.md, an extra warning taken over a missed clash.
 func Overlap(a, b string) bool {
-	o := overlapper{a: strings.Split(a, "/"), b: strings.Split(b, "/")}
-	o.memo = make([]int8, (len(o.a)+1)*(len(o.b)+1))
-	return o.overlap(0, 0)
-}
-
-// overlapper searches suffixes a[i:] and b[j:]; memo makes patterns with many
-// ** segments polynomial instead of exponential.
-type overlapper struct {
-	a, b []string
-	memo []int8 // by i*(len(b)+1)+j: 0 not yet known, 1 no, 2 yes
-}
-
-func (o *overlapper) overlap(i, j int) bool {
-	if i == len(o.a) || j == len(o.b) {
-		// One pattern is used up, so it covers the whole subtree the other is in:
-		// a name without wildcards may be a directory (src/Acme.Payments,
-		// conf.d). This makes **/*.proto overlap docs/readme.md, an extra
-		// warning taken over a missed clash.
-		return true
+	for {
+		as, ar, aMore := strings.Cut(a, "/")
+		bs, br, bMore := strings.Cut(b, "/")
+		if as == "**" || bs == "**" {
+			return true
+		}
+		if !segmentsOverlap(as, bs) {
+			return false
+		}
+		if !aMore || !bMore {
+			return true
+		}
+		a, b = ar, br
 	}
-	key := i*(len(o.b)+1) + j
-	if m := o.memo[key]; m != 0 {
-		return m == 2
-	}
-	var v bool
-	switch {
-	case o.a[i] == "**":
-		v = o.overlap(i+1, j) || o.overlap(i, j+1)
-	case o.b[j] == "**":
-		v = o.overlap(i, j+1) || o.overlap(i+1, j)
-	default:
-		v = segmentsOverlap(o.a[i], o.b[j]) && o.overlap(i+1, j+1)
-	}
-	o.memo[key] = 1
-	if v {
-		o.memo[key] = 2
-	}
-	return v
 }
 
 func segmentsOverlap(a, b string) bool {
