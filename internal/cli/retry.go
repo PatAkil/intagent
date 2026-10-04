@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/patakil/intagent/internal/fsutil"
 )
 
 // A server that restarts closes its port for a moment: while it saves its
@@ -103,7 +105,8 @@ func serverDown(stamp string, now time.Time) bool {
 		}
 	}
 	if began.Equal(now) {
-		_ = os.WriteFile(stamp, []byte(strconv.FormatInt(now.UnixNano(), 10)), 0o600)
+		// Whole or not at all: other hooks on this machine read it at once.
+		_ = fsutil.WriteFile(stamp, []byte(strconv.FormatInt(now.UnixNano(), 10)), 0o600)
 	}
 	_ = os.Chtimes(stamp, now, now)
 	return now.Sub(began) >= downAfter
