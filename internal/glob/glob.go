@@ -92,46 +92,125 @@ func hasDrive(p string) bool {
 
 // Match reports whether pattern covers the file or directory at name. Both
 // must already be clean; an invalid pattern matches nothing.
+//
+// It runs on every edit for every intent and footprint it meets, so it
+// allocates nothing: a literal pattern, or one of the form dir/**, is a
+// prefix comparison, and any other pattern is matched segment by segment in
+// place.
 func Match(pattern, name string) bool {
-	m := matcher{p: strings.Split(pattern, "/"), s: strings.Split(name, "/"), memo: map[[2]int]bool{}}
-	return m.match(0, 0)
+	if !hasMeta(pattern) {
+		return covers(pattern, name)
+	}
+	if dir, ok := strings.CutSuffix(pattern, "/**"); ok && !hasMeta(dir) {
+		return covers(dir, name)
+	}
+	return matchSegments(pattern, name)
 }
 
-// matcher matches pattern segments p[i:] against name segments s[j:]; memo
-// keeps patterns with many ** segments polynomial instead of exponential.
-type matcher struct {
-	p, s []string
-	memo map[[2]int]bool
+// covers reports whether dir, a pattern without wildcards, is name or a
+// directory above it. The empty pattern covers only the empty name, among
+// clean ones.
+func covers(dir, name string) bool {
+	return strings.HasPrefix(name, dir) && (len(name) == len(dir) || name[len(dir)] == '/')
 }
 
-func (m *matcher) match(i, j int) bool {
-	if i == len(m.p) {
-		// The pattern is used up: it matched name itself or a directory above it.
-		return true
+// matchSegments matches pattern against name a segment at a time. A segment
+// of pattern other than ** matches exactly one segment of name, so when one
+// fails, letting the latest ** take one more segment of name and trying
+// again from there finds a match if there is one: an earlier ** could only
+// take segments the latest one can take as well. Positions are byte offsets
+// to the start of a segment, past the end once a string is used up.
+func matchSegments(pattern, name string) bool {
+	pi, ni := 0, 0
+	starP, starN := -1, -1 // the pattern after the latest **, and the next segment of name it would take
+	for {
+		if pi > len(pattern) {
+			// The pattern is used up: it matched name itself or a directory above it.
+			return true
+		}
+		pe := segmentEnd(pattern, pi)
+		seg := pattern[pi:pe]
+		if seg == "**" {
+			pi, starP, starN = pe+1, pe+1, ni
+			continue
+		}
+		if ni <= len(name) {
+			if ne := segmentEnd(name, ni); segmentMatch(seg, name[ni:ne]) {
+				pi, ni = pe+1, ne+1
+				continue
+			}
+		}
+		if starP < 0 || starN > len(name) {
+			return false
+		}
+		starN = segmentEnd(name, starN) + 1
+		pi, ni = starP, starN
 	}
-	key := [2]int{i, j}
-	if v, ok := m.memo[key]; ok {
-		return v
+}
+
+// segmentEnd is where the segment of s that starts at i ends.
+func segmentEnd(s string, i int) int {
+	if j := strings.IndexByte(s[i:], '/'); j >= 0 {
+		return i + j
 	}
-	var v bool
-	switch {
-	case m.p[i] == "**":
-		v = m.match(i+1, j) || (j < len(m.s) && m.match(i, j+1))
-	case j == len(m.s):
-		v = false
-	default:
-		ok, err := path.Match(m.p[i], m.s[j])
-		v = err == nil && ok && m.match(i+1, j+1)
+	return len(s)
+}
+
+// segmentMatch matches one segment as path.Match does. Most wildcard
+// segments are a literal and stars, such as *.proto, which it matches
+// without path.Match's general machinery.
+func segmentMatch(pattern, name string) bool {
+	star := false
+	for i := 0; i < len(pattern); i++ {
+		switch pattern[i] {
+		case '*':
+			star = true
+		case '?', '[', '\\':
+			ok, err := path.Match(pattern, name)
+			return err == nil && ok
+		}
 	}
-	m.memo[key] = v
-	return v
+	if !star {
+		return pattern == name
+	}
+	return starMatch(pattern, name)
+}
+
+// starMatch matches a segment pattern whose only wildcard is *: its literal
+// parts must begin and end name and occur in order between, and taking each
+// middle part at its first occurrence leaves the most room for the rest.
+func starMatch(pattern, name string) bool {
+	first, rest, _ := strings.Cut(pattern, "*")
+	if !strings.HasPrefix(name, first) {
+		return false
+	}
+	name = name[len(first):]
+	middle, last := "", rest
+	if i := strings.LastIndexByte(rest, '*'); i >= 0 {
+		middle, last = rest[:i], rest[i+1:]
+	}
+	if !strings.HasSuffix(name, last) {
+		return false
+	}
+	name = name[:len(name)-len(last)]
+	for middle != "" {
+		var part string
+		part, middle, _ = strings.Cut(middle, "*")
+		i := strings.Index(name, part)
+		if i < 0 {
+			return false
+		}
+		name = name[i+len(part):]
+	}
+	return true
 }
 
 // Overlap reports whether some path could be covered by both patterns. It
 // errs towards true when two wildcard segments might intersect, because a
 // missed overlap is worse than an extra warning.
 func Overlap(a, b string) bool {
-	o := overlapper{a: strings.Split(a, "/"), b: strings.Split(b, "/"), memo: map[[2]int]bool{}}
+	o := overlapper{a: strings.Split(a, "/"), b: strings.Split(b, "/")}
+	o.memo = make([]int8, (len(o.a)+1)*(len(o.b)+1))
 	return o.overlap(0, 0)
 }
 
@@ -139,7 +218,7 @@ func Overlap(a, b string) bool {
 // ** segments polynomial instead of exponential.
 type overlapper struct {
 	a, b []string
-	memo map[[2]int]bool
+	memo []int8 // by i*(len(b)+1)+j: 0 not yet known, 1 no, 2 yes
 }
 
 func (o *overlapper) overlap(i, j int) bool {
@@ -150,9 +229,9 @@ func (o *overlapper) overlap(i, j int) bool {
 		// warning taken over a missed clash.
 		return true
 	}
-	key := [2]int{i, j}
-	if v, ok := o.memo[key]; ok {
-		return v
+	key := i*(len(o.b)+1) + j
+	if m := o.memo[key]; m != 0 {
+		return m == 2
 	}
 	var v bool
 	switch {
@@ -163,7 +242,10 @@ func (o *overlapper) overlap(i, j int) bool {
 	default:
 		v = segmentsOverlap(o.a[i], o.b[j]) && o.overlap(i+1, j+1)
 	}
-	o.memo[key] = v
+	o.memo[key] = 1
+	if v {
+		o.memo[key] = 2
+	}
 	return v
 }
 
@@ -208,10 +290,10 @@ func literalSuffix(s string) string {
 // LiteralDir returns the longest leading run of segments without wildcards:
 // the directory a pattern is rooted in, or "" for patterns like "**/*.go".
 func LiteralDir(pattern string) string {
-	segs := strings.Split(pattern, "/")
-	n := 0
-	for n < len(segs) && !hasMeta(segs[n]) {
-		n++
+	i := strings.IndexAny(pattern, `*?[\`)
+	if i < 0 {
+		return pattern
 	}
-	return strings.Join(segs[:n], "/")
+	// The segment with the first wildcard starts after the slash before it.
+	return pattern[:max(0, strings.LastIndexByte(pattern[:i], '/'))]
 }
