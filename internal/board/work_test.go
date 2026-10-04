@@ -161,12 +161,31 @@ func counted(t *testing.T, fn func()) workTrace {
 	return *trace
 }
 
+// sameWork reports whether two calls did the same work, but for the
+// sessions they read: liveness reads a claim's sessions until it finds a
+// live one, and when the claim has live and ended ones, which it reads first
+// depends on the order of a map. Tests bound those instead.
+func sameWork(a, b workTrace) bool {
+	a.sessionVisits, b.sessionVisits = 0, 0
+	return a == b
+}
+
 // A pre_edit reads the claims of its own repository, and the sessions of
 // those that matter to it: a board with 2000 more sessions, in other
-// repositories, costs it exactly the same work. The old check read every
-// session on the board twice, to build maps of the live ones.
+// repositories, costs it the same work, and it reads no more than the
+// sessions of its repository's claims for each path. The old check read
+// every session on the board twice, to build maps of the live ones.
 func TestPreEditIgnoresOtherRepositories(t *testing.T) {
 	base := buildBoard(t, smallShape())
+	// Each claim in the repository also has a session that ended, so that
+	// telling whether it is live reads one session or two.
+	for i := range base.sh.busy {
+		ev := base.event(i, KindHeartbeat)
+		ev.SessionID += "-ended"
+		base.hook(t, ev)
+		ev.Kind = KindSessionEnd
+		base.hook(t, ev)
+	}
 	quiet, busy := base.fork(t), base.fork(t)
 	for k := range 2000 {
 		busy.hook(t, busy.fresh(k, 1+k%2, KindHeartbeat))
@@ -177,8 +196,18 @@ func TestPreEditIgnoresOtherRepositories(t *testing.T) {
 	for i, sb := range []*scaleBoard{quiet, busy} {
 		work[i] = counted(t, func() { sb.hook(t, ev) })
 	}
-	if work[0] != work[1] {
+	if !sameWork(work[0], work[1]) {
 		t.Fatalf("a pre_edit's work grew with 2000 sessions in other repositories:\nwithout: %+v\n   with: %+v", work[0], work[1])
+	}
+	inRepo := 0
+	for c := range busy.claimsIn(scaleRepo(0)) {
+		inRepo += len(busy.claimSessions[c.ID])
+	}
+	for _, w := range work {
+		if limit := len(ev.Paths) * (inRepo + 1); w.sessionVisits > limit {
+			t.Fatalf("a pre_edit of %d paths read sessions %d times, more than the %d of its repository's claims for each",
+				len(ev.Paths), w.sessionVisits, inRepo)
+		}
 	}
 	if work[0].conflictWith == 0 || work[0].liveClaims == 0 {
 		t.Fatalf("the pre_edit compared no claims: %+v", work[0])

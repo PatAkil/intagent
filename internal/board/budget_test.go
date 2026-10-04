@@ -120,7 +120,7 @@ func TestCostlyPatternsStopAnEditShort(t *testing.T) {
 		t.Fatal(err)
 	}
 	res.ClaimID, again.ClaimID = "", "" // bob's new claim is named at random on the copy
-	if a, b := jsonOf(res), jsonOf(again); a != b || w1 != w2 {
+	if a, b := jsonOf(res), jsonOf(again); a != b || !sameWork(w1, w2) {
 		t.Fatalf("the same edit on a copy of the board was answered differently:\n%s, %+v\n%s, %+v", a, w1, b, w2)
 	}
 	// Edits the bound does not reach are checked in full.
