@@ -8,7 +8,8 @@
 # the note at its next step.
 #
 # Needs: go, git, and an authenticated `claude` CLI. Costs a few cents of
-# model usage. Usage: scripts/e2e-claude.sh [model]   (default: sonnet)
+# model usage. Usage: scripts/e2e-claude.sh [model]   (default: sonnet; KEEP=1 keeps
+# the work directory after a pass)
 set -euo pipefail
 
 MODEL="${1:-sonnet}"
@@ -16,7 +17,21 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="$(mktemp -d)"
 PORT="${PORT:-7477}"
 URL="http://127.0.0.1:$PORT"
-trap 'kill $(jobs -p) 2>/dev/null || true; pkill -f "intagent serve --config team.json --addr 127.0.0.1:$PORT" 2>/dev/null || true; echo "workdir: $WORK"' EXIT
+# On success the work directory, with the server's data and the agents' logs,
+# goes unless KEEP=1; on failure it stays for a look.
+finish() {
+  local status=$?
+  kill $(jobs -p) 2>/dev/null || true
+  for _ in $(seq 50); do [ -z "$(jobs -pr)" ] && break; sleep 0.2; done
+  kill -9 $(jobs -pr) 2>/dev/null || true
+  pkill -f "intagent serve --config team.json --addr 127.0.0.1:$PORT" 2>/dev/null || true
+  if [ "$status" -eq 0 ] && [ "${KEEP:-}" != 1 ]; then
+    rm -rf "$WORK" 2>/dev/null || echo "workdir: $WORK (not all of it could be removed)"
+  else
+    echo "workdir: $WORK"
+  fi
+}
+trap finish EXIT
 
 export GIT_CONFIG_GLOBAL=/dev/null GIT_AUTHOR_NAME=e2e GIT_AUTHOR_EMAIL=e2e@example.com \
   GIT_COMMITTER_NAME=e2e GIT_COMMITTER_EMAIL=e2e@example.com
