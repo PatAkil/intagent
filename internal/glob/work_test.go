@@ -75,11 +75,27 @@ func TestWorkCountsComparisons(t *testing.T) {
 		{"a/*/c.go", "x/b/c.go", 1},     // a fails at once
 		{"**/c.go", "a/b/c.go", 3},      // c.go against a, b and c.go
 		{star + "/z", name + "/z", 130}, // 1 + 64·64/32, then 1
+		{"**", "a/b/c.go", 1},           // it covers every name, but costs a unit
 	} {
 		w := NewWork(1000)
 		w.Match(tc.pattern, tc.name)
 		if used := 1000 - w.Left(); used != tc.units {
 			t.Errorf("Match(%.20q, %.20q) cost %d units, want %d", tc.pattern, tc.name, used, tc.units)
+		}
+	}
+	for _, tc := range []struct {
+		a, b  string
+		units int
+	}{
+		{"a/b", "a/c", 2},                    // a, then b against c
+		{"**/x.go", "a/b", 1},                // ** against a: 1 + 2·1/32
+		{"a/**", strings.Repeat("b", 64), 1}, // a against b…: no wildcard
+		{"**", strings.Repeat("b", 64), 5},   // 1 + 2·64/32
+	} {
+		w := NewWork(1000)
+		w.Overlap(tc.a, tc.b)
+		if used := 1000 - w.Left(); used != tc.units {
+			t.Errorf("Overlap(%.20q, %.20q) cost %d units, want %d", tc.a, tc.b, used, tc.units)
 		}
 	}
 }
@@ -94,7 +110,8 @@ func TestWorkStopsWhenSpent(t *testing.T) {
 	run := func() (answers []bool, left int) {
 		w := NewWork(100_000)
 		for range 1000 {
-			answers = append(answers, w.Match(hostile, name), w.Match("a/**", name), w.Overlap("a/*/b", "a/x/b"))
+			answers = append(answers, w.Match(hostile, name), w.Match("a/**", name), w.Overlap("a/*/b", "a/x/b"),
+				w.Match("**", name), w.Overlap("**/b", "a/b"))
 		}
 		if !w.Short() || w.Left() < 0 {
 			t.Fatalf("after 1000 hostile matches the budget is not spent: %d left", w.Left())
@@ -111,7 +128,7 @@ func TestWorkStopsWhenSpent(t *testing.T) {
 		if a1[i] != a2[i] {
 			t.Fatalf("two runs answered call %d differently", i)
 		}
-		if i%3 == 1 && !a1[i] && stopped < 0 {
+		if i%5 == 1 && !a1[i] && stopped < 0 {
 			stopped = i
 		}
 	}

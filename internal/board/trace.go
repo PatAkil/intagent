@@ -14,6 +14,7 @@ type workTrace struct {
 	sessionVisits int // sessions read by Sweep and to find which are live
 	globMatch     int // glob.Match calls
 	globOverlap   int // glob.Overlap calls
+	spentMatches  int // glob calls made once the call had no work left
 }
 
 // trace is nil except while a test counts. A test that sets it must not be

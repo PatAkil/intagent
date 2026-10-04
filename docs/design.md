@@ -267,14 +267,15 @@ while degraded), in its log and, if asked, by webhook.
   seventh of the bound, and a worktree arriving with 2000 changed files or a declaration of 50 patterns about a
   fortieth: the files a worktree arrives with are matched against a teammate's intent only where they fall under the
   directory it is rooted in. Patterns rooted nowhere, such as `**/*_mock.go`, are matched against every file, and
-  about a hundred of them in one repository use the bound up on such an arrival. Past it, the call stops matching and
-  lets through what it did not compare. A worktree's changes are compared with teammates' reservations
+  about a hundred of them in one repository use the bound up on such an arrival. Past it, the call compares no more
+  claims and lets through what it did not compare. A worktree's changes are compared with teammates' reservations
   before teammates are alerted of them, so a change inside a reservation is reported however much the alerts would
   cost. The edit's agent, or the session whose worktree's changes were being compared, is told intagent stopped
   before it had compared everything; a check or a declaration says so in its answer (`partial`); and the
   repository's stats count each such call (`partial`). The costliest patterns at the bounds then hold the
-  lock for under a tenth of a second per call: 50 to 85 ms for a check of 200 paths against 200 of them, which without
-  the bound took 0.4 to 1.5 s (and, before the bounds on shape, about a minute).
+  lock for about a tenth of a second per call, however many worktrees declare them: 50 to 85 ms for a check of 200
+  paths, which without the bound took 0.4 to 1.5 s (and, before the bounds on shape, about a minute), and about 85 ms
+  for a worktree arriving with 2000 changed files.
 - Webhook messages escape `&`, `<` and `>`, which Slack reads as mentions and links.
 - Notes are rate-limited per member.
 - Request bodies are capped at 1 MB. Paths are validated. A body over 16 KB (a footprint, in practice) is charged to

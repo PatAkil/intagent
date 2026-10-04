@@ -3,6 +3,7 @@ package board
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -329,6 +330,85 @@ func TestArrivalOnABusyRepositoryIsComparedInFull(t *testing.T) {
 			}
 		} else if len(alerts) > 0 {
 			t.Fatalf("%s was alerted of %q, which it did not declare", m, alerts)
+		}
+	}
+}
+
+// Once a call has done all the matching it may, it stops: it compares no
+// further claims, reservation holders or files, however many there are. On
+// a board where one member holds 400 worktrees of costly patterns, each
+// kind of call that matches makes no more glob calls after it ran out than
+// the intents of the claim it was comparing then.
+func TestCallsStopOnceTheWorkIsSpent(t *testing.T) {
+	board := func(patterns func(int) []string, mode Mode) *harness {
+		h := newHarness(t)
+		for k := range 400 {
+			c := &claim{ID: fmt.Sprintf("c_eve%05d", k), Repo: repo, Member: "eve", Host: "h", Worktree: fmt.Sprintf("/work/eve%d", k),
+				CreatedAt: h.now, UpdatedAt: h.now}
+			for _, p := range patterns(k) {
+				c.Intents = append(c.Intents, Intent{Pattern: p, Mode: mode, DeclaredAt: h.now})
+			}
+			h.b.addClaim(c)
+			// Live, so that its reservations count.
+			h.b.attachSession(&session{Key: c.ID, ID: "e", Member: "eve", Agent: AgentCodex, LastSeen: h.now, Phase: phaseWorking}, c.ID)
+		}
+		return h
+	}
+	wideK := func(k int) []string { return widePatterns(k % 90) } // two digits for k, as glob.CleanPattern requires
+	chains, reserved := board(chainPatterns, ModeShared), board(chainPatterns, ModeExclusive)
+	wide, wideReserved := board(wideK, ModeShared), board(wideK, ModeExclusive)
+	bob := whereOf("bob")
+	deep := refs(deepPaths(maxCheckPaths, "d")...)
+	for _, tc := range []struct {
+		name string
+		h    *harness
+		call func(h *harness) error
+	}{
+		{"a check", chains, func(h *harness) error {
+			_, err := h.b.Check(h.now, CheckRequest{Member: "bob", Where: bob, Paths: deep})
+			return err
+		}},
+		{"an edit", chains, func(h *harness) error {
+			_, err := h.b.Hook(h.now, HookEvent{Kind: KindPreEdit, Member: "bob", Agent: AgentCodex, SessionID: "b1", Where: bob, Paths: deep})
+			return err
+		}},
+		{"an arrival", chains, func(h *harness) error {
+			_, err := h.b.Hook(h.now, HookEvent{Kind: KindSessionStart, Member: "bob", Agent: AgentCodex, SessionID: "b2", Where: bob,
+				Footprint: changesOf(2000, "lib")})
+			return err
+		}},
+		{"an arrival among reservations", reserved, func(h *harness) error {
+			_, err := h.b.Hook(h.now, HookEvent{Kind: KindSessionStart, Member: "bob", Agent: AgentCodex, SessionID: "b2", Where: bob,
+				Footprint: changesOf(2000, "lib")})
+			return err
+		}},
+		{"a note to a path", chains, func(h *harness) error {
+			_, err := h.b.Note(h.now, NoteRequest{Member: "bob", Where: bob, To: deep[0].Path, Text: "hello"})
+			if errors.Is(err, ErrNoTarget) {
+				err = nil
+			}
+			return err
+		}},
+		{"a declaration", wide, func(h *harness) error {
+			_, err := h.b.Declare(h.now, DeclareRequest{Member: "bob", Where: bob, Patterns: widePatterns(95), Mode: ModeShared})
+			return err
+		}},
+		{"an exclusive declaration", wideReserved, func(h *harness) error {
+			_, err := h.b.Declare(h.now, DeclareRequest{Member: "bob", Where: bob, Patterns: widePatterns(95), Mode: ModeExclusive})
+			return err
+		}},
+	} {
+		var err error
+		w := counted(t, func() { err = tc.call(tc.h) })
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		t.Logf("%s: %d matches and %d overlaps, %d once out of work", tc.name, w.globMatch, w.globOverlap, w.spentMatches)
+		if !tc.h.b.work.Short() {
+			t.Fatalf("%s did not run out of work", tc.name)
+		}
+		if w.spentMatches > 3*maxIntents {
+			t.Fatalf("%s made %d glob calls after it ran out of work, more than one claim's intents", tc.name, w.spentMatches)
 		}
 	}
 }

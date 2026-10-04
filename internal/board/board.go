@@ -10,6 +10,7 @@ import (
 	"encoding/base32"
 	"errors"
 	"fmt"
+	"iter"
 	"log/slog"
 	"slices"
 	"sort"
@@ -243,8 +244,8 @@ func (b *Board) Version() uint64 {
 // of 200 files uses about a seventh of it, and a worktree arriving with 2000
 // changed files or a declaration of 50 patterns about a fortieth; the
 // costliest patterns glob.CleanPattern accepts use it up in 50 to 85 ms.
-// Past the bound, the call stops matching, lets through what it did not
-// compare, and says so (partialNote).
+// Past the bound, the call compares no more (comparing), lets through what
+// it did not compare, and says so (partialNote).
 const maxGlobWork = 2_000_000
 
 // lock takes the board's lock for a call that may match paths and patterns,
@@ -259,6 +260,9 @@ func (b *Board) lock() {
 func (b *Board) match(pattern, name string) bool {
 	if trace != nil {
 		trace.globMatch++
+		if b.work.Short() {
+			trace.spentMatches++
+		}
 	}
 	return b.work.Match(pattern, name)
 }
@@ -267,6 +271,9 @@ func (b *Board) match(pattern, name string) bool {
 func (b *Board) overlap(x, y string) bool {
 	if trace != nil {
 		trace.globOverlap++
+		if b.work.Short() {
+			trace.spentMatches++
+		}
 	}
 	return b.work.Overlap(x, y)
 }
@@ -276,6 +283,20 @@ func (b *Board) overlap(x, y string) bool {
 func (b *Board) countPartial(now time.Time, repo string) {
 	if b.work.Short() {
 		b.statsOf(repo, now).Partial++
+	}
+}
+
+// comparing yields a repository's claims in ID order, as claimsIn does, until
+// the call runs out of matching: past that, the call compares no more claims,
+// and lets through what it did not compare. The order makes a call stop at
+// the same claim every time.
+func (b *Board) comparing(repo string) iter.Seq[*claim] {
+	return func(yield func(*claim) bool) {
+		for c := range b.claimsIn(repo) {
+			if b.work.Short() || !yield(c) {
+				return
+			}
+		}
 	}
 }
 
@@ -814,7 +835,7 @@ func (b *Board) alertOthers(now time.Time, c *claim, paths []PathRef) {
 	byName := orderByName(paths)
 	covered := make([]bool, len(paths)) // by the claim being compared
 	var at map[string]int               // where each path first is in paths, once needed
-	for o := range b.claimsIn(c.Repo) {
+	for o := range b.comparing(c.Repo) {
 		if o.ID == c.ID {
 			continue
 		}
@@ -1009,6 +1030,9 @@ func (b *Board) blockerOf(p PathRef, holders []*claim) (Conflict, bool) {
 	var best Conflict
 	var by *Intent
 	for _, o := range holders {
+		if b.work.Short() {
+			break // as comparing does
+		}
 		for i := range o.Intents {
 			in := &o.Intents[i]
 			if in.Mode != ModeExclusive || !b.match(in.Pattern, p.Path) {
@@ -1090,7 +1114,7 @@ func (b *Board) conflictsFor(live liveness, self *claim, selfSession string, p P
 		trace.conflictsFor++
 	}
 	var out []Conflict
-	for o := range b.claimsIn(self.Repo) {
+	for o := range b.comparing(self.Repo) {
 		if o.ID == self.ID {
 			continue
 		}
@@ -1596,7 +1620,7 @@ func (b *Board) Declare(now time.Time, r DeclareRequest) (DeclareResult, error) 
 }
 
 func (b *Board) exclusiveClash(self *claim, pattern string, live liveness) (Conflict, bool) {
-	for o := range b.claimsIn(self.Repo) {
+	for o := range b.comparing(self.Repo) {
 		if o.ID == self.ID || !slices.ContainsFunc(o.Intents, func(in Intent) bool { return in.Mode == ModeExclusive }) || !live.claim(o.ID) {
 			continue
 		}
@@ -1632,7 +1656,7 @@ func (b *Board) intentOverlaps(c *claim, in Intent, live liveness) []Conflict {
 	dir := glob.LiteralDir(in.Pattern)
 	lo, hi := dir+"/", dir+"0"
 	var out []Conflict
-	for o := range b.claimsIn(c.Repo) {
+	for o := range b.comparing(c.Repo) {
 		if o.ID == c.ID {
 			continue
 		}
@@ -1922,7 +1946,7 @@ func (b *Board) resolve(repo, to string, self *claim) ([]*claim, string) {
 	if err != nil {
 		return nil, ""
 	}
-	for c := range b.claimsIn(repo) {
+	for c := range b.comparing(repo) {
 		if self != nil && c.ID == self.ID {
 			continue
 		}

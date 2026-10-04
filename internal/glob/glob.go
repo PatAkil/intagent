@@ -143,6 +143,9 @@ func match(pattern, name string, w *Work) bool {
 	if dir, ok := strings.CutSuffix(pattern, "/**"); ok && !hasMeta(dir) {
 		return w.spend(1) && covers(dir, name)
 	}
+	if pattern == "**" {
+		return w.spend(1) // it covers every name, and matching it compares nothing
+	}
 	return matchSegments(pattern, name, w)
 }
 
@@ -267,10 +270,14 @@ func overlap(a, b string, w *Work) bool {
 	for {
 		as, ar, aMore := strings.Cut(a, "/")
 		bs, br, bMore := strings.Cut(b, "/")
+		// Charged before a ** answers, so that every comparison costs a unit.
+		if w != nil && !w.spend(segmentCost(as, bs, hasMeta(as) || hasMeta(bs))) {
+			return false
+		}
 		if as == "**" || bs == "**" {
 			return true
 		}
-		if w != nil && !w.spend(segmentCost(as, bs, hasMeta(as) || hasMeta(bs))) || !segmentsOverlap(as, bs) {
+		if !segmentsOverlap(as, bs) {
 			return false
 		}
 		if !aMore || !bMore {
@@ -332,9 +339,10 @@ func LiteralDir(pattern string) string {
 // Work bounds the matching a caller may do, so that how long a match takes
 // does not depend on how hostile a pattern is. It is counted in units the
 // same way on every run: a comparison of two segments costs one, and one
-// with wildcards len(p)·len(s)/32 more, about in proportion to its time.
-// Once a comparison would cost more than is left, Match and Overlap answer
-// false without making it, and Short reports that they did.
+// with wildcards len(p)·len(s)/32 more, about in proportion to its time;
+// every call makes at least one. Once a comparison would cost more than is
+// left, Match and Overlap answer false without making it, and Short reports
+// that they did.
 //
 // The zero Work is unbounded.
 type Work struct {
