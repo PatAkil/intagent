@@ -1,7 +1,9 @@
 package board
 
 import (
+	"cmp"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -127,37 +129,66 @@ func (b *Board) renderInbox(now time.Time, fresh, earlier []InboxItem) string {
 // renderStart greets a session with the state of the board.
 func (b *Board) renderStart(now time.Time, c *claim) string {
 	live := b.liveClaims(now)
-	var others []*claim
-	for _, o := range b.claimsInRepo(c.Repo) {
-		if o.ID != c.ID {
-			others = append(others, o)
-		}
-	}
 	mine := areasOf(c)
-	sort.SliceStable(others, func(i, j int) bool {
-		ri, rj := relevance(others[i], mine, live), relevance(others[j], mine, live)
-		if ri != rj {
-			return ri > rj
+	// A busy repository has hundreds of claims and the greeting shows a few:
+	// rank each claim once, and keep only the first rows.
+	var top []rankedClaim
+	others := 0
+	for _, o := range b.claims {
+		if o.Repo != c.Repo || o.ID == c.ID {
+			continue
 		}
-		return others[i].UpdatedAt.After(others[j].UpdatedAt)
-	})
+		others++
+		top = insertTop(top, rankedClaim{o, relevance(o, mine, live)}, maxBoardRows, rankedFirst)
+	}
 	var lines []string
 	lines = append(lines, fmt.Sprintf("%s You are connected to your team's intagent board as %s (claim %s%s). Teammates' agents see the files you change, and you hear about theirs.",
 		prefix, who(c), c.ID, onBranch(c)))
-	if len(others) == 0 {
+	if others == 0 {
 		lines = append(lines, "No other agents have work in this repository right now.")
 	} else {
 		lines = append(lines, fmt.Sprintf("Other work in this repository %s:", dataNotice))
-		for i, o := range others {
-			if i == maxBoardRows {
-				lines = append(lines, fmt.Sprintf("- and %d more; call the intagent team_board tool to see all.", len(others)-maxBoardRows))
-				break
-			}
-			lines = append(lines, b.summarizeClaim(now, o, live[o.ID]))
+		for _, r := range top {
+			lines = append(lines, b.summarizeClaim(now, r.c, live[r.c.ID]))
+		}
+		if others > maxBoardRows {
+			lines = append(lines, fmt.Sprintf("- and %d more; call the intagent team_board tool to see all.", others-maxBoardRows))
 		}
 	}
 	lines = append(lines, toolsHint)
 	return strings.Join(lines, "\n")
+}
+
+// rankedClaim is another claim with its relevance to a greeted session.
+type rankedClaim struct {
+	c   *claim
+	rel int
+}
+
+// rankedFirst orders claims for a greeting: the most relevant, then the most
+// recently updated, then by ID.
+func rankedFirst(a, b rankedClaim) int {
+	if a.rel != b.rel {
+		return cmp.Compare(b.rel, a.rel)
+	}
+	if c := b.c.UpdatedAt.Compare(a.c.UpdatedAt); c != 0 {
+		return c
+	}
+	return strings.Compare(a.c.ID, b.c.ID)
+}
+
+// insertTop adds x to top, which holds at most k items in cmp's order: the
+// first k of many items, without sorting them all. cmp must order every two
+// distinct items.
+func insertTop[T any](top []T, x T, k int, cmp func(a, b T) int) []T {
+	i, _ := slices.BinarySearchFunc(top, x, cmp)
+	if i == k {
+		return top
+	}
+	if len(top) == k {
+		top = top[:k-1]
+	}
+	return slices.Insert(top, i, x)
 }
 
 func (b *Board) summarizeClaim(now time.Time, o *claim, active bool) string {
@@ -179,7 +210,10 @@ func (b *Board) summarizeClaim(now time.Time, o *claim, active bool) string {
 		fmt.Fprintf(&sb, "; %s intent %s", in.Mode, in.Pattern)
 	}
 	if n := len(o.Footprint); n > 0 {
-		fmt.Fprintf(&sb, "; changed %s: %s", plural(n, "file"), listPaths(sortedFiles(o), 4))
+		fmt.Fprintf(&sb, "; changed %s: %s", plural(n, "file"), strings.Join(newestFiles(o, 4), ", "))
+		if n > 4 {
+			fmt.Fprintf(&sb, " and %d more", n-4)
+		}
 	}
 	return sb.String()
 }
@@ -197,6 +231,34 @@ func (b *Board) agentsOf(now time.Time, c *claim) string {
 	}
 	sort.Strings(parts)
 	return strings.Join(parts, ", ")
+}
+
+// fileAt is a changed file and when it changed.
+type fileAt struct {
+	path string
+	at   time.Time
+}
+
+// newerFirst orders files newest first, and files changed at the same time
+// by path.
+func newerFirst(a, b fileAt) int {
+	if c := b.at.Compare(a.at); c != 0 {
+		return c
+	}
+	return strings.Compare(a.path, b.path)
+}
+
+// newestFiles is the first n of a claim's files in sortedFiles' order.
+func newestFiles(c *claim, n int) []string {
+	top := make([]fileAt, 0, n)
+	for p, t := range c.Footprint {
+		top = insertTop(top, fileAt{p, t.At}, n, newerFirst)
+	}
+	out := make([]string, len(top))
+	for i, f := range top {
+		out[i] = f.path
+	}
+	return out
 }
 
 func sortedFiles(c *claim) []string {
@@ -226,11 +288,16 @@ func areasOf(c *claim) map[string]bool {
 
 // relevance orders other claims for a session's greeting: shared areas first, then active ones.
 func relevance(o *claim, mine map[string]bool, live map[string]bool) int {
+	if trace != nil {
+		trace.ranked++
+	}
 	r := 0
-	for a := range areasOf(o) {
-		if mine[a] {
-			r += 2
-			break
+	if len(mine) > 0 {
+		for _, t := range o.Footprint {
+			if t.Area != "" && mine[t.Area] {
+				r += 2
+				break
+			}
 		}
 	}
 	if live[o.ID] {

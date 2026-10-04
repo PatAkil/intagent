@@ -11,6 +11,7 @@ type workTrace struct {
 	conflictWith int // other claims a path was compared with
 	workedInArea int // claims searched for work in an area
 	areaVisits   int // footprint entries those searches read
+	ranked       int // claims ranked for a greeting
 	globMatch    int // glob.Match calls
 	globOverlap  int // glob.Overlap calls
 }
