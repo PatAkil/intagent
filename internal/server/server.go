@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -78,7 +79,6 @@ type Server struct {
 	version    string
 	sweepEvery time.Duration
 	dashboard  http.Handler
-	saved      uint64
 	notifier   *notifier
 	closing    chan struct{}
 	closeOnce  sync.Once
@@ -103,6 +103,12 @@ type Server struct {
 	handshakeTimeout time.Duration
 	// admit meters what members ask of the server.
 	admit *admission
+	// saves follows the board's snapshots (persist.go). saveFile writes
+	// one, and slowSave is how long one may take before it is logged;
+	// tests replace both.
+	saves    saves
+	saveFile func(path string, perm fs.FileMode, fill func(io.Writer) error) error
+	slowSave time.Duration
 }
 
 type memberHash struct {
@@ -156,6 +162,7 @@ func New(o Options) (*Server, error) {
 		s.maxConns = DefaultMaxConnections
 	}
 	s.admit = newAdmission()
+	s.saveFile, s.slowSave = fsutil.WriteFileFunc, slowSave
 	// The key comes first: SetMembers computes each member's dashboard cookie
 	// with it.
 	key, err := loadUIKey(s.dataDir)
@@ -325,7 +332,8 @@ func (s *Server) Handler() http.Handler {
 
 // Serve runs the server on ln until ctx is cancelled, then shuts down cleanly,
 // writes a final snapshot and sends the webhook what is still waiting. With
-// Options.TLS, it serves HTTPS on ln.
+// Options.TLS, it serves HTTPS on ln. It returns the final snapshot's error,
+// if it could not be written.
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	srv := &http.Server{
 		Handler:           s.Handler(),
@@ -347,9 +355,13 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 		ln = &tlsListener{Listener: ln, config: s.tls, timeout: s.handshakeTimeout}
 	}
 	srv.RegisterOnShutdown(func() { s.closeOnce.Do(func() { close(s.closing) }) })
+	// The sweeper and the persister stop as the server starts to stop: no
+	// sweep runs while it does, and a save in flight is abandoned for the
+	// final one, made once the requests are done.
 	maintainCtx, stopMaintain := context.WithCancel(context.WithoutCancel(ctx))
-	maintained, watched := make(chan struct{}), make(chan struct{})
-	go func() { defer close(maintained); s.maintain(maintainCtx) }()
+	swept, persisted, watched := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	go func() { defer close(swept); s.sweep(maintainCtx) }()
+	go func() { defer close(persisted); s.persist(maintainCtx) }()
 	go func() { defer close(watched); s.watchLoad(maintainCtx) }()
 	// The notifier stops last, so its final message carries everything
 	// recorded before the requests, the sweeper and the load watcher stopped.
@@ -374,13 +386,19 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 		<-errc
 	}
 	stopMaintain()
-	<-maintained
+	<-swept
+	<-persisted
 	<-watched
 	stopNotify()
-	<-notified
 	if errors.Is(err, http.ErrServerClosed) {
 		err = nil
 	}
+	if serr := s.save(context.WithoutCancel(ctx)); serr != nil {
+		// A clean stop that could not save loses what changed since the
+		// last save: serve must not exit as if it had not.
+		err = errors.Join(err, fmt.Errorf("final snapshot: %w", serr))
+	}
+	<-notified
 	return err
 }
 
@@ -494,18 +512,24 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 
 // health is what /healthz reports. It answers 200 while the server runs,
 // degraded or not: a probe that restarted it then would turn a slow server
-// into one that answers nothing. With ?strict=1 a degraded server answers
-// 503, for monitors.
+// into one that answers nothing. With ?strict=1 a degraded server, or one
+// that cannot save its board, answers 503, for monitors.
 type health struct {
 	OK      bool   `json:"ok"`
 	Version string `json:"version"`
 	LoadStatus
+	// Snapshot says whether the board is saved, on a server that saves it.
+	// Saves that fail answer 503 with ?strict=1 too.
+	Snapshot *SnapshotStatus `json:"snapshot,omitempty"`
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	h := health{OK: true, Version: s.version, LoadStatus: s.answers.status(s.clock())}
+	if s.dataDir != "" {
+		h.Snapshot = s.saves.status()
+	}
 	status := http.StatusOK
-	if h.Degraded && r.URL.Query().Get("strict") == "1" {
+	if (h.Degraded || (h.Snapshot != nil && !h.Snapshot.OK)) && r.URL.Query().Get("strict") == "1" {
 		h.OK, status = false, http.StatusServiceUnavailable
 	}
 	writeJSON(w, status, h)

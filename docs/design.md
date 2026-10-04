@@ -160,8 +160,15 @@ internal/mcp           a minimal stdio MCP server and intagent's tools
 internal/web           the dashboard, embedded
 ```
 
-The server keeps the board in memory behind one mutex. Each mutation marks the board dirty; a writer goroutine saves
-an atomic snapshot (write, fsync, rename) at most once a second and on shutdown. Beside its maps the board keeps
+The server keeps the board in memory behind one mutex. Each mutation marks the board dirty, and a goroutine of its own
+saves an atomic snapshot (write, fsync, rename) of a changed board, spaced by what the last save cost: nine times its
+duration after it started, between 1 and 30 seconds. An unclean stop loses what changed since the last save, which on a
+large board is a few seconds' work. A snapshot shares the claims' footprints and alerts with the board, which copies one
+before it next changes it, so the lock is held only to copy the claims and sessions, and it is written to disk a claim
+at a time. Saves that fail are tried again after 1, 2, 4, 8 and 16 seconds, then every 30; the server logs the first
+failure, then one a minute, then the recovery, and `/healthz` says so. Stalled sessions are looked for on a goroutine of
+their own, so a slow or stuck disk does not delay the news. A clean stop abandons a save in flight, waits for the
+requests in flight, and saves once more; `serve` exits non-zero if that save fails. Beside its maps the board keeps
 indexes, rebuilt from the snapshot on a restart: each repository's claims, each claim's sessions, and for each claim
 the latest change in each area it changed files in and its changed paths in order. A check of a path then looks at
 each claim of its repository once, asks the sessions of only the claims that matter to it whether they are live, and
@@ -212,7 +219,7 @@ All endpoints take and return JSON and require `Authorization: Bearer <token>`, 
 | `GET /v1/repos` | dashboard | The repositories with claims, each with the server's `epoch`. |
 | `GET /v1/stream` | dashboard | Server-sent events. |
 | `GET /v1/whoami` | CLI | The member a token belongs to. |
-| `GET /healthz` | monitors | Up, and whether agents' edits go ahead unchecked: `ok`, `version`, `degraded`, `since`, `pre_edits_60s` and `unchecked_60s`. Always 200, except with `?strict=1`: 503 while degraded. |
+| `GET /healthz` | monitors | Up, and whether agents' edits go ahead unchecked: `ok`, `version`, `degraded`, `since`, `pre_edits_60s` and `unchecked_60s`; with a data directory, `snapshot`: `ok`, `saved_at`, and while saves fail `failing_since`, `attempts` and `error` (the operation and the system's error, no paths). Always 200, except with `?strict=1`: 503 while degraded or while saves fail. |
 
 ## When the server falls behind
 

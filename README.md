@@ -260,6 +260,13 @@ server logs a warning when it starts and another when it ends, webhooks can send
 `/healthz` still answers 200, so a restart probe never turns a slow server into an absent one; `/healthz?strict=1`
 answers 503, with `"ok": false`, while degraded, for monitors that alert.
 
+The board lives in memory and is saved to `--data` a few seconds after it changes: each save waits nine times as long
+as the last one took, between 1 and 30 seconds, so a crash loses at most that much; a clean stop saves once more. When
+saves fail (a full disk, say), the server logs it at once and then once a minute, keeps every change in memory, tries
+again with a growing pause, and `/healthz` carries `"snapshot": {"ok": false, "failing_since": ..., "attempts": ...,
+"error": "write: no space left on device"}`, which `?strict=1` answers with 503 too. `serve` exits non-zero when its
+final save fails.
+
 ## Commands
 
 | Command | Purpose |
