@@ -26,25 +26,31 @@ var streamWriteTimeout = 15 * time.Second
 // hold up a shutdown.
 const goodbyeTimeout = time.Second
 
-// streamPiece is how much of a write one deadline covers, so a client that
-// keeps reading a large catch-up slowly still gets all of it.
+// streamPiece is how much of a stream's output is written at once, within
+// one deadline, so a client that keeps reading a large catch-up slowly still
+// gets all of it.
 const streamPiece = 64 << 10
+
+// maxKeptBuffer bounds the buffer a stream keeps between writes; a larger one,
+// grown for an activity larger than a piece, is let go.
+const maxKeptBuffer = 2 * streamPiece
 
 // streamRetryAfter is the Retry-After, in seconds, of a stream refused for
 // being over its limit.
 const streamRetryAfter = 30
 
-// maxKeptBuffer bounds the buffer a stream keeps between writes; a larger one,
-// grown for a burst, is let go.
-const maxKeptBuffer = 64 << 10
-
-// streamWriter writes one stream's server-sent events: it gathers what is
-// ready, then writes it at once and flushes it to the client.
+// streamWriter writes one stream's server-sent events. It gathers what is
+// ready and writes it a piece at a time, each within a deadline, then
+// flushes it to the client.
 type streamWriter struct {
 	w    http.ResponseWriter
 	rc   *http.ResponseController
 	repo string // the repository the stream is for; "" for all
 	buf  []byte
+	// unflushed says pieces were written since the last flush.
+	unflushed bool
+	// err is the first write that failed: the stream is over.
+	err error
 	// last is the id of the newest activity written: one replayed on
 	// reconnection that also arrives live is not sent twice.
 	last uint64
@@ -54,11 +60,19 @@ func newStreamWriter(w http.ResponseWriter, repo string) *streamWriter {
 	return &streamWriter{w: w, rc: http.NewResponseController(w), repo: repo}
 }
 
+// add gathers b, writing a piece out once one is full.
+func (o *streamWriter) add(b []byte) {
+	o.buf = append(o.buf, b...)
+	if len(o.buf) >= streamPiece {
+		o.write(streamWriteTimeout)
+	}
+}
+
 // raw adds text as it is: fields and comments that are not events.
-func (o *streamWriter) raw(text string) { o.buf = append(o.buf, text...) }
+func (o *streamWriter) raw(text string) { o.add([]byte(text)) }
 
 // event adds an event without an id. data must be a single line.
-func (o *streamWriter) event(name string, data []byte) { o.buf = appendEvent(o.buf, name, 0, data) }
+func (o *streamWriter) event(name string, data []byte) { o.add(appendEvent(nil, name, 0, data)) }
 
 // frames adds the frames the stream carries and has not sent yet.
 func (o *streamWriter) frames(batch []frame) {
@@ -72,7 +86,7 @@ func (o *streamWriter) frames(batch []frame) {
 			}
 			o.last = f.seq
 		}
-		o.buf = append(o.buf, f.data...)
+		o.add(f.data)
 	}
 }
 
@@ -84,32 +98,33 @@ func (o *streamWriter) goodbye(retry int) {
 	_ = o.flushWithin(goodbyeTimeout)
 }
 
-// flush writes what has been added and flushes it to the client, each piece
-// within streamWriteTimeout.
+// flush writes what has been gathered and flushes it to the client.
 func (o *streamWriter) flush() error { return o.flushWithin(streamWriteTimeout) }
 
 func (o *streamWriter) flushWithin(d time.Duration) error {
-	if len(o.buf) == 0 {
-		return nil
+	o.write(d)
+	if o.err != nil || !o.unflushed {
+		return o.err
 	}
-	for b := o.buf; len(b) > 0; {
-		k := min(len(b), streamPiece)
-		if err := o.deadline(d); err != nil {
-			return err
+	if o.err = o.deadline(d); o.err == nil {
+		o.err = o.rc.Flush()
+	}
+	o.unflushed = false
+	return o.err
+}
+
+// write writes what has been gathered as one piece, within d.
+func (o *streamWriter) write(d time.Duration) {
+	if len(o.buf) > 0 && o.err == nil {
+		if o.err = o.deadline(d); o.err == nil {
+			_, o.err = o.w.Write(o.buf)
+			o.unflushed = true
 		}
-		if _, err := o.w.Write(b[:k]); err != nil {
-			return err
-		}
-		b = b[k:]
 	}
 	o.buf = o.buf[:0]
 	if cap(o.buf) > maxKeptBuffer {
 		o.buf = nil
 	}
-	if err := o.deadline(d); err != nil {
-		return err
-	}
-	return o.rc.Flush()
 }
 
 // deadline gives the next write d. A writer that takes no deadline, such as

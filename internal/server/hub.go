@@ -183,6 +183,12 @@ func (h *hub) unsubscribe(s *subscriber) {
 
 // publish encodes activities once, outside the hub's lock, for every stream.
 func (h *hub) publish(acts []board.Activity) {
+	h.mu.Lock()
+	idle := len(h.subs) == 0
+	h.mu.Unlock()
+	if idle {
+		return // a stream opened later starts after these
+	}
 	frames := make([]frame, 0, len(acts))
 	for _, a := range acts {
 		if f, ok := activityFrame(a); ok {
@@ -194,7 +200,9 @@ func (h *hub) publish(acts []board.Activity) {
 
 // send makes frames one publish, which every stream takes in order: a sweep
 // that announces a thousand stalls is one place in the ring, not a thousand.
-// It never blocks, and costs the same however many streams are open.
+// It never blocks, and costs the same however many streams are open. A frame
+// marked all reaches every stream, whatever its repository: the way for an
+// event that is not an activity, such as one about the server itself.
 func (h *hub) send(frames []frame) {
 	if len(frames) == 0 {
 		return

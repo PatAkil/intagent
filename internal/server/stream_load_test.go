@@ -179,3 +179,24 @@ func TestStreamsDoNotHoldUpTheBoard(t *testing.T) {
 		t.Fatalf("with 300 streams, activity hooks ran at %.2f of their rate without streams; want at least 0.5", watched/alone)
 	}
 }
+
+// BenchmarkHubPublish measures what handing one activity to the streams
+// costs the board's writer, which waits for it while the next writer holds
+// the board's lock: the same however many streams are open.
+//
+//	go test ./internal/server -run '^$' -bench HubPublish
+func BenchmarkHubPublish(b *testing.B) {
+	for _, n := range []int{0, 1, 300, 5000} {
+		b.Run(fmt.Sprintf("streams=%d", n), func(b *testing.B) {
+			h := newHub(StreamLimits{Total: max(n, 1), PerMember: max(n, 1)})
+			for range n {
+				h.subscribe(loadRepo, memberHash{name: "m"})
+			}
+			a := board.Activity{At: time.Now(), Kind: board.ActivityFileChanged, Repo: loadRepo, Member: "m", Paths: []string{"svc/f.go"}}
+			for b.Loop() {
+				a.Seq++
+				h.publish([]board.Activity{a})
+			}
+		})
+	}
+}
