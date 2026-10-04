@@ -27,6 +27,7 @@ func (a *App) serve(ctx context.Context, args []string) error {
 	level := fs.String("log-level", "info", "debug, info, warn or error")
 	tlsCert := fs.String("tls-cert", "", "serve HTTPS with this certificate chain (PEM), with --tls-key")
 	tlsKey := fs.String("tls-key", "", "the certificate's private key (PEM)")
+	maxConns := fs.Int("max-connections", server.DefaultMaxConnections, "connections open at once; more are closed as soon as they are accepted")
 	if err := parse(fs, args); err != nil {
 		return err
 	}
@@ -46,13 +47,6 @@ func (a *App) serve(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	srv, err := server.New(server.Options{
-		Members: fc.Members, Version: a.Version, Board: fc.BoardConfig(), DataDir: *data, PublicRead: *public,
-		Logger: logger, Dashboard: web.Handler(), Webhook: fc.Webhook,
-	})
-	if err != nil {
-		return err
-	}
 	var tlsConfig *tls.Config
 	if *tlsCert != "" {
 		cert, err := tls.LoadX509KeyPair(*tlsCert, *tlsKey)
@@ -63,6 +57,13 @@ func (a *App) serve(ctx context.Context, args []string) error {
 		// allow only six connections to a server.
 		tlsConfig = &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12, NextProtos: []string{"h2", "http/1.1"}}
 	}
+	srv, err := server.New(server.Options{
+		Members: fc.Members, Version: a.Version, Board: fc.BoardConfig(), DataDir: *data, PublicRead: *public,
+		Logger: logger, Dashboard: web.Handler(), Webhook: fc.Webhook, MaxConnections: *maxConns, TLS: tlsConfig,
+	})
+	if err != nil {
+		return err
+	}
 	ln, err := new(net.ListenConfig).Listen(ctx, "tcp", *addr)
 	if err != nil {
 		return err
@@ -72,7 +73,7 @@ func (a *App) serve(ctx context.Context, args []string) error {
 	}
 	url := "http://" + ln.Addr().String()
 	if tlsConfig != nil {
-		ln, url = tls.NewListener(ln, tlsConfig), "https://"+ln.Addr().String()
+		url = "https://" + ln.Addr().String()
 	}
 	policy := fc.BoardConfig().Policy
 	logger.Info("intagent server listening", "url", url, "members", len(fc.Members),

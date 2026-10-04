@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -54,6 +55,12 @@ type Options struct {
 	Dashboard http.Handler
 	// Webhook sends selected activities to an endpoint. Zero sends nothing.
 	Webhook WebhookConfig
+	// MaxConnections caps the connections open at once; more are closed as
+	// soon as they are accepted. Zero takes DefaultMaxConnections.
+	MaxConnections int
+	// TLS serves HTTPS with this configuration; nil serves HTTP. Serve adds
+	// TLS to the listener it is given, which must not have it already.
+	TLS *tls.Config
 }
 
 // Server serves one team's board.
@@ -75,6 +82,13 @@ type Server struct {
 	closeOnce  sync.Once
 	// uiKey signs dashboard sessions, so a session cookie is never a token.
 	uiKey []byte
+	tls   *tls.Config
+	// maxConns, readTimeout and handshakeTimeout bound what clients can
+	// hold: connections, and the time to send a request or finish a TLS
+	// handshake.
+	maxConns         int
+	readTimeout      time.Duration
+	handshakeTimeout time.Duration
 }
 
 type memberHash struct {
@@ -88,6 +102,11 @@ const (
 	maxBody     = 1 << 20
 	cookieName  = "intagent_session"
 	sseKeepAway = 20 * time.Second
+	// readTimeout is how long a client may take to send a whole request; a
+	// hook's is sent in milliseconds, and its client waits two seconds.
+	readTimeout = 15 * time.Second
+	// maxHeaderBytes is far above what intagent's clients and browsers send.
+	maxHeaderBytes = 16 << 10
 	// maxToken bounds a bearer token, far above the 51 bytes of a real one,
 	// so a request cannot make the server hash a megabyte to reject it.
 	maxToken = 256
@@ -115,6 +134,10 @@ func New(o Options) (*Server, error) {
 	}
 	if s.sweepEvery <= 0 {
 		s.sweepEvery = 15 * time.Second
+	}
+	s.tls, s.maxConns, s.readTimeout, s.handshakeTimeout = o.TLS, o.MaxConnections, readTimeout, handshakeTimeout
+	if s.maxConns <= 0 {
+		s.maxConns = DefaultMaxConnections
 	}
 	// The key comes first: SetMembers computes each member's dashboard cookie
 	// with it.
@@ -257,13 +280,23 @@ func (s *Server) Handler() http.Handler {
 }
 
 // Serve runs the server on ln until ctx is cancelled, then shuts down cleanly
-// and writes a final snapshot.
+// and writes a final snapshot. With Options.TLS, it serves HTTPS on ln.
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	srv := &http.Server{
 		Handler:           s.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 		BaseContext:       func(net.Listener) context.Context { return ctx },
+		// A body sent a byte at a time, with a token or without one, would
+		// otherwise hold its connection for as long as it keeps sending.
+		ReadTimeout:    s.readTimeout,
+		MaxHeaderBytes: maxHeaderBytes,
+	}
+	// The limit counts TCP connections, below TLS, so that the HTTP server
+	// still sees each TLS connection as one, for HTTP/2.
+	ln = newLimitListener(ln, s.maxConns, s.log)
+	if s.tls != nil {
+		ln = &tlsListener{Listener: ln, config: s.tls, timeout: s.handshakeTimeout}
 	}
 	srv.RegisterOnShutdown(func() { s.closeOnce.Do(func() { close(s.closing) }) })
 	maintainCtx, stopMaintain := context.WithCancel(context.WithoutCancel(ctx))
@@ -494,6 +527,9 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "streaming unsupported")
 		return
 	}
+	// A stream reads nothing after its request, so the time limit on reading
+	// one does not apply to it.
+	_ = http.NewResponseController(w).SetReadDeadline(time.Time{})
 	repo := board.RepoID(r.URL.Query().Get("repo"))
 	sub := s.hub.subscribe(repo)
 	defer s.hub.unsubscribe(sub)
