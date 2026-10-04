@@ -201,19 +201,27 @@ func (w *workspace) footprintUpTo(ctx context.Context, limit int) (*board.Footpr
 	return fp, nil
 }
 
-// choose picks what a footprint keeps of more than limit files, sorted.
-// First, directories the worktree added whole each stand for their files,
-// the largest first, until the files fit: a .venv or build output nobody
-// ignored, whose files only this worktree has. If the files still do not
-// fit, it keeps one file of each area that changed, so that a teammate's
-// edit anywhere near this work is at least warned about; then the files the
-// branch has not committed, the work in progress; then the rest; each in
-// path order. The server keeps the first files it can take, so they go in
-// that order.
+// choose picks what a footprint keeps of more than limit files, which are
+// sorted, and the directories it reports for the files it leaves out. It
+// keeps one file of each area that changed, so that a teammate's edit
+// anywhere near this work is at least warned about; then the files the
+// branch has not committed, the work in progress, a new package included;
+// then the branch's commits; then the files of directories the worktree
+// added whole that are too large to be work (see bulkShare), the smallest
+// first. Each group goes in path order, and the server keeps the first
+// files it can take, so they go in that order. It fills the cap, and every
+// directory added whole whose files are not all kept goes in dirs.
 func (w *workspace) choose(ctx context.Context, files []string, base string, limit int) (kept, dirs []string) {
-	files, dirs = w.collapse(ctx, files, limit)
-	if len(files) <= limit {
-		return files, dirs
+	added := w.addedDirs(ctx, files)
+	bulk := make([]bool, len(files))
+	var bulkDirs []addedDir
+	for _, d := range added {
+		if d.size() > limit/bulkShare {
+			bulkDirs = append(bulkDirs, d)
+			for i := d.lo; i < d.hi; i++ {
+				bulk[i] = true
+			}
+		}
 	}
 	committed := map[string]bool{}
 	if list, err := w.wt.Committed(ctx, base); err == nil {
@@ -221,88 +229,118 @@ func (w *workspace) choose(ctx context.Context, files []string, base string, lim
 			committed[f] = true
 		}
 	}
-	ordered := make([]string, 0, len(files))
-	for _, f := range files {
-		if !committed[f] {
-			ordered = append(ordered, f)
+	// ordered holds indexes into files.
+	ordered := make([]int, 0, len(files))
+	for _, inCommits := range []bool{false, true} {
+		for i, f := range files {
+			if !bulk[i] && committed[f] == inCommits {
+				ordered = append(ordered, i)
+			}
 		}
 	}
-	for _, f := range files {
-		if committed[f] {
-			ordered = append(ordered, f)
+	work := len(ordered)
+	sort.Slice(bulkDirs, func(i, j int) bool {
+		if n, m := bulkDirs[i].size(), bulkDirs[j].size(); n != m {
+			return n < m
+		}
+		return bulkDirs[i].path < bulkDirs[j].path
+	})
+	for _, d := range bulkDirs {
+		for i := d.lo; i < d.hi; i++ {
+			ordered = append(ordered, i)
 		}
 	}
-	taken := make(map[string]bool, limit)
+	// One file of each area, looked for outside the bulk directories: dirs
+	// stands for those.
+	taken := make([]bool, len(files))
 	kept = make([]string, 0, limit)
 	seen := map[string]bool{}
-	for i, f := range ordered {
-		if len(kept) == limit || i == maxAreaScan || ctx.Err() != nil {
+	for n, i := range ordered[:work] {
+		if len(kept) == limit || n == maxAreaScan || ctx.Err() != nil {
 			break
 		}
-		if a := w.areas.Of(f); !seen[a] {
-			seen[a], taken[f] = true, true
-			kept = append(kept, f)
+		if a := w.areas.Of(files[i]); !seen[a] {
+			seen[a], taken[i] = true, true
+			kept = append(kept, files[i])
 		}
 	}
-	for _, f := range ordered {
+	for _, i := range ordered {
 		if len(kept) == limit {
 			break
 		}
-		if !taken[f] {
-			kept = append(kept, f)
+		if !taken[i] {
+			taken[i] = true
+			kept = append(kept, files[i])
 		}
 	}
-	return kept, dirs
+	return kept, leftOut(added, taken)
 }
 
-// collapse replaces the files of directories the worktree added whole with
-// the directories, the largest first, until at most limit files are left.
-func (w *workspace) collapse(ctx context.Context, files []string, limit int) (rest, dirs []string) {
+// bulkShare sets the size from which a directory the worktree added whole is
+// bulk rather than work in progress: more than one in bulkShare of the files
+// a footprint keeps. A new package is work; a .venv or build output nobody
+// ignored, whose thousands of files only this worktree has, is bulk, and
+// goes after the branch's commits.
+const bulkShare = 4
+
+// addedDir is a directory the worktree added whole, whose files are
+// files[lo:hi] of the sorted list they are in.
+type addedDir struct {
+	path   string
+	lo, hi int
+}
+
+func (d addedDir) size() int { return d.hi - d.lo }
+
+// addedDirs finds, among sorted files, the directories the worktree added
+// whole, in path order.
+func (w *workspace) addedDirs(ctx context.Context, files []string) []addedDir {
 	untracked, err := w.wt.UntrackedDirs(ctx)
 	if err != nil {
-		return files, nil
+		return nil
 	}
-	type dir struct {
-		path   string
-		lo, hi int // its files are files[lo:hi]
-	}
-	var cands []dir
+	var dirs []addedDir
 	for _, d := range untracked {
 		// Every path under d/ sorts between d+"/" and d+"0", '0' following '/'.
 		lo, hi := sort.SearchStrings(files, d+"/"), sort.SearchStrings(files, d+"0")
 		if hi > lo {
-			cands = append(cands, dir{d, lo, hi})
+			dirs = append(dirs, addedDir{d, lo, hi})
 		}
 	}
-	sort.Slice(cands, func(i, j int) bool {
-		if n, m := cands[i].hi-cands[i].lo, cands[j].hi-cands[j].lo; n != m {
-			return n > m
+	return dirs
+}
+
+// leftOut returns, sorted, the directories of added with files not taken: at
+// most maxFootprintDirs, those that leave the most out first.
+func leftOut(added []addedDir, taken []bool) []string {
+	type count struct {
+		path string
+		n    int
+	}
+	var out []count
+	for _, d := range added {
+		n := 0
+		for i := d.lo; i < d.hi; i++ {
+			if !taken[i] {
+				n++
+			}
 		}
-		return cands[i].path < cands[j].path
+		if n > 0 {
+			out = append(out, count{d.path, n})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].n != out[j].n {
+			return out[i].n > out[j].n
+		}
+		return out[i].path < out[j].path
 	})
-	drop := make([]bool, len(files))
-	left := len(files)
-	for _, c := range cands {
-		if left <= limit || len(dirs) == maxFootprintDirs {
-			break
-		}
+	var dirs []string
+	for _, c := range out[:min(len(out), maxFootprintDirs)] {
 		dirs = append(dirs, c.path)
-		left -= c.hi - c.lo
-		for i := c.lo; i < c.hi; i++ {
-			drop[i] = true
-		}
-	}
-	if len(dirs) == 0 {
-		return files, nil
-	}
-	rest = make([]string, 0, left)
-	for i, f := range files {
-		if !drop[i] {
-			rest = append(rest, f)
-		}
 	}
 	sort.Strings(dirs)
-	return rest, dirs
+	return dirs
 }
 
 // pathRefs gives files their areas while ctx lasts, which is git's time: the

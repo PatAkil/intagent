@@ -39,8 +39,9 @@ func TestFootprintAreasStopWithGitsTime(t *testing.T) {
 
 // branchRepo makes a clone whose branch, against origin's main, has
 // committed api/a1.go to api/a4.go and web/app.ts, changed svc/pay/retry.go
-// and added notes.md, five files under .venv/ and three ignored ones under
-// gen/, but not committed them.
+// and added notes.md, a new package of two files under svc/billing/, five
+// files under .venv/ and three ignored ones under gen/, but not committed
+// them.
 func branchRepo(t *testing.T) *workspace {
 	t.Helper()
 	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
@@ -64,6 +65,8 @@ func branchRepo(t *testing.T) *workspace {
 	gitRun(t, clone, "commit", "-q", "-m", "api")
 	writeFile(t, filepath.Join(clone, "svc/pay/retry.go"), "y\n")
 	writeFile(t, filepath.Join(clone, "notes.md"), "y\n")
+	writeFile(t, filepath.Join(clone, "svc/billing/b1.go"), "package billing\n")
+	writeFile(t, filepath.Join(clone, "svc/billing/b2.go"), "package billing\n")
 	for i := 1; i <= 5; i++ {
 		writeFile(t, filepath.Join(clone, fmt.Sprintf(".venv/lib/m%d.py", i)), "")
 	}
@@ -77,23 +80,31 @@ func branchRepo(t *testing.T) *workspace {
 	return &workspace{wt: wt, areas: gitx.NewAreas(wt.Root, nil), ignore: []string{"gen/**"}}
 }
 
-// Ignored files never take room under the cap. Over it, the directories the
-// worktree added whole go first, then one file of each changed area, then
-// the work in progress, then the branch's commits, in the order the server
-// keeps them.
+// Ignored files never take room under the cap. Over it, a footprint keeps
+// one file of each changed area, then the work in progress, a new package
+// included, then the branch's commits, then the files of directories the
+// worktree added whole that are too large to be work, in the order the
+// server keeps them, and fills the cap. A directory added whole whose files
+// do not all fit is reported in dirs.
 func TestFootprintKeepsWhatMattersUnderTheCap(t *testing.T) {
 	w := branchRepo(t)
 	venv := []board.PathRef{{Path: ".venv", Area: ".venv"}}
+	both := []board.PathRef{{Path: ".venv", Area: ".venv"}, {Path: "svc/billing", Area: "svc"}}
 	for _, c := range []struct {
 		limit int
 		files string
 		dirs  []board.PathRef
 	}{
-		{12, ".venv/lib/m1.py .venv/lib/m2.py .venv/lib/m3.py .venv/lib/m4.py .venv/lib/m5.py api/a1.go api/a2.go api/a3.go api/a4.go " +
-			"notes.md svc/pay/retry.go web/app.ts", nil},
-		{7, "api/a1.go api/a2.go api/a3.go api/a4.go notes.md svc/pay/retry.go web/app.ts", venv},
-		{6, "notes.md svc/pay/retry.go api/a1.go web/app.ts api/a2.go api/a3.go", venv},
-		{3, "notes.md svc/pay/retry.go api/a1.go", venv},
+		{14, ".venv/lib/m1.py .venv/lib/m2.py .venv/lib/m3.py .venv/lib/m4.py .venv/lib/m5.py api/a1.go api/a2.go api/a3.go api/a4.go " +
+			"notes.md svc/billing/b1.go svc/billing/b2.go svc/pay/retry.go web/app.ts", nil},
+		// .venv is more than a quarter of 12 files, svc/billing is not.
+		{12, "notes.md svc/billing/b1.go svc/pay/retry.go api/a1.go web/app.ts svc/billing/b2.go api/a2.go api/a3.go api/a4.go " +
+			".venv/lib/m1.py .venv/lib/m2.py .venv/lib/m3.py", venv},
+		{9, "notes.md svc/billing/b1.go svc/pay/retry.go api/a1.go web/app.ts svc/billing/b2.go api/a2.go api/a3.go api/a4.go", venv},
+		// Over a quarter of 7, a two-file directory is bulk too.
+		{7, "notes.md svc/pay/retry.go api/a1.go web/app.ts api/a2.go api/a3.go api/a4.go", both},
+		{6, "notes.md svc/pay/retry.go api/a1.go web/app.ts api/a2.go api/a3.go", both},
+		{3, "notes.md svc/pay/retry.go api/a1.go", both},
 	} {
 		fp, err := w.footprintUpTo(context.Background(), c.limit)
 		if err != nil {
@@ -127,8 +138,8 @@ func bulk(t *testing.T, clone, dir string, n int) {
 // However a worktree comes to change more files than a footprint keeps, a
 // teammate's edit of the file its agent works on is refused once.
 func TestFootprintOverTheCapStillProtectsTheWork(t *testing.T) {
-	edit := func(dir string) map[string]any {
-		return map[string]any{"tool_name": "Edit", "tool_input": map[string]any{"file_path": filepath.Join(dir, "svc/pay/retry.go")}}
+	edit := func(dir, file string) map[string]any {
+		return map[string]any{"tool_name": "Edit", "tool_input": map[string]any{"file_path": filepath.Join(dir, file)}}
 	}
 	for _, c := range []struct {
 		name string
@@ -136,25 +147,34 @@ func TestFootprintOverTheCapStillProtectsTheWork(t *testing.T) {
 		before func(t *testing.T, tm *team, a string)
 		// hooks are alice's hook events after her session starts.
 		hooks []string
+		// target is the file bob edits; svc/pay/retry.go if empty.
+		target string
 	}{
 		{"ignored files sort first", func(t *testing.T, tm *team, a string) {
 			writeFile(t, filepath.Join(a, ".intagent.json"), `{"url": "`+tm.url+`", "ignore": ["api/gen/**"]}`)
 			bulk(t, a, "api/gen", 2100)
 			writeFile(t, filepath.Join(a, "svc/pay/retry.go"), "package pay // changed\n")
-		}, nil},
+		}, nil, ""},
 		{"an untracked .venv", func(t *testing.T, _ *team, a string) {
 			bulk(t, a, ".venv/lib", 2500)
 			writeFile(t, filepath.Join(a, "svc/pay/retry.go"), "package pay // changed\n")
-		}, nil},
+		}, nil, ""},
 		{"2050 committed files sort first", func(t *testing.T, _ *team, a string) {
 			gitRun(t, a, "checkout", "-q", "-b", "codemod")
 			bulk(t, a, "api", 2050)
 			gitRun(t, a, "add", "api")
 			gitRun(t, a, "commit", "-q", "-m", "codemod")
 			writeFile(t, filepath.Join(a, "svc/pay/retry.go"), "package pay // changed\n")
-		}, nil},
-		{"an edit, then a bulk", nil, []string{"edit", "venv", "PostToolUse:Bash", "Stop"}},
-		{"a bulk, then an edit", nil, []string{"codemod", "PostToolUse:Bash", "edit", "Stop"}},
+		}, nil, ""},
+		{"an edit, then a bulk", nil, []string{"edit", "venv", "PostToolUse:Bash", "Stop"}, ""},
+		{"a bulk, then an edit", nil, []string{"codemod", "PostToolUse:Bash", "edit", "Stop"}, ""},
+		{"a new package past the branch's commits", func(t *testing.T, _ *team, a string) {
+			gitRun(t, a, "checkout", "-q", "-b", "codemod")
+			bulk(t, a, "web", 1900)
+			gitRun(t, a, "add", "web")
+			gitRun(t, a, "commit", "-q", "-m", "codemod")
+			bulk(t, a, "svc/billing", 200)
+		}, []string{"Stop"}, "svc/billing/f0150.txt"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			tm := newTeam(t, "alice", "bob")
@@ -173,9 +193,9 @@ func TestFootprintOverTheCapStillProtectsTheWork(t *testing.T) {
 			for _, h := range c.hooks {
 				switch h {
 				case "edit":
-					hook("PreToolUse", edit(a))
+					hook("PreToolUse", edit(a, "svc/pay/retry.go"))
 					writeFile(t, filepath.Join(a, "svc/pay/retry.go"), "package pay // changed\n")
-					hook("PostToolUse", edit(a))
+					hook("PostToolUse", edit(a, "svc/pay/retry.go"))
 				case "venv":
 					bulk(t, a, ".venv/lib", 2500)
 				case "codemod":
@@ -188,7 +208,11 @@ func TestFootprintOverTheCapStillProtectsTheWork(t *testing.T) {
 					hook(h, map[string]any{})
 				}
 			}
-			out, _, _ := tm.as("bob", b, claudeEvent("b1", b, "PreToolUse", edit(b)), "hook", "claude-code")
+			target := c.target
+			if target == "" {
+				target = "svc/pay/retry.go"
+			}
+			out, _, _ := tm.as("bob", b, claudeEvent("b1", b, "PreToolUse", edit(b, target)), "hook", "claude-code")
 			if dec, reason, _ := decision(t, out); dec != "deny" || !strings.Contains(reason, "alice") {
 				var files int
 				for _, r := range tm.srv.Board().Repos(time.Now()) {
@@ -198,8 +222,30 @@ func TestFootprintOverTheCapStillProtectsTheWork(t *testing.T) {
 						}
 					}
 				}
-				t.Fatalf("bob's edit of the file alice changed: %q (alice's claim lists %d files)", dec, files)
+				t.Fatalf("bob's edit of %s, which alice changed: %q (alice's claim lists %d files)", target, dec, files)
 			}
 		})
+	}
+}
+
+// Past maxFootprintDirs directories with files left out, dirs names those
+// that leave the most out, in path order.
+func TestLeftOutNamesTheLargestGaps(t *testing.T) {
+	var added []addedDir
+	taken := []bool{}
+	for i := range maxFootprintDirs + 2 {
+		lo := len(taken)
+		// d000 leaves 1 file out, d001 2 and so on; d201 is kept whole.
+		for j := range i + 2 {
+			taken = append(taken, j > i || i == maxFootprintDirs+1)
+		}
+		added = append(added, addedDir{fmt.Sprintf("d%03d", i), lo, len(taken)})
+	}
+	got := leftOut(added, taken)
+	if len(got) != maxFootprintDirs || got[0] != "d001" || got[len(got)-1] != fmt.Sprintf("d%03d", maxFootprintDirs) {
+		t.Fatalf("leftOut: %d dirs, %v ... %v", len(got), got[:2], got[len(got)-2:])
+	}
+	if !slices.IsSorted(got) {
+		t.Error("dirs out of path order")
 	}
 }
