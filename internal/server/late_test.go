@@ -63,7 +63,7 @@ func TestLateHooksAreNotDecided(t *testing.T) {
 			if code := ts.do(t, "POST", "/v1/hook", "bob", bob, nil); code != http.StatusOK {
 				t.Fatalf("bob's edit: %d", code)
 			}
-			ts.step.Store(int64(tc.waited))
+			ts.wait(tc.waited)
 			body, _ := json.Marshal(hookEv(board.KindPreEdit, "alice", "a1", "svc/pay/retry.go"))
 			ctx, cancel := context.WithCancel(context.Background())
 			if tc.closed {
@@ -90,7 +90,12 @@ func TestLateHooksAreNotDecided(t *testing.T) {
 			if st.Unheard != map[bool]int{true: 1}[tc.late] || st.Checks != map[bool]int{false: 1}[tc.late] {
 				t.Fatalf("stats: %+v", st)
 			}
-			ts.step.Store(0)
+			// A late one went ahead unchecked, whether its client left or
+			// still waits, and counts towards the server's being degraded.
+			if load := ts.answers.status(ts.requestClock()); load.PreEdits60s != 1 || load.Unchecked60s != int64(map[bool]int{true: 1}[tc.late]) {
+				t.Fatalf("load: %+v", load)
+			}
+			ts.wait(0)
 			var next board.HookResult
 			ts.do(t, "POST", "/v1/hook", "alice", hookEv(board.KindPreEdit, "alice", "a1", "svc/pay/retry.go"), &next)
 			if (next.Decision == board.DecisionRefuse) != tc.late {
@@ -115,7 +120,6 @@ func TestHookInFlightAtShutdownIsDecided(t *testing.T) {
 			return clock
 		}
 	})
-	ts.step.Store(int64(3 * time.Second)) // well past the guard
 	ts.do(t, "POST", "/v1/hook", "bob", hookEv(board.KindPostEdit, "bob", "b1", "svc/pay/retry.go"), nil)
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -127,6 +131,7 @@ func TestHookInFlightAtShutdownIsDecided(t *testing.T) {
 	go func() { served <- ts.Serve(ctx, ln) }()
 
 	gate.Store(true)
+	ts.wait(3 * time.Second) // well past the guard
 	answered := make(chan board.HookResult, 1)
 	go func() {
 		body, _ := json.Marshal(hookEv(board.KindPreEdit, "alice", "a1", "svc/pay/retry.go"))
