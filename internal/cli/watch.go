@@ -33,7 +33,9 @@ func (a *App) watch(ctx context.Context, args []string) error {
 	session := fmt.Sprintf("watch-%s-%d", hostname(), os.Getpid())
 	send := func(ctx context.Context, kind board.Kind) error {
 		ev := board.HookEvent{Kind: kind, Agent: board.Agent(*agent), SessionID: session, Where: ws.where}
+		scanned := time.Now()
 		if fp, err := ws.footprint(ctx); err == nil {
+			fp.AgeMS = time.Since(scanned).Milliseconds()
 			ev.Footprint = fp
 		}
 		res, err := ws.client.Hook(ctx, ev)

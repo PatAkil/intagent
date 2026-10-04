@@ -99,7 +99,7 @@ func TestCleanKeepsEveryFootprintField(t *testing.T) {
 		switch {
 		case f.Kind() == reflect.Bool:
 			f.SetBool(true)
-		case f.Kind() == reflect.Int:
+		case f.Kind() == reflect.Int || f.Kind() == reflect.Int64:
 			f.SetInt(1)
 		case f.Kind() == reflect.String:
 			f.SetString("x")

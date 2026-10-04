@@ -306,6 +306,10 @@ type Footprint struct {
 	// files directly inside. The board keeps the valid, distinct ones among
 	// the first 200, as it keeps Files, and does not judge them yet.
 	Dirs []PathRef `json:"dirs,omitempty"`
+	// AgeMS is how long before the event was sent the scan began, in
+	// milliseconds: a change a hook reports in that time may have come after
+	// git looked. The board reads up to maxScanAge of it.
+	AgeMS int64 `json:"age_ms,omitempty"`
 }
 
 // Kind is a normalised lifecycle event.

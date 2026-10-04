@@ -656,6 +656,7 @@ func (ev HookEvent) clean(maxFootprint int) (HookEvent, error) {
 			cut.Dirs = cleanFootprint(fp.Dirs, maxFootprintDirs)
 		}
 		cut.Truncated = fp.Truncated || len(fp.Files) > len(cut.Files) || len(fp.Dirs) > len(cut.Dirs)
+		cut.AgeMS = min(max(fp.AgeMS, 0), maxScanAge.Milliseconds())
 		ev.Footprint = &cut
 	}
 	ev.Prompt = PromptLine(ev.Prompt)
@@ -761,7 +762,8 @@ func firstLine(s string) string {
 
 // reconcile replaces a claim's footprint with what git reports, as
 // HookEvent.clean left it, but never loses for it a change a hook reported
-// that the report may not show: one the list, cut short, leaves out.
+// that the report may not show: one made after the scan began, or one the
+// list, cut short, leaves out.
 func (b *Board) reconcile(now time.Time, c *claim, s *session, fp *Footprint) {
 	if fp == nil {
 		return
@@ -795,10 +797,17 @@ func (b *Board) reconcile(now time.Time, c *claim, s *session, fp *Footprint) {
 	}
 }
 
+// maxScanAge bounds how long before its event a scan may have begun, as
+// Footprint.AgeMS says, for the board to keep the changes hooks reported
+// since that the scan does not list: a scan takes a second or two, and one
+// sent long after it began says little about what came since.
+const maxScanAge = 8 * time.Second
+
 // reconciled is the footprint a scan leaves claim c with, its paths, the
 // files git found that it did not have, and whether its bounds cut what it
 // keeps. It keeps the changes hooks reported first: those the list names,
-// and, when the list is cut short, those it says nothing of; when they are
+// those reported after the scan began (Footprint.AgeMS) and, when the list
+// is cut short, those it says nothing of; when they are
 // more than the footprint's bounds, the newest first, up to hookHeadroom
 // past them. Then, in the order the client sent them, which puts first
 // those it would least want left out, the files git found, within the
@@ -823,11 +832,13 @@ func (b *Board) reconciled(now time.Time, c *claim, fp *Footprint) (map[string]*
 			hooks = append(hooks, fileAt{f.Path, t})
 		}
 	}
-	if fp.Truncated {
-		for _, p := range c.sortedPaths {
-			if t := c.Footprint[p]; !t.FromGit && !listed[p] {
-				hooks = append(hooks, fileAt{p, t})
-			}
+	// A change a hook reported after the scan began may not be in it. The
+	// scan began AgeMS before the client sent it, and the request took a
+	// moment to come, so a change reported since now less the age is kept.
+	since := now.Add(-time.Duration(fp.AgeMS) * time.Millisecond)
+	for _, p := range c.sortedPaths {
+		if t := c.Footprint[p]; !t.FromGit && !listed[p] && (fp.Truncated || t.At.After(since)) {
+			hooks = append(hooks, fileAt{p, t})
 		}
 	}
 	k := footprintKeeper{next: make(map[string]*touch, len(hooks)+len(git))}

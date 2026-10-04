@@ -166,12 +166,13 @@ keeps the valid, distinct ones among the first 200 and does not judge them yet, 
 files they stand for.
 
 The server replaces the claim's git-derived footprint with this list, but never loses for it, or for its bounds, a
-change a hook reported: a list the client cut short keeps the changes hooks reported that it does not list, and when a
-footprint is full, a file git found makes room for a hook's (the greatest path first), and with none left the footprint
-keeps a quarter more files and bytes than its bounds; past those, the newest are kept. A new file in the list that falls
-inside a teammate's exclusive intent is reported to every live session of the claim, not only the one whose hook sent
-the scan, since that scan may follow another session's command. Once a branch is merged and the worktree is clean, the
-footprint is empty and the claim releases itself.
+change a hook reported: a footprint says how long before its event was sent its scan began (`age_ms`, read up to 8
+seconds), and the changes hooks reported since, which git may not have seen, stay; a list the client cut short keeps the
+changes hooks reported that it does not list; and when a footprint is full, a file git found makes room for a hook's
+(the greatest path first), and with none left the footprint keeps a quarter more files and bytes than its bounds; past
+those, the newest are kept. A new file in the list that falls inside a teammate's exclusive intent is reported to every
+live session of the claim, not only the one whose hook sent the scan, since that scan may follow another session's
+command. Once a branch is merged and the worktree is clean, the footprint is empty and the claim releases itself.
 
 ## Identity
 

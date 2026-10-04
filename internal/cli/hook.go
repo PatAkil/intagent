@@ -150,10 +150,12 @@ func (a *App) handleHook(ctx context.Context, ad hook.Adapter, ev hook.Event) (h
 		hev.Prompt = board.PromptLine(ev.Prompt)
 	}
 	began := a.now()
+	var scanned time.Time // when the scan began, on the monotonic clock
 	if ev.Footprint && scanDue(ws.wt.Root, ev.Kind, began) {
 		// Git gets what the server request leaves of the hook's time, and at
 		// least half of it, so a slow git cannot keep the event from the server.
 		fctx, fcancel := context.WithTimeout(ctx, gitTime(ctx, ws.settings.Timeout))
+		scanned = time.Now()
 		fp, err := ws.footprint(fctx)
 		fcancel()
 		if err != nil {
@@ -164,7 +166,7 @@ func (a *App) handleHook(ctx context.Context, ad hook.Adapter, ev hook.Event) (h
 	}
 	ctx, cancel := context.WithTimeout(ctx, ws.settings.Timeout+2*time.Second)
 	defer cancel()
-	res, err := sendHook(ctx, ws, hev, began)
+	res, err := sendHook(ctx, ws, hev, began, scanned)
 	if err == nil && res.Unchecked && ev.Kind == board.KindPreEdit {
 		err = errUnchecked
 	}
@@ -204,10 +206,15 @@ func (a *App) handleHook(ctx context.Context, ad hook.Adapter, ev hook.Event) (h
 // announced as stalled, or live, its reservations refusing teammates' edits
 // for hours. The footprint is not recorded as sent, so the next scan sends
 // it. A connection the server refuses, as it restarts, is tried again while
-// the hook's time allows (sendRetrying).
-func sendHook(ctx context.Context, ws *workspace, hev board.HookEvent, began time.Time) (board.HookResult, error) {
+// the hook's time allows (sendRetrying). Each time, the footprint says how
+// long ago its scan began, scanned, so that the server keeps the changes
+// hooks reported since, which git may not have seen.
+func sendHook(ctx context.Context, ws *workspace, hev board.HookEvent, began, scanned time.Time) (board.HookResult, error) {
 	var res board.HookResult
 	err := sendRetrying(ctx, downStamp(ws.settings.URL), time.Now, func() error {
+		if hev.Footprint != nil {
+			hev.Footprint.AgeMS = time.Since(scanned).Milliseconds()
+		}
 		var err error
 		res, err = ws.client.Hook(ctx, hev)
 		return err
