@@ -17,7 +17,7 @@
 #0150 d4075d060708 declare:3 session_start:told declare:0 stop session_start:told pre_edit:deny prompt check:4 release:0 pre_edit:told
 #0160 c01b200eae96 post_edit:told post_edit:told prompt prompt pre_edit pre_edit tool_start pre_edit:told heartbeat:told release:0
 #0170 6845bfe3c231 tool_start prompt post_edit session_start:told post_edit:told stop post_edit declare:0 release:3 declare!
-#0180 4502055d90cc post_edit:told pre_edit post_edit session_start:told heartbeat post_edit:told release:0 stop pre_edit declare:2
+#0180 77c04164770f post_edit:told pre_edit post_edit session_start:told heartbeat post_edit:told release:0 stop pre_edit declare:2
 #0190 ee3e0f8e2cf5 post_edit:told post_edit:told declare:3 tool_start session_start:told note:2 pre_edit:deny sweep declare:1 declare:2
 #0200 99d10400ecdf stop prompt:told check:6 release:0 check:2 pre_edit:deny session_start:told pre_edit pre_edit:told view
 #0210 5123c42c98d7 prompt sweep session_start:told pre_edit sweep declare:0 view pre_edit:deny sweep release!

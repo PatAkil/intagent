@@ -321,12 +321,15 @@ the request's context while it still waits). Then:
 - any other late event reports a fact (a tool started, a session alive, an edit made) and is recorded, but nothing is
   delivered: notes, alerts and held-back context wait for the session's next answer.
 
-An answer can also miss its agent for reasons the server cannot see. A `post_edit` whose `tool_use_id` the board did
-not see start, or saw refused, is judged when it arrives, without acknowledging anything, and its answer is marked
-`checked_after`: what the agent would have been told reaches it as information, what a refusal it never heard had
-spent is given back so that its next attempt is refused again, and a change inside an active reservation is recorded
-as a breach. The hook keeps its own ledger of the edits that went ahead without an answer, per worktree and session,
-and tells them at the session's next answer the agent reads, less the edit a `checked_after` answer reports.
+An answer can also miss its agent for reasons the server cannot see. A `post_edit` whose `tool_use_id` the board did not
+see start, or saw refused, is judged when it arrives, without acknowledging anything, and its answer is marked
+`checked_after`: what the agent would have been told reaches it as information, what a refusal it never heard had spent
+is given back so that its next attempt is refused again, and a change inside an active reservation is recorded as a
+breach. A call the board let go of at a prompt, a stop or the session's start or end while it ran, such as a subagent's,
+which goes on past the main agent's turn, or one whose `post_edit` arrived after the `stop`, was seen start: the board
+remembers the last 32 of a session's. The hook keeps its own ledger of the edits that went ahead without an answer, per
+worktree and session, and tells them at the session's next answer the agent reads, less the edit a `checked_after`
+answer reports.
 
 The server counts, per second over the last minute, the `pre_edit`s that arrive and those whose agent went ahead
 unchecked, including those it let through unchecked when it was too busy with large requests to check them. It is

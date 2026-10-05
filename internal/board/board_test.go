@@ -1178,7 +1178,7 @@ func TestClonesShareNothingMutable(t *testing.T) {
 		Inbox: []InboxItem{{Paths: []string{"a"}, DeliveredTo: map[string]bool{"s": true}}}, Alerted: map[string]bool{"k": true},
 		Told: map[string]int{"c": 1}, Dirs: map[string]*touch{"d": {}}, areaAt: map[string]time.Time{"a": t0}, sortedPaths: []string{"a.go"}}
 	s := &session{Acked: map[string]bool{"k": true}, Calls: map[string]bool{"t": true}, Also: map[string]time.Time{"c": t0},
-		refused: []refusal{{id: "t", spent: []string{"k"}}}}
+		refused: []refusal{{id: "t", spent: []string{"k"}}}, letGo: []string{"u"}}
 	cc := c.shareFootprint()
 	for _, pair := range [][2]any{{c, cc}, {s, s.clone()}} {
 		a, b := reflect.ValueOf(pair[0]).Elem(), reflect.ValueOf(pair[1]).Elem()

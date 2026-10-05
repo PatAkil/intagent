@@ -224,6 +224,7 @@ func (s *session) clone() *session {
 	d.Calls = maps.Clone(s.Calls)
 	d.Also = maps.Clone(s.Also)
 	d.refused = slices.Clone(s.refused)
+	d.letGo = slices.Clone(s.letGo)
 	return &d
 }
 

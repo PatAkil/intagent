@@ -553,7 +553,7 @@ func (b *Board) Hook(now time.Time, ev HookEvent) (HookResult, error) {
 
 	c := b.claimFor(now, ev.Member, w)
 	s := b.sessionFor(now, ev, c)
-	checkedAfter := ev.Kind == KindPostEdit && ev.ToolUseID != "" && !s.Calls[ev.ToolUseID]
+	checkedAfter := ev.Kind == KindPostEdit && ev.ToolUseID != "" && !s.Calls[ev.ToolUseID] && !slices.Contains(s.letGo, ev.ToolUseID)
 	if checkedAfter {
 		b.unansweredEdit(now, c, s, ev)
 	}
@@ -729,6 +729,9 @@ func endTool(s *session, id string) {
 	switch {
 	case id != "":
 		delete(s.Calls, id)
+		if i := slices.Index(s.letGo, id); i >= 0 {
+			s.letGo = slices.Delete(s.letGo, i, i+1)
+		}
 	case s.InFlight > 0:
 		s.InFlight--
 	}
@@ -741,10 +744,22 @@ func inTool(s *session) bool { return s.InFlight > 0 || len(s.Calls) > 0 }
 
 // clearTools forgets the tools in flight, at the boundaries where none can be:
 // a prompt, a stop, the session's start and end. An end event that never came
-// cannot keep a session inside a tool past them.
+// cannot keep a session inside a tool past them. A subagent's calls do go on
+// past the main agent's turn, unlike its own, so the calls let go of are
+// remembered, among the session's last few (letGo): a post_edit for one is
+// for an edit that was checked before it ran.
 func clearTools(s *session) {
+	if len(s.Calls) > 0 {
+		s.letGo = append(s.letGo, slices.Sorted(maps.Keys(s.Calls))...)
+		if over := len(s.letGo) - maxLetGo; over > 0 {
+			s.letGo = slices.Delete(s.letGo, 0, over)
+		}
+	}
 	s.InFlight, s.Calls, s.Tool, s.ToolSince = 0, nil, "", time.Time{}
 }
+
+// maxLetGo bounds the calls a session remembers clearTools let go of.
+const maxLetGo = 32
 
 func (b *Board) taskFromPrompt(c *claim, s *session, prompt string) {
 	prompt = Clean(firstLine(prompt), maxTaskLen)

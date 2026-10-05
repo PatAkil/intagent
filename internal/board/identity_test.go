@@ -184,6 +184,40 @@ func TestAWorkersPromptKeepsTheSessionsToolsRunning(t *testing.T) {
 	}
 }
 
+// A subagent goes on past its session's turn (Claude Code runs them in the
+// background, and its main agent's prompts and stops come meanwhile), so an
+// edit a worker had checked before the main agent's turn ended was checked:
+// its post_edit is not taken for an unchecked edit. Before, it was, and the
+// edit was judged again as made without a check. Of more calls than the
+// session remembers, the first let go of are forgotten.
+func TestAWorkersCheckedEditOutlivesTheMainTurn(t *testing.T) {
+	for _, k := range []Kind{KindStop, KindPrompt} {
+		h := newHarness(t)
+		call := func(kind Kind, id string) HookResult {
+			ev := HookEvent{Kind: kind, Member: "bob", Agent: AgentClaudeCode, SessionID: "s1", Where: whereOf("bob"), Tool: "Edit",
+				ToolUseID: id, Paths: refs("svc/a.go"), Worker: "agent-1"}
+			res, err := h.b.Hook(h.now, ev)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return res
+		}
+		for i := range maxLetGo + 1 {
+			call(KindPreEdit, fmt.Sprintf("w%02d", i))
+		}
+		h.workerHook(k, "")
+		for i, want := range map[int]bool{0: true, 1: false, maxLetGo: false} {
+			if res := call(KindPostEdit, fmt.Sprintf("w%02d", i)); res.CheckedAfter != want {
+				t.Errorf("after the main agent's %s, the post_edit of call %d of %d: checked after %t, want %t",
+					k, i+1, maxLetGo+1, res.CheckedAfter, want)
+			}
+		}
+		if s := h.b.sessions[sessionKey("bob", AgentClaudeCode, "s1")]; len(s.letGo) != maxLetGo-2 {
+			t.Errorf("the session remembers %d calls let go of, want %d", len(s.letGo), maxLetGo-2)
+		}
+	}
+}
+
 // A worker's ID is cleaned like a tool call's, and bounded.
 func TestWorkerIsCleaned(t *testing.T) {
 	ev, err := HookEvent{Kind: KindPreEdit, Member: "bob", Agent: AgentClaudeCode, SessionID: "s1", Where: whereOf("bob"),

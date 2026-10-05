@@ -293,6 +293,10 @@ type session struct {
 	// the agent ran it without hearing the refusal. It is not saved; a
 	// restart forgets it.
 	refused []refusal
+	// letGo holds the last few calls a turn's end let go of while they ran
+	// (clearTools): a post_edit for one is for an edit checked before it
+	// ran. It is not saved either.
+	letGo []string
 }
 
 // refusal is a refused tool call, and the one-time answers its check spent.
