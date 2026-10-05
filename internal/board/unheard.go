@@ -60,9 +60,8 @@ func refuseTool(s *session, id string, spent []string) {
 // active reservation is recorded as a breach.
 func (b *Board) unansweredEdit(now time.Time, c *claim, s *session, ev HookEvent) {
 	if i := slices.IndexFunc(s.refused, func(r refusal) bool { return r.id == ev.ToolUseID }); i >= 0 {
-		for _, k := range s.refused[i].spent {
-			delete(s.Acked, k)
-		}
+		spent := s.refused[i].spent
+		s.unack(func(k string) bool { return slices.Contains(spent, k) })
 		s.refused = slices.Delete(s.refused, i, i+1)
 	}
 	// Judged as its pre_edit would have been, on the first maxCheckPaths
@@ -80,10 +79,7 @@ func (b *Board) unansweredEdit(now time.Time, c *claim, s *session, ev HookEvent
 // judged on a copy so that nothing is acknowledged.
 func (b *Board) wouldTell(now time.Time, c *claim, s *session, paths []PathRef, worker string) []Conflict {
 	probe := *s
-	probe.Acked = maps.Clone(s.Acked)
-	if probe.Acked == nil {
-		probe.Acked = map[string]bool{}
-	}
+	probe.Acked, probe.ackedShared = maps.Clone(s.Acked), false
 	return b.judge(now, c, &probe, paths, true, worker).acted()
 }
 

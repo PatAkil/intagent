@@ -16,11 +16,12 @@ import (
 	"unsafe"
 )
 
-// Snapshots share the claims' footprints with the board, and are encoded
-// after the lock is released, so a footprint is copied on write. Eight
-// writers change footprints in every way a hook can (a new file, a newer
-// touch, an area that moves, a footprint replaced) while snapshots are taken
-// and restored; under -race the detector must find nothing.
+// Snapshots share the claims' footprints and alerts, and what sessions were
+// told, with the board, and are encoded after the lock is released, so each
+// is copied on write. Eight writers change footprints in every way a hook can
+// (a new file, a newer touch, an area that moves, a footprint replaced), and
+// are told of each other's changes, while snapshots are taken and restored;
+// under -race the detector must find nothing.
 func TestSnapshotsShareFootprintsWithoutRaces(t *testing.T) {
 	shareFootprintsUnderLoad(t, "")
 }
@@ -30,9 +31,10 @@ func TestSnapshotsShareFootprintsWithoutRaces(t *testing.T) {
 const raceControl = "INTAGENT_TEST_RACE_CONTROL"
 
 // The control for the test above: there, a claim that forgot its footprint
-// was shared, and so changed it in place as a missed copy on write would,
-// must make the race detector report it. Otherwise the test above could not
-// fail. The control runs in a process of its own, which must fail.
+// or its alerts were shared, or a session what it was told, and so changed
+// it in place as a missed copy on write would, must make the race detector
+// report it. Otherwise the test above could not fail. The control runs in a
+// process of its own, which must fail.
 func TestSnapshotSharingControl(t *testing.T) {
 	if forget := os.Getenv(raceControl); forget != "" {
 		shareFootprintsUnderLoad(t, forget)
@@ -41,11 +43,11 @@ func TestSnapshotSharingControl(t *testing.T) {
 	if !raceEnabled {
 		t.Skip("the control needs the race detector (go test -race)")
 	}
-	for forget, writer := range map[string]string{"footprint": "putTouch", "alerted": "alert"} {
+	for forget, writer := range map[string]string{"footprint": "(*claim).putTouch", "alerted": "(*claim).alert", "acked": "(*session).ack"} {
 		cmd := exec.Command(os.Args[0], "-test.run=^TestSnapshotSharingControl$", "-test.count=1")
 		cmd.Env = append(os.Environ(), raceControl+"="+forget)
 		out, err := cmd.CombinedOutput()
-		if err == nil || !bytes.Contains(out, []byte("WARNING: DATA RACE")) || !bytes.Contains(out, []byte("(*claim)."+writer+"(")) {
+		if err == nil || !bytes.Contains(out, []byte("WARNING: DATA RACE")) || !bytes.Contains(out, []byte(writer+"(")) {
 			t.Errorf("writing a shared %s in place went unreported (err %v):\n%s", forget, err, out)
 		}
 	}
@@ -53,7 +55,8 @@ func TestSnapshotSharingControl(t *testing.T) {
 
 // shareFootprintsUnderLoad runs eight writers against snapshots and
 // restores. With forget set, a ninth goroutine keeps clearing every claim's
-// mark that a snapshot shares its footprint, or its alerts.
+// mark that a snapshot shares its footprint, or its alerts, or every
+// session's that one shares what it was told.
 func shareFootprintsUnderLoad(t *testing.T, forget string) {
 	h := newHarness(t)
 	var wg sync.WaitGroup
@@ -66,8 +69,10 @@ func shareFootprintsUnderLoad(t *testing.T, forget string) {
 			for i := range 150 {
 				now := t0.Add(time.Duration(i) * time.Second)
 				file := PathRef{Path: fmt.Sprintf("p/%d.go", i%9), Area: fmt.Sprintf("p%d", i%4)}
-				_, _ = h.b.Hook(now, HookEvent{Kind: KindPostEdit, Member: m, Agent: AgentCodex, SessionID: "s", Where: whereOf(m),
-					Paths: []PathRef{file}})
+				for _, kind := range []Kind{KindPreEdit, KindPostEdit} {
+					_, _ = h.b.Hook(now, HookEvent{Kind: kind, Member: m, Agent: AgentCodex, SessionID: "s", Where: whereOf(m),
+						Paths: []PathRef{file}})
+				}
 				if i%10 == 9 {
 					_, _ = h.b.Hook(now, HookEvent{Kind: KindHeartbeat, Member: m, Agent: AgentCodex, SessionID: "s", Where: whereOf(m),
 						Footprint: &Footprint{Files: []PathRef{file, {Path: "q/1.go", Area: "q"}}}})
@@ -87,10 +92,16 @@ func shareFootprintsUnderLoad(t *testing.T, forget string) {
 				}
 				h.b.mu.Lock()
 				for _, c := range h.b.claims {
-					if forget == "footprint" {
+					switch forget {
+					case "footprint":
 						c.fpShared = false
-					} else {
+					case "alerted":
 						c.alertedShared = false
+					}
+				}
+				for _, s := range h.b.sessions {
+					if forget == "acked" {
+						s.ackedShared = false
 					}
 				}
 				h.b.mu.Unlock()

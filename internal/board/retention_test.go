@@ -2,10 +2,12 @@ package board
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"math"
 	"math/rand"
+	"reflect"
 	"runtime"
 	"slices"
 	"strings"
@@ -692,4 +694,163 @@ func TestRestoreTrimsWhatOlderServersRemembered(t *testing.T) {
 		}
 	}
 	mustIndex(t, b, "the restore")
+}
+
+// bobAt is a hook from bob's session s1 with a call id, and a prompt for a
+// prompt.
+func (h *harness) bobAt(kind Kind, id, prompt string, paths ...string) HookResult {
+	h.t.Helper()
+	ev := HookEvent{Kind: kind, Member: "bob", Agent: AgentClaudeCode, SessionID: "s1", Where: whereOf("bob"), ToolUseID: id,
+		Prompt: prompt, Paths: refs(paths...)}
+	if kind == KindPreEdit || kind == KindPostEdit || kind == KindToolStart {
+		ev.Tool = "Edit"
+	}
+	res, err := h.b.Hook(h.now, ev)
+	if err != nil {
+		h.t.Fatalf("Hook(%s): %v", kind, err)
+	}
+	return res
+}
+
+// A session that ended keeps nothing only a live one reads: what it was told
+// (Acked), and the calls refused to it. It keeps the calls its end let go of
+// while they ran: a post_edit for one is for an edit checked before. A board
+// under churn keeps thousands of ended sessions for an hour each, and they
+// kept a key for every collision each had been told of, which every snapshot
+// copied and wrote: 96% of what sessions held after two hours of the
+// acceptance churn. One that resumes may be told again what it heard before
+// it ended; the task its first prompt named stays.
+func TestEndedSessionsForgetWhatTheyWereTold(t *testing.T) {
+	h := newHarness(t)
+	h.edit("alice", "a1", "svc/pay/retry.go")
+	h.bobAt(KindPrompt, "", "Fix the retries")
+	h.bobAt(KindPostEdit, "", "", "svc/bob.go") // so that the claim stays when the session ends
+	if res := h.bobAt(KindPreEdit, "t1", "", "svc/pay/retry.go"); res.Decision != DecisionRefuse {
+		t.Fatalf("bob's first edit of alice's file: %s, want a bump", res.Decision)
+	}
+	if res := h.bobAt(KindPreEdit, "t2", "", "svc/pay/retry.go"); res.Decision != DecisionAllow {
+		t.Fatalf("bob's retry: %s, want allow", res.Decision)
+	}
+	h.bobAt(KindToolStart, "t3", "")
+	h.bobAt(KindStop, "", "") // lets go of t2 and t3 while they run
+	s := h.b.sessions[sessionKey("bob", AgentClaudeCode, "s1")]
+	if len(s.Acked) == 0 || len(s.refused) == 0 || len(s.letGo) == 0 {
+		t.Fatalf("before the end: %d told, %d refused, %d let go; the test needs each", len(s.Acked), len(s.refused), len(s.letGo))
+	}
+	h.bobAt(KindSessionEnd, "", "")
+	if s.Acked != nil || s.refused != nil || s.Calls != nil || !slices.Equal(s.letGo, []string{"t2", "t3"}) {
+		t.Errorf("the ended session keeps %d told, %d refused and %d calls, and let go of %v", len(s.Acked), len(s.refused),
+			len(s.Calls), s.letGo)
+	}
+	data, _, err := h.b.Snapshot(h.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, sessions, _ := bytes.Cut(data, []byte(`"sessions":`)); bytes.Contains(sessions, []byte(`"acked"`)) {
+		t.Errorf("the snapshot keeps what the ended session was told:\n%s", sessions)
+	}
+	h.advance(time.Minute)
+	h.bobAt(KindSessionStart, "", "")
+	h.bobAt(KindPrompt, "", "Something else")
+	if task := h.b.findClaim("bob", whereOf("bob")).Task; task != "Fix the retries" {
+		t.Errorf("the resumed session's prompt made the task %q", task)
+	}
+	if res := h.bobAt(KindPreEdit, "t4", "", "svc/pay/retry.go"); res.Decision != DecisionRefuse {
+		t.Errorf("the resumed session's edit of alice's file: %s, want a bump again", res.Decision)
+	}
+	if res := h.bobAt(KindPostEdit, "t3", "", "svc/bob.go"); res.CheckedAfter {
+		t.Error("the edit the session's end let go of while it ran was taken for one never checked")
+	}
+}
+
+// A snapshot from a server that kept what ended sessions had been told is
+// restored without it; a live session keeps what it was told, and both the
+// prompt that named the claim's task.
+func TestRestoreForgetsWhatEndedSessionsWereTold(t *testing.T) {
+	ended, live := sessionKey("bob", AgentCodex, "b1"), sessionKey("carol", AgentCodex, "c1")
+	old := fmt.Sprintf(`{"format":1,"saved":"2026-10-02T09:00:00Z","claims":[`+
+		`{"id":"c1","repo":%[1]q,"member":"bob","host":"h","worktree":"/b","task":"Fix the retries","created_at":"2026-10-02T09:00:00Z","updated_at":"2026-10-02T09:00:00Z"},`+
+		`{"id":"c2","repo":%[1]q,"member":"carol","host":"h","worktree":"/c","created_at":"2026-10-02T09:00:00Z","updated_at":"2026-10-02T09:00:00Z"}],`+
+		`"sessions":[{"key":%[2]q,"id":"b1","member":"bob","agent":"codex","claim_id":"c1","last_seen":"2026-10-02T09:00:00Z","phase":"ended",`+
+		`"acked":{"task:prompted":true,"told|overlap|c2|a.go":true,"overlap|c2|a.go":true}},`+
+		`{"key":%[3]q,"id":"c1","member":"carol","agent":"codex","claim_id":"c2","last_seen":"2026-10-02T09:00:00Z","phase":"working",`+
+		`"acked":{"task:prompted":true,"told|overlap|c1|b.go":true}}]}`, repo, ended, live)
+	b := New(DefaultConfig())
+	if err := b.Restore(strings.NewReader(old), t0); err != nil {
+		t.Fatal(err)
+	}
+	data, _, err := b.Snapshot(t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snap struct {
+		Sessions []map[string]any `json:"sessions"`
+	}
+	if err := json.Unmarshal(data, &snap); err != nil {
+		t.Fatal(err)
+	}
+	told := map[string]any{}
+	for _, x := range snap.Sessions {
+		told[x["id"].(string)] = x["acked"]
+	}
+	if told["b1"] != nil || !reflect.DeepEqual(told["c1"], map[string]any{"told|overlap|c1|b.go": true}) {
+		t.Errorf("restored and saved again, the sessions were told %v", told)
+	}
+	// The ended session resumes: its prompt does not name the task again.
+	if _, err := b.Hook(t0, HookEvent{Kind: KindPrompt, Member: "bob", Agent: AgentCodex, SessionID: "b1",
+		Where: Where{Repo: repo, Host: "h", Worktree: "/b"}, Prompt: "Something else"}); err != nil {
+		t.Fatal(err)
+	}
+	if task := b.claims["c1"].Task; task != "Fix the retries" {
+		t.Errorf("the resumed session's prompt made the task %q", task)
+	}
+}
+
+// A snapshot shares what each session was told with the board, which copies
+// it before it next changes it, as it does a claim's footprint and alerts:
+// the copy taken under the lock does not grow with it. It cloned every
+// session's map, 168 of the 216 ms the lock was held for on a board two
+// hours of the acceptance churn left.
+func TestSnapshotCopyDoesNotGrowWithWhatSessionsWereTold(t *testing.T) {
+	const sessions = 40
+	copied := func(files int) uint64 {
+		h := newHarness(t)
+		paths := make([]string, files)
+		for i := range paths {
+			paths[i] = fmt.Sprintf("lib/f%03d.go", i)
+		}
+		h.hook(KindPostEdit, "alice", "a1", paths...)
+		for i := range sessions {
+			m := fmt.Sprintf("m%02d", i)
+			h.hook(KindPreEdit, m, "s", paths...) // bumped on each file, and told of each
+		}
+		var told int
+		for _, s := range h.b.sessions {
+			told += len(s.Acked)
+		}
+		if told < sessions*files {
+			t.Fatalf("the sessions were told %d things, want at least %d", told, sessions*files)
+		}
+		return allocatedBy(func() { h.b.snapshotCopy(h.now) })
+	}
+	one, many := copied(1), copied(maxCheckPaths)
+	t.Logf("a snapshot's copy allocates %d bytes when each session was told 2 things, %d when %d", one, many, 2*maxCheckPaths)
+	if many > one+sessions*64 {
+		t.Fatalf("a snapshot's copy allocates %d bytes when each session was told %d things, %d when 2", many, 2*maxCheckPaths, one)
+	}
+}
+
+// allocatedBy is the fewest bytes fn allocated in three runs.
+func allocatedBy(fn func()) uint64 {
+	var least uint64
+	for i := range 3 {
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
+		fn()
+		runtime.ReadMemStats(&after)
+		if n := after.TotalAlloc - before.TotalAlloc; i == 0 || n < least {
+			least = n
+		}
+	}
+	return least
 }

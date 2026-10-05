@@ -217,10 +217,12 @@ func (c *claim) alert(k string) bool {
 	return true
 }
 
-// clone copies a session deeply enough to be read while the original changes.
+// clone copies a session deeply enough to be read while the original
+// changes, but for what it was told, which it shares: the session copies it
+// before it next changes it (ack).
 func (s *session) clone() *session {
+	s.ackedShared = true
 	d := *s
-	d.Acked = maps.Clone(s.Acked)
 	d.Calls = maps.Clone(s.Calls)
 	d.Also = maps.Clone(s.Also)
 	d.refused = slices.Clone(s.refused)
@@ -358,6 +360,23 @@ func (c *claim) trimRestored() {
 	}
 }
 
+// trimRestored drops what a session read from a snapshot keeps that the
+// board no longer would. An older server kept what a session had been told
+// after it ended, and the mark that a prompt named the claim's task among
+// it.
+func (s *session) trimRestored() {
+	if s == nil {
+		return
+	}
+	if s.Acked[ackPrompted] {
+		s.Prompted = true
+		delete(s.Acked, ackPrompted)
+	}
+	if s.Phase == phaseEnded || len(s.Acked) == 0 {
+		s.Acked = nil
+	}
+}
+
 // toldClaim is the teammate's claim an alert of a file it changed names,
 // alertOthers' touch|<claim>|<path>, which Told counts.
 func toldClaim(k string) (string, bool) {
@@ -397,7 +416,7 @@ func readSnapshot(r io.Reader) (snapshot, error) {
 			// kept is not all held at once.
 			return readArray(dec, &s.Claims, (*claim).trimRestored)
 		case strings.EqualFold(key, "sessions"):
-			return readArray(dec, &s.Sessions, nil)
+			return readArray(dec, &s.Sessions, (*session).trimRestored)
 		case strings.EqualFold(key, "saved"):
 			return dec.Decode(&s.Saved)
 		case strings.EqualFold(key, "seq"):

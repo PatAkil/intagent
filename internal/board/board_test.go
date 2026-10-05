@@ -1171,16 +1171,16 @@ func TestParseHelpers(t *testing.T) {
 // Snapshot copies claims and sessions to encode them outside the lock; a
 // field added later without a deep copy would be read while hooks write it.
 // A snapshot's copies share nothing the board changes in place. A claim's
-// footprint and alerts are shared, and the claim copies each before it next
-// changes it.
+// footprint and alerts, and what a session was told, are shared, and the
+// claim or session copies each before it next changes it.
 func TestClonesShareNothingMutable(t *testing.T) {
 	c := &claim{Intents: []Intent{{Pattern: "a/**"}}, Footprint: map[string]*touch{"a.go": {}},
 		Inbox: []InboxItem{{Paths: []string{"a"}, DeliveredTo: map[string]bool{"s": true}}}, Alerted: map[string]bool{"k": true},
 		Told: map[string]int{"c": 1}, Dirs: map[string]*touch{"d": {}}, areaAt: map[string]time.Time{"a": t0}, sortedPaths: []string{"a.go"}}
 	s := &session{Acked: map[string]bool{"k": true}, Calls: map[string]bool{"t": true}, Also: map[string]time.Time{"c": t0},
 		refused: []refusal{{id: "t", spent: []string{"k"}}}, letGo: []string{"u"}}
-	cc := c.shareFootprint()
-	for _, pair := range [][2]any{{c, cc}, {s, s.clone()}} {
+	cc, sc := c.shareFootprint(), s.clone()
+	for _, pair := range [][2]any{{c, cc}, {s, sc}} {
 		a, b := reflect.ValueOf(pair[0]).Elem(), reflect.ValueOf(pair[1]).Elem()
 		for i := 0; i < a.NumField(); i++ {
 			fa, fb, name := a.Field(i), b.Field(i), a.Type().Field(i).Name
@@ -1189,8 +1189,8 @@ func TestClonesShareNothingMutable(t *testing.T) {
 				switch {
 				case fa.IsNil():
 					t.Errorf("%s.%s is nil in the fixture: give it a value so the test covers it", a.Type().Name(), name)
-				case name == "Footprint" || name == "Alerted":
-					if fa.Pointer() != fb.Pointer() || !c.fpShared || !c.alertedShared {
+				case name == "Footprint" || name == "Alerted" || name == "Acked":
+					if fa.Pointer() != fb.Pointer() || !c.fpShared || !c.alertedShared || !s.ackedShared {
 						t.Errorf("%s is copied, or not marked shared", name)
 					}
 				case fa.Pointer() == fb.Pointer():
@@ -1209,6 +1209,17 @@ func TestClonesShareNothingMutable(t *testing.T) {
 	if len(cc.Footprint) != 1 || len(cc.Alerted) != 1 || c.fpShared || c.alertedShared || len(c.Footprint) != 2 || len(c.Alerted) != 2 {
 		t.Errorf("a change reached the maps a snapshot shares: %d files and %d alerts there, %d and %d in the claim",
 			len(cc.Footprint), len(cc.Alerted), len(c.Footprint), len(c.Alerted))
+	}
+	s.ack("k2")
+	if len(sc.Acked) != 1 || s.ackedShared || len(s.Acked) != 2 {
+		t.Errorf("a change reached what a snapshot shares of what the session was told: %d there, %d in the session",
+			len(sc.Acked), len(s.Acked))
+	}
+	sc = s.clone()
+	s.unack(func(k string) bool { return k == "k" })
+	if len(sc.Acked) != 2 || s.ackedShared || len(s.Acked) != 1 || !s.Acked["k2"] {
+		t.Errorf("forgetting reached what a snapshot shares of what the session was told: %v there, %v in the session",
+			sc.Acked, s.Acked)
 	}
 }
 

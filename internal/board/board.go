@@ -619,6 +619,7 @@ func (b *Board) Hook(now time.Time, ev HookEvent) (HookResult, error) {
 	case KindSessionEnd:
 		s.Phase = phaseEnded
 		clearTools(s)
+		forgetLive(s)
 		b.reconcile(now, c, s, ev.Footprint)
 		b.record(Activity{At: now, Kind: ActivitySessionEnded, Repo: c.Repo, Member: c.Member, ClaimID: c.ID, Session: s.ID, Agent: s.Agent})
 	case KindHeartbeat:
@@ -763,13 +764,10 @@ const maxLetGo = 32
 
 func (b *Board) taskFromPrompt(c *claim, s *session, prompt string) {
 	prompt = Clean(firstLine(prompt), maxTaskLen)
-	if prompt == "" || s.Acked[ackPrompted] {
+	if prompt == "" || s.Prompted {
 		return
 	}
-	if s.Acked == nil {
-		s.Acked = map[string]bool{}
-	}
-	s.Acked[ackPrompted] = true
+	s.Prompted = true
 	if c.Task == "" || !c.taskFromIntent() {
 		c.Task = prompt
 	}
@@ -1524,9 +1522,61 @@ func ackKey(c Conflict) string {
 
 // Session.Acked remembers what a session has been told: an ackKey for each
 // conflict the policy has dealt with, for each of its workers that was told
-// (workerKey), a toldKey for each collision counted and announced, and
-// ackPrompted once a prompt has named the claim's task.
+// (workerKey), and a toldKey for each collision counted and announced. An
+// older server kept ackPrompted there too, for Session.Prompted.
 const ackPrompted = "task:prompted"
+
+// ack remembers that the session was told k. When a snapshot shares what the
+// session was told, it changes a copy, which the session keeps.
+func (s *session) ack(k string) {
+	switch {
+	case s.Acked == nil:
+		s.Acked = map[string]bool{}
+	case s.ackedShared:
+		s.Acked = maps.Clone(s.Acked)
+	}
+	s.ackedShared = false
+	s.Acked[k] = true
+}
+
+// unack forgets what the session was told for which forget reports true,
+// in a copy of what a snapshot shares.
+func (s *session) unack(forget func(k string) bool) {
+	n := 0
+	for k := range s.Acked {
+		if forget(k) {
+			n++
+		}
+	}
+	switch {
+	case n == 0:
+		return
+	case s.ackedShared:
+		keep := make(map[string]bool, len(s.Acked)-n)
+		for k := range s.Acked {
+			if !forget(k) {
+				keep[k] = true
+			}
+		}
+		s.Acked, s.ackedShared = keep, false
+	default:
+		maps.DeleteFunc(s.Acked, func(k string, _ bool) bool { return forget(k) })
+	}
+	if len(s.Acked) == 0 {
+		s.Acked = nil
+	}
+}
+
+// forgetLive lets go of what only a live session reads, as the session
+// ends: what it was told, and the calls refused to it, whose post_edit would
+// give back what their check spent of it. Sessions are kept for an hour
+// after they end, for the dashboard, and a board that runs thousands of
+// agents a day keeps thousands; one that resumes may be told again what it
+// heard before. The calls its end let go of while they ran (letGo) stay: a
+// post_edit for one is for an edit checked before it ran.
+func forgetLive(s *session) {
+	s.Acked, s.ackedShared, s.refused = nil, false, nil
+}
 
 func toldKey(cf Conflict) string { return "told|" + ackKey(cf) }
 
@@ -1550,11 +1600,7 @@ func forgetWorker(s *session, worker string) {
 	if worker == "" {
 		return
 	}
-	for k := range s.Acked {
-		if strings.HasSuffix(k, workerSep+worker) {
-			delete(s.Acked, k)
-		}
-	}
+	s.unack(func(k string) bool { return strings.HasSuffix(k, workerSep+worker) })
 }
 
 // verdict sorts the conflicts on one edit by what the policy does about them.
@@ -1584,9 +1630,6 @@ func (v verdict) acted() []Conflict {
 // questions an agent that cannot ask is told to put, which a refusal the
 // agent never hears gives back.
 func (b *Board) decide(now time.Time, c *claim, s *session, paths []PathRef, noAsk bool, worker string) (HookResult, []string) {
-	if s.Acked == nil {
-		s.Acked = map[string]bool{}
-	}
 	v := b.judge(now, c, s, paths[:min(len(paths), maxCheckPaths)], noAsk, worker)
 	res := b.answer(now, s, v)
 	spent := v.bumpKeys
@@ -1598,7 +1641,7 @@ func (b *Board) decide(now time.Time, c *claim, s *session, paths []PathRef, noA
 	var fresh []Conflict
 	for _, cf := range v.acted() {
 		if k := toldKey(cf); !s.Acked[k] {
-			s.Acked[k] = true
+			s.ack(k)
 			fresh = append(fresh, cf)
 		}
 	}
@@ -1711,7 +1754,7 @@ func (b *Board) judge(now time.Time, c *claim, s *session, paths []PathRef, noAs
 				v.asked = append(v.asked, cf)
 				v.askKeys = append(v.askKeys, key)
 			case action == ActionBump && !s.Acked[key]:
-				s.Acked[key] = true
+				s.ack(key)
 				v.refused = append(v.refused, cf)
 				v.bumpKeys = append(v.bumpKeys, key)
 			case action == ActionWarn && !s.Acked[key]:
@@ -1737,12 +1780,12 @@ func (b *Board) answer(now time.Time, s *session, v verdict) HookResult {
 		res.Reason = b.renderRefusal(now, v.asked, b.cfg.Policy)
 		// An agent that cannot ask was told to ask its person; its retry is the answer.
 		for _, k := range v.askKeys {
-			s.Acked[k] = true
+			s.ack(k)
 		}
 	case len(v.warned) > 0:
 		res.Context = b.renderWarnings(now, v.warned)
 		for _, k := range v.warnKeys {
-			s.Acked[k] = true
+			s.ack(k)
 		}
 	}
 	return res

@@ -274,8 +274,14 @@ type session struct {
 	ToolSince time.Time       `json:"tool_since,omitzero"`
 	Calls     map[string]bool `json:"calls,omitempty"`
 	InFlight  int             `json:"in_flight,omitempty"`
-	// Acked holds the conflicts this session has already been told about.
+	// Acked holds the conflicts this session has already been told about,
+	// while it runs: one that ends lets go of it (forgetLive). Only ack and
+	// unack change it, copying it first while a snapshot shares it
+	// (ackedShared).
 	Acked map[string]bool `json:"acked,omitempty"`
+	// Prompted is set once a prompt of the session's has named its claim's
+	// task: a later one does not name it again.
+	Prompted bool `json:"prompted,omitempty"`
 	// Reported is the last derived state announced as an activity.
 	Reported State `json:"reported,omitempty"`
 	// Pending is context from before an edit, held for an agent that only
@@ -297,6 +303,8 @@ type session struct {
 	// (clearTools): a post_edit for one is for an edit checked before it
 	// ran. It is not saved either.
 	letGo []string
+	// ackedShared says a snapshot shares Acked and may still be reading it.
+	ackedShared bool
 }
 
 // refusal is a refused tool call, and the one-time answers its check spent.

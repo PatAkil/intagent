@@ -149,7 +149,11 @@ Every acknowledgement is remembered per session, so an agent hears about a given
 within a session per worker, where the agent names its subagents (Claude Code, Codex, Cursor; see
 [integrations](integrations.md)): subagents run side by side with contexts of their own, so each is bumped, warned and
 asked once itself, rather than the second taking the first's refusal as its own retry. A collision is still counted
-and announced once per session, and when a subagent ends (`SubagentStop`) the board forgets what it told it. A
+and announced once per session, and when a subagent ends (`SubagentStop`) the board forgets what it told it. When a
+session ends, the board forgets what it told the session: it keeps an ended session for an hour, for the dashboard, and
+a team running thousands of agents a day would otherwise keep a key for every collision each was told of. A session
+that resumes may then be bumped or warned again, and its collision counted and announced again, about what it heard
+before it ended; the task its first prompt named stays. A
 collision is announced (a `conflict` activity, for the dashboard and webhooks) under the teammate whose work decided the
 answer, and names at most four others it newly ran into, a member's many worktrees with the same news in one line,
 then counts the rest.
@@ -243,19 +247,19 @@ duration after it started, between 1 and 30 seconds. An unclean stop loses what 
 began, which on a large board is a few seconds' work, and more while saves fail. Go's soft memory limit is set to 85% of
 the memory limit of the server's cgroup (`serve --memory-limit` sets another, or `off` none; `GOMEMLIMIT`, if set,
 wins), so a large board's saves collect garbage harder rather than run the container out of memory. A snapshot shares
-the claims' footprints and alerts with the board, which copies one before it next changes it, so the lock is held only
-to copy the claims and sessions, and it is written to disk a claim at a time. Saves that fail are tried again after 1,
-2, 4, 8 and 16 seconds, then every 30; the server logs the first failure, then one a minute, then the recovery, and
-`/healthz` says so. Stalled sessions are looked for on a goroutine of their own, so a slow or stuck disk does not delay
-the news. A clean stop abandons a save in flight, waits for the requests in flight, and saves once more; `serve` exits
-non-zero if that save fails. Each save keeps the snapshot it replaces as `board.json.prev`, a hard link made before the
-new one is renamed in. At start, the temporary files of saves that were killed halfway are removed, and a snapshot that
-is cut short or damaged is set aside as `board.json.corrupt-<unix time>` and `board.json.prev` put in its place and
-restored, or nothing: a server that will not start leaves every agent unchecked, and one stopped before its next save
-restores the same again. A snapshot of a newer format, or one that cannot be read, still stops it. The port opens once
-the board is restored: the server counts a hook's wait from when it reads it, so one that waited in the kernel's queue
-meanwhile could be decided after its client had gone ahead without the answer, while one refused tries again for as long
-as its time allows (below).
+the claims' footprints and alerts, and what each session was told, with the board, which copies one before it next
+changes it, so the lock is held only to copy the claims and sessions, and it is written to disk a claim at a time. Saves
+that fail are tried again after 1, 2, 4, 8 and 16 seconds, then every 30; the server logs the first failure, then one a
+minute, then the recovery, and `/healthz` says so. Stalled sessions are looked for on a goroutine of their own, so a
+slow or stuck disk does not delay the news. A clean stop abandons a save in flight, waits for the requests in flight,
+and saves once more; `serve` exits non-zero if that save fails. Each save keeps the snapshot it replaces as
+`board.json.prev`, a hard link made before the new one is renamed in. At start, the temporary files of saves that were
+killed halfway are removed, and a snapshot that is cut short or damaged is set aside as `board.json.corrupt-<unix time>`
+and `board.json.prev` put in its place and restored, or nothing: a server that will not start leaves every agent
+unchecked, and one stopped before its next save restores the same again. A snapshot of a newer format, or one that
+cannot be read, still stops it. The port opens once the board is restored: the server counts a hook's wait from when it
+reads it, so one that waited in the kernel's queue meanwhile could be decided after its client had gone ahead without
+the answer, while one refused tries again for as long as its time allows (below).
 
 Beside its maps the board keeps indexes, rebuilt from the snapshot on a restart: each repository's claims, each claim's
 sessions and those that moved from it, and for each claim the latest change in each area it changed files in and its
