@@ -3,6 +3,7 @@ package board
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,9 +19,14 @@ import (
 const snapshotFormat = 1
 
 type snapshot struct {
-	Format   int               `json:"format"`
-	Saved    time.Time         `json:"saved"`
-	Seq      uint64            `json:"seq"`
+	Format int       `json:"format"`
+	Saved  time.Time `json:"saved"`
+	Seq    uint64    `json:"seq"`
+	// Version is the board's version the snapshot holds (Board.Version),
+	// which a restored board goes on from, so that a durable part saved
+	// later can be told from one saved before (RestoreDurable). Zero in a
+	// snapshot from an older server.
+	Version  uint64            `json:"version,omitempty"`
 	Claims   []*claim          `json:"claims"`
 	Sessions []*session        `json:"sessions"`
 	Recent   []Activity        `json:"recent"`
@@ -77,6 +83,10 @@ func (b *Board) WriteSnapshot(w io.Writer, now time.Time) (uint64, error) {
 	sw.value(s.Saved)
 	sw.raw(`,"seq":`)
 	sw.value(s.Seq)
+	if s.Version != 0 {
+		sw.raw(`,"version":`)
+		sw.value(s.Version)
+	}
 	sw.raw(`,"claims":`)
 	writeArray(sw, s.Claims)
 	sw.raw(`,"sessions":`)
@@ -158,12 +168,8 @@ func (o oneLine) Write(p []byte) (int, error) {
 func (b *Board) snapshotCopy(now time.Time) (snapshot, uint64) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	s := snapshot{Format: snapshotFormat, Saved: now, Seq: b.seq, Recent: slices.Clone(b.recent), Stats: map[string]*Stats{},
-		Dropped: &droppedMarks{Repos: maps.Clone(b.dropped), All: b.droppedAll, Floor: b.droppedFloor}}
-	for repo, st := range b.stats {
-		c := *st
-		s.Stats[repo] = &c
-	}
+	s := snapshot{Format: snapshotFormat, Saved: now, Seq: b.seq, Version: b.version, Recent: slices.Clone(b.recent),
+		Stats: b.statsCopy(), Dropped: b.droppedCopy()}
 	if len(b.claims) > 0 { // an empty board's are null, as they always were
 		s.Claims = make([]*claim, 0, len(b.claims))
 	}
@@ -180,6 +186,21 @@ func (b *Board) snapshotCopy(now time.Time) (snapshot, uint64) {
 		s.Mail = b.mailCopy()
 	}
 	return s, b.version
+}
+
+// statsCopy copies the repositories' stats.
+func (b *Board) statsCopy() map[string]*Stats {
+	out := make(map[string]*Stats, len(b.stats))
+	for repo, st := range b.stats {
+		c := *st
+		out[repo] = &c
+	}
+	return out
+}
+
+// droppedCopy copies what the feed let go of.
+func (b *Board) droppedCopy() *droppedMarks {
+	return &droppedMarks{Repos: maps.Clone(b.dropped), All: b.droppedAll, Floor: b.droppedFloor}
 }
 
 // shareFootprint copies a claim for a snapshot, to be read while the
@@ -308,10 +329,22 @@ func (b *Board) RestoreAfter(r io.Reader, now, stopped time.Time) error {
 		}
 		b.attachSession(x, x.ClaimID)
 	}
-	b.seq = s.Seq
-	b.recent = s.Recent
+	b.restoreFeed(s.Seq, s.Recent, s.Dropped, s.Stats)
+	b.restoreMail(s.Mail)
+	b.version = max(b.version, s.Version)
+	// What happened before the snapshot is in it, or gone with the process.
+	b.notes = map[string][]time.Time{}
+	b.pending = nil
+	return nil
+}
+
+// restoreFeed puts in place the feed, its seq, what it let go of and the
+// repositories' stats, as a snapshot or a durable part holds them.
+func (b *Board) restoreFeed(seq uint64, recent []Activity, dropped *droppedMarks, stats map[string]*Stats) {
+	b.seq = seq
+	b.recent = recent
 	b.dropped = map[string]uint64{}
-	if d := s.Dropped; d != nil {
+	if d := dropped; d != nil {
 		maps.Copy(b.dropped, d.Repos)
 		b.droppedAll, b.droppedFloor = d.All, d.Floor
 	} else {
@@ -327,21 +360,21 @@ func (b *Board) RestoreAfter(r io.Reader, now, stopped time.Time) error {
 		b.letGo(b.recent[:over]) // the feed is kept shorter now
 		b.recent = b.recent[over:]
 	}
-	b.stats = s.Stats
+	b.stats = stats
 	if b.stats == nil {
 		b.stats = map[string]*Stats{}
 	}
 	b.statsAt = map[string]time.Time{}
+}
+
+// restoreMail puts in place the mailboxes a snapshot or durable part holds.
+func (b *Board) restoreMail(mail []*mailbox) {
 	b.mail = map[string]*mailbox{}
-	for _, m := range s.Mail {
+	for _, m := range mail {
 		if m != nil && m.Repo != "" && m.Member != "" && len(m.Items) > 0 {
 			b.mail[mailKey(m.Repo, m.Member)] = m
 		}
 	}
-	// What happened before the snapshot is in it, or gone with the process.
-	b.notes = map[string][]time.Time{}
-	b.pending = nil
-	return nil
 }
 
 // trimRestored bounds what a claim read from a snapshot remembers of its
@@ -452,12 +485,16 @@ var ErrCorruptSnapshot = errors.New("the snapshot is damaged")
 // readSnapshot decodes a snapshot as WriteSnapshot writes it, or as
 // json.Marshal did, a claim, a session and an activity at a time: what it
 // holds of r at once is one of them, not the whole file, beside what it
-// decoded.
+// decoded. It reads it compressed with gzip too, as a server saves it.
 func readSnapshot(r io.Reader) (snapshot, error) {
 	var s snapshot
 	src := &sourceReader{r: r}
-	dec := json.NewDecoder(src)
-	err := readObject(dec, func(key string) error {
+	in, err := unzipped(src)
+	if err != nil {
+		return s, readError(src, err)
+	}
+	dec := json.NewDecoder(in)
+	err = readObject(dec, func(key string) error {
 		switch {
 		case strings.EqualFold(key, "format"):
 			if err := dec.Decode(&s.Format); err != nil {
@@ -481,6 +518,8 @@ func readSnapshot(r io.Reader) (snapshot, error) {
 			return dec.Decode(&s.Saved)
 		case strings.EqualFold(key, "seq"):
 			return dec.Decode(&s.Seq)
+		case strings.EqualFold(key, "version"):
+			return dec.Decode(&s.Version)
 		case strings.EqualFold(key, "recent"):
 			return readArray(dec, &s.Recent, nil)
 		case strings.EqualFold(key, "stats"):
@@ -502,16 +541,33 @@ func readSnapshot(r io.Reader) (snapshot, error) {
 	if err == nil && s.Format != snapshotFormat {
 		err = fmt.Errorf("snapshot format %d", s.Format) // none, or one no server wrote
 	}
+	if err != nil {
+		return s, readError(src, err)
+	}
+	return s, nil
+}
+
+// readError tells why a snapshot, or a durable part, could not be read
+// from src: a newer format, the read itself, or else damage.
+func readError(src *sourceReader, err error) error {
 	var unsupported unsupportedFormat
 	switch {
-	case err == nil:
-		return s, nil
 	case errors.As(err, &unsupported):
-		return s, fmt.Errorf("read snapshot: %w", err)
+		return fmt.Errorf("read snapshot: %w", err)
 	case src.err != nil:
-		return s, fmt.Errorf("read snapshot: %w", src.err)
+		return fmt.Errorf("read snapshot: %w", src.err)
 	}
-	return s, fmt.Errorf("%w: %w", ErrCorruptSnapshot, err)
+	return fmt.Errorf("%w: %w", ErrCorruptSnapshot, err)
+}
+
+// unzipped reads r decompressed if it starts as gzip does, and as it is
+// otherwise.
+func unzipped(r io.Reader) (io.Reader, error) {
+	br := bufio.NewReader(r)
+	if magic, err := br.Peek(2); err == nil && magic[0] == 0x1f && magic[1] == 0x8b {
+		return gzip.NewReader(br)
+	}
+	return br, nil
 }
 
 // sourceReader keeps the error, other than the end, that reading r gave.

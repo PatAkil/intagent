@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -11,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -64,10 +66,61 @@ func (ts *testServer) change(t *testing.T, n int) {
 	}
 }
 
-// Saves are spaced by what they cost: nine times as long as the last took,
-// within 1 and 30 seconds of its start. One a second, as before, a board
-// whose saves take half a second spent a third of its time saving, and
-// one whose saves take five seconds was saved without a pause.
+// declare declares an intent for member, as the intents endpoint does.
+func (ts *testServer) declare(t *testing.T, member, pattern string) {
+	t.Helper()
+	if _, err := ts.Board().Declare(ts.now(), board.DeclareRequest{Member: member, Where: board.Where{Repo: repo, Host: "h",
+		Worktree: "/w/" + member}, Patterns: []string{pattern}, Mode: board.ModeExclusive}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The whole board is saved at most every bulkSaveEvery while it changes,
+// and its durable part within durableEvery of a change to what agents send
+// again, and within a second of a change to an intent. Before, every change
+// was saved a second or so later, the whole board each time: on boards the
+// acceptance churn left, 20 to 37 GB an hour.
+func TestSavesWriteWhatChanged(t *testing.T) {
+	ts, clock, _ := persistServer(t)
+	written := map[string][]time.Time{}
+	ts.saveFile = func(path string, perm fs.FileMode, fill func(io.Writer) error) error {
+		written[filepath.Base(path)] = append(written[filepath.Base(path)], clock.read())
+		return fsutil.WriteFileFunc(path, perm, fill)
+	}
+	start := clock.read()
+	var declared []time.Time
+	for n := 0; clock.read().Before(start.Add(16 * time.Minute)); n++ {
+		ts.change(t, n) // a file changed, at every look
+		if n%120 == 60 {
+			ts.declare(t, "alice", fmt.Sprintf("svc%d/**", n))
+			declared = append(declared, clock.read())
+		}
+		clock.add(ts.saveIfDue(nil))
+	}
+	var whole []time.Duration
+	for _, at := range written["board.json"] {
+		whole = append(whole, at.Sub(start))
+	}
+	if !slices.Equal(whole, []time.Duration{0, 5 * time.Minute, 10 * time.Minute, 15 * time.Minute}) {
+		t.Errorf("the whole board was saved at %v, want every 5 minutes", whole)
+	}
+	durable := written["board.json.durable"]
+	if n := len(durable); n < 32 || n > 32+len(declared)+1 {
+		t.Errorf("the durable part was saved %d times in 16 minutes, want every 30 seconds and after each declaration", n)
+	}
+	for _, at := range declared {
+		i, _ := slices.BinarySearchFunc(durable, at, time.Time.Compare)
+		if i == len(durable) || durable[i].Sub(at) > time.Second {
+			t.Errorf("an intent declared %v in was not saved within a second", at.Sub(start))
+		}
+	}
+}
+
+// Saves of the durable part are spaced by what they cost: nine times as
+// long as the last took, within 1 and 30 seconds of its start. One a second,
+// a board whose saves take half a second would spend a third of its time
+// saving, and one whose saves take five seconds would be saved without a
+// pause.
 func TestSavesArePacedByTheirCost(t *testing.T) {
 	for _, c := range []struct {
 		took     time.Duration
@@ -81,13 +134,15 @@ func TestSavesArePacedByTheirCost(t *testing.T) {
 		ts, clock, _ := persistServer(t)
 		saves := 0
 		ts.saveFile = func(path string, perm fs.FileMode, fill func(io.Writer) error) error {
-			saves++
-			clock.add(c.took)
+			if filepath.Base(path) == "board.json.durable" {
+				saves++
+				clock.add(c.took)
+			}
 			return fsutil.WriteFileFunc(path, perm, fill)
 		}
 		end := clock.read().Add(time.Minute)
 		for n := 0; clock.read().Before(end); n++ {
-			ts.change(t, n)
+			ts.declare(t, "alice", fmt.Sprintf("svc%d/**", n))
 			clock.add(ts.saveIfDue(nil))
 		}
 		if saves < c.min || saves > c.max {
@@ -99,17 +154,17 @@ func TestSavesArePacedByTheirCost(t *testing.T) {
 // A board that has not changed is not saved, however often it is asked.
 func TestUnchangedBoardIsNotSaved(t *testing.T) {
 	ts, clock, _ := persistServer(t)
-	saves := 0
+	saves := map[string]int{}
 	ts.saveFile = func(path string, perm fs.FileMode, fill func(io.Writer) error) error {
-		saves++
+		saves[filepath.Base(path)]++
 		return fsutil.WriteFileFunc(path, perm, fill)
 	}
 	ts.change(t, 0)
-	for range 10 {
+	for range 100 {
 		clock.add(ts.saveIfDue(nil))
 	}
-	if saves != 1 {
-		t.Fatalf("%d saves of a board changed once", saves)
+	if saves["board.json"] != 1 || saves["board.json.durable"] != 1 || len(saves) != 2 {
+		t.Fatalf("saves of a board changed once: %v", saves)
 	}
 }
 
@@ -122,7 +177,9 @@ func TestFailingSavesAreVisible(t *testing.T) {
 	failing := true
 	var attempts []time.Time
 	ts.saveFile = func(path string, perm fs.FileMode, fill func(io.Writer) error) error {
-		attempts = append(attempts, clock.read())
+		if filepath.Base(path) == "board.json" {
+			attempts = append(attempts, clock.read())
+		}
 		if failing {
 			return &fs.PathError{Op: "write", Path: "/srv/secret/board.json", Err: syscall.ENOSPC}
 		}
@@ -268,6 +325,9 @@ func TestServeAbandonsASaveInFlight(t *testing.T) {
 	var mu sync.Mutex
 	var results []error
 	ts.saveFile = func(path string, perm fs.FileMode, fill func(io.Writer) error) error {
+		if filepath.Base(path) != "board.json" {
+			return fsutil.WriteFileFunc(path, perm, fill)
+		}
 		mu.Lock()
 		first := len(results) == 0
 		mu.Unlock()
@@ -646,7 +706,8 @@ func TestStartRemovesStaleTemporaryFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := ts.dataDir
-	stale := []string{".board.json.ABCDEFGHIJKL.tmp", ".board.json.prev.MNOPQRSTUVWX.tmp", ".ui.key.YZ234567ABCD.tmp"}
+	stale := []string{".board.json.ABCDEFGHIJKL.tmp", ".board.json.prev.MNOPQRSTUVWX.tmp", ".board.json.durable.EFGHIJKLMNOP.tmp",
+		".ui.key.YZ234567ABCD.tmp"}
 	for _, f := range append(stale, "notes.txt") {
 		if err := os.WriteFile(filepath.Join(dir, f), []byte("x"), 0o600); err != nil {
 			t.Fatal(err)
@@ -664,5 +725,166 @@ func TestStartRemovesStaleTemporaryFiles(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
 			t.Errorf("%s: %v", f, err)
 		}
+	}
+}
+
+// killed copies what the data directory of ts holds now into a new one, as
+// a server killed now would leave it, and starts a server from it.
+func (ts *testServer) killed(t *testing.T) *Server {
+	t.Helper()
+	dir := t.TempDir()
+	entries, err := os.ReadDir(ts.dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "board.json") && e.Type().IsRegular() {
+			data, err := os.ReadFile(filepath.Join(ts.dataDir, e.Name()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, e.Name()), data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	s, err := New(Options{Members: []Member{{Name: "alice", TokenSHA256: HashToken(ts.tokens["alice"])}}, DataDir: dir,
+		Logger: slog.New(&logRecorder{}), Now: ts.now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+// A crash loses about a second of what agents cannot send again: an intent
+// declared, and a note held for a member, a second before the server was
+// killed are restored. What its agents send again, here a file changed after
+// the last save of the whole board, may be lost, as the docs say.
+func TestACrashKeepsAnIntentDeclaredASecondBefore(t *testing.T) {
+	ts, clock, _ := persistServer(t)
+	ts.change(t, 0)
+	clock.add(ts.saveIfDue(nil)) // the whole board, at once
+	for n := 1; n < 120; n++ {   // two minutes of hooks
+		ts.change(t, n)
+		clock.add(ts.saveIfDue(nil))
+	}
+	ts.declare(t, "alice", "svc/**")
+	if res, err := ts.Board().Note(ts.now(), board.NoteRequest{Member: "alice", Where: board.Where{Repo: repo, Host: "h",
+		Worktree: "/w/alice"}, To: "bob", Text: "svc is mine today", ToMember: true}); err != nil || res.HeldFor != "bob" {
+		t.Fatalf("note to bob: %+v %v", res, err)
+	}
+	ev := hookEv(board.KindPostEdit, "alice", "a1", "x/late.go")
+	ev.Member = "alice"
+	if _, err := ts.Board().Hook(ts.now(), ev); err != nil {
+		t.Fatal(err)
+	}
+	clock.add(time.Second)
+	ts.saveIfDue(nil)
+	s := ts.killed(t)
+	var intents []string
+	var files []string
+	for _, c := range s.Board().View(ts.now(), repo).Claims {
+		for _, in := range c.Intents {
+			intents = append(intents, c.Member+":"+in.Pattern)
+		}
+		for _, f := range c.Files {
+			files = append(files, f.Path)
+		}
+	}
+	if !slices.Equal(intents, []string{"alice:svc/**"}) {
+		t.Errorf("after the crash the board holds intents %v, want alice's", intents)
+	}
+	if slices.Contains(files, "x/late.go") {
+		t.Errorf("the file changed after the last save of the whole board was restored: %v", files)
+	}
+	res, err := s.Board().Hook(ts.now(), board.HookEvent{Kind: board.KindSessionStart, Member: "bob", Agent: board.AgentCodex,
+		SessionID: "b1", Where: board.Where{Repo: repo, Host: "h", Worktree: "/w/bob"}})
+	if err != nil || !strings.Contains(res.Context, "svc is mine today") {
+		t.Errorf("bob's next session, after the crash, was told %q (%v)", res.Context, err)
+	}
+}
+
+// The persister saves the durable part without a clean stop: a server whose
+// process is killed a moment after an intent is declared restores it.
+func TestServeSavesIntentsWithoutAStop(t *testing.T) {
+	ts, _, _ := persistServer(t)
+	ts.Server.clock = time.Now
+	stop := serveTest(t, ts)
+	defer func() { _ = stop() }()
+	ts.do(t, http.MethodPost, "/v1/hook", "alice", hookEv(board.KindPrompt, "alice", "a1"), nil)
+	ts.declare(t, "alice", "svc/**")
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		s := ts.killed(t)
+		if v := s.Board().View(ts.now(), repo); slices.ContainsFunc(v.Claims, func(c board.ClaimView) bool { return len(c.Intents) == 1 }) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the intent was not saved")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// The board's snapshot and durable part are saved compressed with gzip; a
+// snapshot an older server saved, as plain JSON, still restores.
+func TestSnapshotsAreCompressed(t *testing.T) {
+	ts, clock, _ := persistServer(t)
+	ts.change(t, 0)
+	ts.declare(t, "alice", "svc/**")
+	clock.add(ts.saveIfDue(nil))
+	for _, name := range []string{"board.json", "board.json.durable"} {
+		data, err := os.ReadFile(filepath.Join(ts.dataDir, name))
+		if err != nil || len(data) < 2 || data[0] != 0x1f || data[1] != 0x8b {
+			t.Errorf("%s is not compressed (%v)", name, err)
+		}
+	}
+	plain, _, err := ts.Board().Snapshot(ts.now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"board.json.durable", "board.json"} {
+		if err := os.Remove(filepath.Join(ts.dataDir, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(ts.snapshotPath(), plain, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if v := ts.killed(t).Board().View(ts.now(), repo); len(v.Claims) != 2 || len(v.Claims[0].Intents)+len(v.Claims[1].Intents) != 1 {
+		t.Fatalf("the plain snapshot restored %d claims: %+v", len(v.Claims), v.Claims)
+	}
+}
+
+// A damaged durable part is set aside, logged, and the server starts from
+// the snapshot; one of a newer format stops it, untouched.
+func TestDamagedDurablePartIsSetAside(t *testing.T) {
+	ts, clock, _ := persistServer(t)
+	ts.change(t, 0)
+	clock.add(ts.saveIfDue(nil))
+	start := func() (*Server, *logRecorder, error) {
+		logs := &logRecorder{}
+		s, err := New(Options{Members: []Member{{Name: "alice", TokenSHA256: HashToken(ts.tokens["alice"])}}, DataDir: ts.dataDir,
+			Logger: slog.New(logs), Now: ts.now})
+		return s, logs, err
+	}
+	if err := os.WriteFile(ts.durablePath(), []byte(`{"format":1,"claims":[{"id":`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, logs, err := start()
+	if err != nil || len(s.Board().View(ts.now(), repo).Claims) != 1 || len(logs.lines("the snapshot of the board's intents and notes is damaged")) != 1 {
+		t.Fatalf("a damaged durable part: %v, %v", err, logs.lines(""))
+	}
+	if found, _ := filepath.Glob(ts.durablePath() + ".corrupt-*"); len(found) != 1 {
+		t.Fatalf("set aside: %v", found)
+	}
+	if err := os.WriteFile(ts.durablePath(), []byte(`{"format":2}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := start(); err == nil {
+		t.Fatal("a durable part of a newer format did not stop the start")
+	}
+	if _, err := os.Stat(ts.durablePath()); err != nil {
+		t.Fatalf("the newer durable part was moved: %v", err)
 	}
 }

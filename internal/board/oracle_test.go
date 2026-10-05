@@ -972,7 +972,7 @@ func TestSweepMatchesTheOracle(t *testing.T) {
 func (b *Board) oldSnapshotCopy(now time.Time) (snapshot, uint64) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	s := snapshot{Format: snapshotFormat, Saved: now, Seq: b.seq, Recent: slices.Clone(b.recent), Stats: map[string]*Stats{},
+	s := snapshot{Format: snapshotFormat, Saved: now, Seq: b.seq, Version: b.version, Recent: slices.Clone(b.recent), Stats: map[string]*Stats{},
 		Dropped: &droppedMarks{Repos: maps.Clone(b.dropped), All: b.droppedAll, Floor: b.droppedFloor}}
 	for repo, st := range b.stats {
 		c := *st

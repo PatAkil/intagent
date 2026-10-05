@@ -105,10 +105,11 @@ type Server struct {
 	unusedAfter      time.Duration
 	// admit meters what members ask of the server.
 	admit *admission
-	// saves follows the board's snapshots (persist.go). saveFile writes
-	// one, and slowSave is how long one may take before it is logged;
-	// tests replace both.
+	// saves follows the board's snapshots (persist.go), and durable its
+	// durable part's. saveFile writes one, and slowSave is how long one may
+	// take before it is logged; tests replace both.
 	saves    saves
+	durable  saves
 	saveFile func(path string, perm fs.FileMode, fill func(io.Writer) error) error
 	slowSave time.Duration
 }
@@ -166,6 +167,7 @@ func New(o Options) (*Server, error) {
 	}
 	s.admit = newAdmission()
 	s.saveFile, s.slowSave = fsutil.WriteFileFunc, slowSave
+	s.saves.what, s.durable.what = "the board's snapshot", "the snapshot of the board's intents and notes"
 	// The key comes first: SetMembers computes each member's dashboard cookie
 	// with it.
 	key, err := loadUIKey(s.dataDir)
@@ -415,7 +417,9 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	}
 	if serr := s.save(nil); serr != nil {
 		// A clean stop that could not save loses what changed since the
-		// last save: serve must not exit as if it had not.
+		// last save: serve must not exit as if it had not. The durable part
+		// may still be saved, which is smaller.
+		_, _ = s.saveDurable(true)
 		err = errors.Join(err, fmt.Errorf("final snapshot: %w", serr))
 	}
 	if s.dataDir != "" {
@@ -551,7 +555,7 @@ type health struct {
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	h := health{OK: true, Version: s.version, LoadStatus: s.answers.status(s.clock())}
 	if s.dataDir != "" {
-		h.Snapshot = s.saves.status()
+		h.Snapshot = s.snapshotStatus()
 	}
 	status := http.StatusOK
 	if (h.Degraded || (h.Snapshot != nil && !h.Snapshot.OK)) && r.URL.Query().Get("strict") == "1" {

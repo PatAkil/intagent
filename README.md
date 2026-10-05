@@ -276,16 +276,23 @@ server logs a warning when it starts and another when it ends, webhooks can send
 `/healthz` still answers 200, so a restart probe never turns a slow server into an absent one; `/healthz?strict=1`
 answers 503, with `"ok": false`, while degraded, for monitors that alert.
 
-The board lives in memory and is saved to `--data` a few seconds after it changes: each save waits nine times as long as
-the last one took, between 1 and 30 seconds, so a crash loses what changed since the last completed save began, a few
-seconds' work on a large board, and more while saves fail; a clean stop saves once more. When saves fail (a full disk,
-say), the server logs it at once and then once a minute, keeps every change in memory, tries again with a growing pause,
-and `/healthz` carries `"snapshot": {"ok": false, "failing_since": ..., "attempts": ..., "error": "write: no space left
-on device"}`, which `?strict=1` answers with 503 too. `serve` exits non-zero when its final save fails. Each save keeps
-the snapshot it replaces as `board.json.prev`, so the snapshot takes twice its size on disk. A `board.json` that is cut
-short or damaged is set aside as `board.json.corrupt-<unix time>`, and the server puts `board.json.prev` in its place
-and starts from it, or empty, and logs an error; one of a newer version of intagent, or one it cannot read, still stops
-it, so that it is not overwritten.
+The board lives in memory and is saved to `--data` in two parts, both compressed with gzip. What agents cannot send
+again (intents, notes waiting to be heard, the feed and the stats) is saved in `board.json.durable` within about a
+second of a change to an intent or a note, and within 30 seconds of any other change to it. The whole board, most of it
+what agents send again at their next scan or hook (changed files, sessions, what each was told), is saved in
+`board.json` at most every 5 minutes while it changes, and when the server stops cleanly. So a crash loses about a
+second of intents and notes, and up to 5 minutes of changed files, which agents send again, and of what agents were
+told, which they may be told again; a restart restores `board.json` and then `board.json.durable`, if it was saved
+after it. On a board under steady load that is a few hundred megabytes an hour written, where saving the whole board
+every few seconds wrote tens of gigabytes. A `board.json` an older intagent saved, as plain JSON, restores as well; an
+older intagent cannot read the compressed one. When saves fail (a full disk, say), the server logs it at once and then
+once a minute, keeps every change in memory, tries again with a growing pause, and `/healthz` carries `"snapshot":
+{"ok": false, "failing_since": ..., "attempts": ..., "error": "write: no space left on device"}`, which `?strict=1`
+answers with 503 too. `serve` exits non-zero when its final save fails. Each save of the whole board keeps the one it
+replaces as `board.json.prev`, so it takes twice its size on disk. A `board.json` that is cut short or damaged is set
+aside as `board.json.corrupt-<unix time>`, and the server puts `board.json.prev` in its place and starts from it, or
+empty, and logs an error; a damaged `board.json.durable` is set aside too, and what it held since `board.json` is lost.
+One of a newer version of intagent, or one it cannot read, still stops it, so that it is not overwritten.
 
 A restart does not count the time the server was down as its agents' silence: agents still at work are not announced
 stalled when it comes back, and their reservations keep refusing teammates' edits. The server opens its port once the

@@ -90,7 +90,9 @@ claude_as alice "$WORK/alice" "You are refactoring the payments retry logic. Fir
 ALICE_PID=$!
 
 for _ in $(seq 120); do
-  grep -q '"pattern":"services/payments/\*\*"' "$WORK/data/board.json" 2>/dev/null && grep -q 'until \[ -f' "$WORK/alice.jsonl" && break
+  # The server saves intents, compressed, in board.json.durable within a second or two.
+  gzip -dcf "$WORK/data/board.json.durable" 2>/dev/null | grep -q '"pattern":"services/payments/\*\*"' &&
+    grep -q 'until \[ -f' "$WORK/alice.jsonl" && break
   sleep 1
 done
 grep -q 'until \[ -f' "$WORK/alice.jsonl" || fail "alice's agent never reached its long-running step"

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"compress/gzip"
 	"context"
 	"errors"
 	"fmt"
@@ -18,20 +19,36 @@ import (
 	"github.com/patakil/intagent/internal/fsutil"
 )
 
-// The board lives in memory, and a snapshot of it is saved to the data
-// directory while it changes, so a restart loses at most what changed
-// since the last save. A save costs time and memory in proportion to the
-// board, so saves are spaced by what the last one cost: on a large board
-// they come every few seconds, and an unclean stop loses that much. A clean
-// stop always saves once more.
+// The board lives in memory, and is saved to the data directory in two
+// parts. Most of what it holds its agents send it again: a worktree's changed
+// files at its next scan, a session at its next hook, and what a session was
+// told or a claim alerted of only keeps it from being told twice. What they
+// cannot send again (the claims' intents, the notes in their inboxes and in
+// members' mailboxes, the feed and the stats: board.Durable) is a small part
+// of it, saved soon after it changes, in board.json.durable. The whole board
+// is saved in board.json at most every bulkSaveEvery while it changes, and at
+// a clean stop. So a crash loses up to bulkSaveEvery of files, liveness and
+// what agents were told, which they send again or which at worst tells them
+// something again, and about a second of intents and notes. Both files are
+// compressed with gzip, and a restart restores the board from board.json and
+// then the durable part, if it was saved after it.
 
 const (
-	// A changed board is saved saveCost times the last save's duration after
-	// that save started, so saving takes at most a tenth of the time; and
-	// no sooner than minSaveEvery, nor later than maxSaveEvery.
-	saveCost     = 9
+	// The whole board is saved at most every bulkSaveEvery while it changes.
+	bulkSaveEvery = 5 * time.Minute
+	// The durable part is saved within durableSoon of a change to an intent,
+	// a note or the mail, and within durableEvery of any other change to it:
+	// the feed, the stats and the seq, which every hook moves on.
+	durableSoon  = time.Second
+	durableEvery = 30 * time.Second
+	// Either is saved no sooner than saveCost times its last save's duration
+	// after that save started, so saving takes at most a tenth of the time;
+	// the durable part no later than durableEvery all the same.
+	saveCost = 9
+	// minSaveEvery is how often the persister looks.
 	minSaveEvery = time.Second
-	maxSaveEvery = 30 * time.Second
+	// maxRetryEvery bounds the pause between saves that fail.
+	maxRetryEvery = 30 * time.Second
 	// failLogEvery is how often saves that keep failing are logged.
 	failLogEvery = time.Minute
 	// slowSave is how long a save may take before it is logged, once.
@@ -46,6 +63,10 @@ func (s *Server) snapshotPath() string { return filepath.Join(s.dataDir, "board.
 // damaged after it was written.
 func (s *Server) previousPath() string { return s.snapshotPath() + ".prev" }
 
+// durablePath keeps the durable part of the board, saved since the
+// snapshot.
+func (s *Server) durablePath() string { return s.snapshotPath() + ".durable" }
+
 // alivePath keeps when the server last ran, on its board's clock: it notes
 // so every aliveEvery and when it stops. A board that does not change is
 // not saved again, so its snapshot says only when it last changed, while
@@ -55,12 +76,16 @@ func (s *Server) previousPath() string { return s.snapshotPath() + ".prev" }
 // more after a crash.
 func (s *Server) alivePath() string { return s.snapshotPath() + ".alive" }
 
-// saves follows the server's saves of its board: when the next is due, and
-// whether they fail.
+// saves follows the server's saves of its board, or of its durable part:
+// when the next is due, and whether they fail.
 type saves struct {
 	mu sync.Mutex
-	// version is the board's version the last save held.
+	// what names what is saved, in the log.
+	what string
+	// version is the board's version the last save held, and kept the
+	// digest of the durable part it held (board.Durable.Kept).
 	version uint64
+	kept    uint64
 	// lastStart and lastTook pace saves; savedAt is when one last succeeded.
 	lastStart time.Time
 	lastTook  time.Duration
@@ -79,11 +104,13 @@ type saves struct {
 // SnapshotStatus says whether the server saves its board. /healthz reports
 // it while the server has a data directory.
 type SnapshotStatus struct {
-	// OK is false while saves fail: changes are kept in memory only, and
-	// a restart will lose them.
+	// OK is false while saves of the board, or of its durable part, fail:
+	// changes are kept in memory only, and a restart will lose them.
 	OK bool `json:"ok"`
-	// SavedAt is when this process last saved the board.
-	SavedAt time.Time `json:"saved_at,omitzero"`
+	// SavedAt is when this process last saved the board, and
+	// DurableSavedAt its durable part.
+	SavedAt        time.Time `json:"saved_at,omitzero"`
+	DurableSavedAt time.Time `json:"durable_saved_at,omitzero"`
 	// FailingSince, Attempts and Error say since when saves fail, how many
 	// have, and why the last did, without the paths involved.
 	FailingSince time.Time `json:"failing_since,omitzero"`
@@ -97,6 +124,16 @@ func (v *saves) status() *SnapshotStatus {
 	return &SnapshotStatus{OK: v.attempts == 0, SavedAt: v.savedAt, FailingSince: v.failing, Attempts: v.attempts, Error: v.cause}
 }
 
+// snapshotStatus is how the saves of the board and of its durable part go.
+func (s *Server) snapshotStatus() *SnapshotStatus {
+	st, d := s.saves.status(), s.durable.status()
+	st.DurableSavedAt = d.SavedAt
+	if st.OK && !d.OK {
+		st.OK, st.FailingSince, st.Attempts, st.Error = false, d.FailingSince, d.Attempts, d.Error
+	}
+	return st
+}
+
 // saved is the board's version the last save held.
 func (v *saves) saved() uint64 {
 	v.mu.Lock()
@@ -104,16 +141,16 @@ func (v *saves) saved() uint64 {
 	return v.version
 }
 
-// wait is how long after now a save of a changed board is due: saveCost
-// times the last one's duration after it started, within minSaveEvery and
-// maxSaveEvery; while saves fail, 1, 2, 4, 8 and 16 seconds after the last
-// started, and then every maxSaveEvery.
-func (v *saves) wait(now time.Time) time.Duration {
+// wait is how long after now the next save is due, at least every after
+// the last started: saveCost times the last one's duration after it
+// started, up to most, if that is later. While saves fail, 1, 2, 4, 8 and
+// 16 seconds after the last started, and then every maxRetryEvery.
+func (v *saves) wait(now time.Time, every, most time.Duration) time.Duration {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	every := min(maxSaveEvery, max(minSaveEvery, saveCost*v.lastTook))
+	every = max(every, min(most, saveCost*v.lastTook))
 	if v.attempts > 0 {
-		every = max(every, min(maxSaveEvery, minSaveEvery<<min(v.attempts-1, 5)))
+		every = min(maxRetryEvery, max(minSaveEvery<<min(v.attempts-1, 5), min(most, saveCost*v.lastTook)))
 	}
 	return v.lastStart.Add(every).Sub(now)
 }
@@ -127,7 +164,7 @@ func (v *saves) finished(start, end time.Time, version uint64, err error, log *s
 	v.lastStart, v.lastTook = start, end.Sub(start)
 	if err == nil {
 		if v.attempts > 0 {
-			log.Warn("the board's snapshot is saved again", "failed_for", end.Sub(v.failing).Round(time.Second), "attempts", v.attempts)
+			log.Warn(v.what+" is saved again", "failed_for", end.Sub(v.failing).Round(time.Second), "attempts", v.attempts)
 		}
 		v.version, v.savedAt, v.failing, v.attempts, v.cause = version, end, time.Time{}, 0, ""
 		return
@@ -137,11 +174,26 @@ func (v *saves) finished(start, end time.Time, version uint64, err error, log *s
 	switch {
 	case v.attempts == 1:
 		v.failing, v.nextLog = end, end.Add(failLogEvery)
-		log.Error("the board's snapshot could not be saved: changes are kept in memory only, and a restart will lose them", "err", err)
+		log.Error(v.what+" could not be saved: changes are kept in memory only, and a restart will lose them", "err", err)
 	case !end.Before(v.nextLog):
 		v.nextLog = end.Add(failLogEvery)
-		log.Error("the board's snapshot still cannot be saved", "since", v.failing, "attempts", v.attempts, "err", err)
+		log.Error(v.what+" still cannot be saved", "since", v.failing, "attempts", v.attempts, "err", err)
 	}
+}
+
+// keep notes the digest of the durable part the last save held.
+func (v *saves) keep(kept uint64) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.kept = kept
+}
+
+// held is the digest of the durable part the last save held, and when that
+// save started.
+func (v *saves) held() (uint64, time.Time) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.kept, v.lastStart
 }
 
 // causeOf says why a save failed, as the operation and the system's error,
@@ -166,7 +218,8 @@ func causeOf(err error) string {
 }
 
 // load restores the board from the data directory, if a snapshot exists,
-// decoding it as it is read. A damaged snapshot is set aside as
+// decoding it as it is read, and then its durable part saved since
+// (loadDurable). A damaged snapshot is set aside as
 // board.json.corrupt-<unix time>, and the one saved before it restored, or
 // none: every agent fails open while the server does not start. Any other
 // error stops the server, so that it does not overwrite a snapshot it
@@ -181,8 +234,16 @@ func (s *Server) load() error {
 		return nil
 	}
 	s.removeTemps()
+	if err := s.loadBoard(s.lastAlive()); err != nil {
+		return err
+	}
+	return s.loadDurable()
+}
+
+// loadBoard restores the board from its snapshot, or the one saved before
+// it, if either exists.
+func (s *Server) loadBoard(stopped time.Time) error {
 	path := s.snapshotPath()
-	stopped := s.lastAlive()
 	err := s.restoreFrom(path, stopped)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
@@ -219,6 +280,41 @@ func (s *Server) load() error {
 		return fmt.Errorf("%s: %w", s.previousPath(), perr)
 	}
 	return nil
+}
+
+// loadDurable restores the durable part of the board saved after its
+// snapshot, if there is one. A damaged one is set aside as
+// board.json.durable.corrupt-<unix time>: what it held of the changes to
+// intents and notes since the snapshot is lost, which is logged. One that
+// cannot be read, or of a newer format, stops the server.
+func (s *Server) loadDurable() error {
+	path := s.durablePath()
+	f, err := os.Open(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	applied, err := s.board.RestoreDurable(f)
+	_ = f.Close()
+	switch {
+	case err == nil:
+		if applied {
+			s.log.Info("restored the intents and notes saved after the board's snapshot", "file", path)
+		}
+		s.durable.version = s.board.Version()
+		return nil
+	case errors.Is(err, board.ErrCorruptSnapshot):
+		aside := fmt.Sprintf("%s.corrupt-%d", path, s.clock().Unix())
+		if rerr := os.Rename(path, aside); rerr != nil {
+			return fmt.Errorf("%s: %w, and it could not be set aside: %w", path, err, rerr)
+		}
+		s.log.Error("the snapshot of the board's intents and notes is damaged, and was set aside: what they changed after "+
+			"the board's snapshot is lost", "file", aside, "err", err)
+		return nil
+	}
+	return fmt.Errorf("%s: %w", path, err)
 }
 
 // restoreFrom restores the board from the snapshot at path, saved by a
@@ -270,7 +366,7 @@ func (s *Server) aliveIfDue() time.Duration {
 // removeTemps removes the temporary files a save killed halfway left in the
 // data directory, best effort.
 func (s *Server) removeTemps() {
-	for _, p := range []string{s.snapshotPath(), s.previousPath(), s.alivePath(), filepath.Join(s.dataDir, "ui.key")} {
+	for _, p := range []string{s.snapshotPath(), s.previousPath(), s.durablePath(), s.alivePath(), filepath.Join(s.dataDir, "ui.key")} {
 		if n, err := fsutil.RemoveTemps(p); n > 0 || (err != nil && !errors.Is(err, fs.ErrNotExist)) {
 			s.log.Info("removed the temporary files of saves that did not finish", "file", p, "removed", n, "err", err)
 		}
@@ -278,10 +374,10 @@ func (s *Server) removeTemps() {
 }
 
 // save writes a snapshot if the board changed since the last one, and
-// records how it went. The snapshot is streamed to a temporary file beside
-// the last, which it then replaces (fsutil.WriteFileFunc); the one it
-// replaces is kept as board.json.prev. Once stop is closed, the save is
-// abandoned at its next write; a nil stop never is.
+// records how it went. The snapshot is streamed, compressed, to a temporary
+// file beside the last, which it then replaces (fsutil.WriteFileFunc); the
+// one it replaces is kept as board.json.prev. Once stop is closed, the save
+// is abandoned at its next write; a nil stop never is.
 func (s *Server) save(stop <-chan struct{}) error {
 	if s.dataDir == "" || s.board.Version() == s.saves.saved() {
 		return nil
@@ -309,11 +405,58 @@ func (s *Server) writeSnapshot(stop <-chan struct{}) (uint64, error) {
 	}
 	var version uint64
 	err := s.saveFile(s.snapshotPath(), 0o600, func(w io.Writer) error {
-		var err error
-		version, err = s.board.WriteSnapshot(abandonable{stop: stop, w: w}, s.now())
-		return err
+		return zipped(w, func(w io.Writer) error {
+			var err error
+			version, err = s.board.WriteSnapshot(abandonable{stop: stop, w: w}, s.now())
+			return err
+		})
 	})
 	return version, err
+}
+
+// zipped has write write to w through gzip, at its fastest: a board's
+// snapshot shrinks to a fifth or less.
+func zipped(w io.Writer, write func(io.Writer) error) error {
+	zw, err := gzip.NewWriterLevel(w, gzip.BestSpeed)
+	if err != nil {
+		return err
+	}
+	err = write(zw)
+	if cerr := zw.Close(); err == nil {
+		err = cerr
+	}
+	return err
+}
+
+// saveDurable writes the board's durable part if it changed since the last
+// was saved, as kept digests it (board.Durable.Kept), or if anything else in
+// it did and the last was saved durableEvery ago. It records how it went,
+// and reports whether it wrote it.
+func (s *Server) saveDurable(force bool) (bool, error) {
+	if s.dataDir == "" || s.board.Version() == s.durable.saved() {
+		return false, nil
+	}
+	start := s.clock()
+	d := s.board.Durable(s.now())
+	kept := d.Kept()
+	if was, at := s.durable.held(); kept == was && start.Sub(at) < durableEvery && !force {
+		return false, nil
+	}
+	if err := os.MkdirAll(s.dataDir, 0o700); err != nil {
+		s.durable.finished(start, s.clock(), d.Version(), err, s.log)
+		return false, err
+	}
+	err := s.saveFile(s.durablePath(), 0o600, func(w io.Writer) error {
+		return zipped(w, func(w io.Writer) error {
+			_, err := d.WriteTo(w)
+			return err
+		})
+	})
+	s.durable.finished(start, s.clock(), d.Version(), err, s.log)
+	if err == nil {
+		s.durable.keep(kept)
+	}
+	return true, err
 }
 
 // errAbandoned ends a save the server gave up for its final one.
@@ -356,18 +499,32 @@ func (s *Server) persist(ctx context.Context) {
 	}
 }
 
-// saveIfDue saves the board if it changed and a save is due, and returns
-// how long until it should look again. The save is abandoned once stop is
-// closed.
+// saveIfDue saves the board's durable part, and then the whole board, if
+// it changed and a save is due, and returns how long until it should look
+// again. The board's save is abandoned once stop is closed.
 func (s *Server) saveIfDue(stop <-chan struct{}) time.Duration {
-	if wait := s.saves.wait(s.clock()); wait > 0 {
+	return min(s.saveDurableIfDue(), s.saveBoardIfDue(stop))
+}
+
+func (s *Server) saveDurableIfDue() time.Duration {
+	if wait := s.durable.wait(s.clock(), durableSoon, durableEvery); wait > 0 {
+		return wait
+	}
+	if wrote, _ := s.saveDurable(false); !wrote { // logged and recorded
+		return minSaveEvery
+	}
+	return max(minSaveEvery, s.durable.wait(s.clock(), durableSoon, durableEvery))
+}
+
+func (s *Server) saveBoardIfDue(stop <-chan struct{}) time.Duration {
+	if wait := s.saves.wait(s.clock(), bulkSaveEvery, time.Hour); wait > 0 {
 		return wait
 	}
 	if s.board.Version() == s.saves.saved() {
 		return minSaveEvery
 	}
 	_ = s.save(stop) // logged and recorded
-	return max(minSaveEvery, s.saves.wait(s.clock()))
+	return max(minSaveEvery, s.saves.wait(s.clock(), bulkSaveEvery, time.Hour))
 }
 
 // sweep looks for stalled and gone sessions until the server starts to
