@@ -105,8 +105,8 @@ func TestAFullBoardMakesRoomInOrder(t *testing.T) {
 }
 
 // Past MaxDormantClaims claims with no live session, a sweep forgets those
-// quiet longest that hold no intent, at most 200 at a time, in one activity
-// per repository.
+// quiet longest that no longer listen and hold no intent, at most 200 at a
+// time, in one activity per repository.
 func TestDormantClaimsPastTheCapAreForgotten(t *testing.T) {
 	h := newHarness(t, func(c *Config) { c.MaxDormantClaims = 50 })
 	for i := range 300 {
@@ -122,7 +122,7 @@ func TestDormantClaimsPastTheCapAreForgotten(t *testing.T) {
 		}
 		h.at(KindSessionEnd, m, wt, wt)
 	}
-	h.advance(2 * time.Hour)
+	h.advance(h.b.cfg.DormantFor + time.Hour)
 	h.hook(KindHeartbeat, "alice", "a1") // a live claim, which is not dormant
 	for sweep, want := range []int{301 - 200, 51} {
 		h.acts = nil
@@ -143,6 +143,53 @@ func TestDormantClaimsPastTheCapAreForgotten(t *testing.T) {
 		w.Worktree = "/work/" + m + "/" + wt
 		if kept := h.b.findClaim(m, w) != nil; kept != (i%30 == 0 || i >= 259) {
 			t.Errorf("claim %d kept: %v", i, kept)
+		}
+	}
+}
+
+// The dormant cap forgets only claims that no longer listen: those that hold
+// an intent, however many, do not make it forget a claim whose agent left a
+// minute ago. Once none of them listens, it forgets those that hold no
+// intent first, then those that do, each quiet longest first. Before, 60
+// claims holding intents, over a cap of 50, had bob's claim forgotten at
+// the first sweep after his session ended.
+func TestDormantCapSparesClaimsStillListening(t *testing.T) {
+	h := newHarness(t, func(c *Config) { c.MaxDormantClaims = 50 })
+	for i := range 60 {
+		h.advance(time.Minute)
+		m, wt := fmt.Sprintf("f%02d", i), fmt.Sprintf("task%02d", i)
+		h.at(KindPrompt, m, wt, wt)
+		w := whereOf(m)
+		w.Worktree = "/work/" + m + "/" + wt
+		if _, err := h.b.Declare(h.now, DeclareRequest{Member: m, Where: w, Patterns: []string{fmt.Sprintf("pkg%02d/**", i)}, Mode: ModeShared}); err != nil {
+			t.Fatal(err)
+		}
+		h.at(KindSessionEnd, m, wt, wt)
+	}
+	h.advance(time.Hour)
+	h.b.Sweep(h.now)
+	h.at(KindPostEdit, "bob", "w", "b1", "svc/billing.go")
+	h.at(KindSessionEnd, "bob", "w", "b1")
+	h.advance(time.Minute)
+	h.b.Sweep(h.now)
+	if len(h.b.claims) != 61 {
+		t.Fatalf("%d claims after the sweeps, want all 61", len(h.b.claims))
+	}
+	if res := h.hook(KindPreEdit, "alice", "a1", "svc/billing.go"); len(res.Conflicts) != 1 {
+		t.Fatalf("alice's edit of the file bob changed a minute ago met %+v", res.Conflicts)
+	}
+	h.advance(h.b.cfg.DormantFor)
+	h.b.Sweep(h.now)
+	bob := whereOf("bob")
+	bob.Worktree = "/work/bob/w"
+	if h.b.findClaim("bob", bob) != nil {
+		t.Error("bob's claim, which holds no intent, was kept")
+	}
+	for i := range 60 {
+		w := whereOf(fmt.Sprintf("f%02d", i))
+		w.Worktree = fmt.Sprintf("/work/f%02d/task%02d", i, i)
+		if kept := h.b.findClaim(fmt.Sprintf("f%02d", i), w) != nil; kept != (i >= 10) {
+			t.Errorf("claim %d, which holds an intent, kept: %v", i, kept)
 		}
 	}
 }
@@ -212,6 +259,64 @@ func TestOneMembersFootprintsAreBounded(t *testing.T) {
 	t.Logf("80 footprints of %d bytes: the member holds %d bytes, the largest claim %d", 300*footprintCost(fp.Files[0].Path, &touch{Area: fp.Files[0].Area}), sum, most)
 	if sum > memberBytes || most > claimBytes || sum < memberBytes-claimBytes {
 		t.Fatalf("the member holds %d bytes, a claim %d", sum, most)
+	}
+}
+
+// A member's claims that no agent works in give way to their new work: a
+// sweep forgets the oldest of them, never one with an agent running, until
+// the member's footprints hold three quarters of their budget. Before, a
+// fleet's finished worktrees kept their footprints for a week, and once
+// they filled the budget nothing the fleet changed was kept: its new claim
+// held no file, and a teammate's edit of a file it had just changed was not
+// warned. The budgets here are small, so that a few claims fill them.
+func TestAMembersOldWorkMakesRoomForTheirNew(t *testing.T) {
+	const claimBytes, memberBytes = 16_000, 64_000
+	h := newHarness(t, func(c *Config) { c.MaxFootprintBytes, c.MemberFootprintBytes = claimBytes, memberBytes })
+	task := func(i int, session string, last Kind) {
+		t.Helper()
+		w := Where{Repo: fmt.Sprintf("github.com/acme/task%02d", i), Host: "h", Worktree: "/w"}
+		paths := make([]PathRef, 40)
+		for j := range paths {
+			paths[j] = PathRef{Path: fmt.Sprintf("svc/p%02d/handler_%03d.go", i, j), Area: fmt.Sprintf("svc/p%02d", i)}
+		}
+		for _, kind := range []Kind{KindPostEdit, last} {
+			ev := HookEvent{Kind: kind, Member: "fleet", Agent: AgentCodex, SessionID: session, Where: w, Tool: "Edit", Paths: paths}
+			if _, err := h.b.Hook(h.now, ev); err != nil {
+				t.Fatal(err)
+			}
+		}
+		h.advance(time.Minute)
+	}
+	task(0, "running", KindStop) // the oldest, its agent waiting for its person
+	for i := 1; i <= 15; i++ {
+		task(i, fmt.Sprint("done", i), KindSessionEnd)
+	}
+	if held := h.b.memberBytes["fleet"]; held <= memberBytes {
+		t.Fatalf("the fleet holds %d bytes, which leaves room", held)
+	}
+	h.advance(time.Hour)
+	h.b.Sweep(h.now)
+	if held := h.b.memberBytes["fleet"]; held > memberBytes*3/4 || held < memberBytes*3/4-claimBytes {
+		t.Fatalf("after the sweep the fleet holds %d bytes, want about three quarters of %d", held, memberBytes)
+	}
+	kept := func(i int) bool {
+		return h.b.findClaim("fleet", Where{Repo: fmt.Sprintf("github.com/acme/task%02d", i), Host: "h", Worktree: "/w"}) != nil
+	}
+	if !kept(0) || kept(1) || !kept(15) {
+		t.Fatalf("kept the running claim %v, the oldest finished one %v, the newest %v", kept(0), kept(1), kept(15))
+	}
+	forgot := h.activities(ActivityClaimForgotten)
+	if len(forgot) == 0 || forgot[0].Member != "fleet" || !strings.Contains(forgot[0].Text, "1 of fleet's claims nobody had worked in") {
+		t.Fatalf("announced %+v", forgot)
+	}
+	// A new task in the team's repository: the file the fleet's agent
+	// changes is kept, and a teammate is warned before editing it.
+	h.hook(KindPostEdit, "fleet", "new", "svc/hot.go")
+	if c := h.b.findClaim("fleet", whereOf("fleet")); c.Footprint["svc/hot.go"] == nil {
+		t.Fatalf("the fleet's new claim holds %d files", len(c.Footprint))
+	}
+	if res := h.hook(KindPreEdit, "alice", "a1", "svc/hot.go"); len(res.Conflicts) != 1 {
+		t.Fatalf("alice's edit of the file the fleet just changed met %+v", res.Conflicts)
 	}
 }
 

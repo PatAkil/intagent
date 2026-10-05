@@ -57,7 +57,8 @@ type Config struct {
 	KeepActivities int `json:"keep_activities"`
 	// MaxSessions caps the sessions the board keeps (bounds.go).
 	MaxSessions int `json:"max_sessions"`
-	// MaxDormantClaims caps the claims with no live session the board keeps.
+	// MaxDormantClaims caps the claims with no live session the board keeps,
+	// as far as forgetting those quiet for longer than DormantFor can.
 	MaxDormantClaims int `json:"max_dormant_claims"`
 	// MaxFootprintBytes and MemberFootprintBytes cap what one claim's
 	// footprint, and all of one member's, may hold (bounds.go).
@@ -2440,7 +2441,8 @@ func (b *Board) Sweep(now time.Time) {
 		ids = append(ids, id)
 	}
 	slices.Sort(ids)
-	dormant, idle := 0, []*claim(nil) // claims with no live session, and those of them with no intent
+	// The claims with no live session, and those of them no longer listening.
+	var idle, quiet []*claim
 	for _, id := range ids {
 		c := b.claims[id]
 		changed = b.tidy(now, c, live[c.ID]) || changed
@@ -2454,14 +2456,15 @@ func (b *Board) Sweep(now time.Time) {
 		case now.Sub(c.UpdatedAt) > b.cfg.ForgetAfter:
 			b.deleteClaim(now, c, ActivityClaimForgotten)
 			changed = true
-		case len(c.Intents) == 0:
-			dormant++
-			idle = append(idle, c)
 		default:
-			dormant++
+			idle = append(idle, c)
+			if now.Sub(c.UpdatedAt) > b.cfg.DormantFor {
+				quiet = append(quiet, c)
+			}
 		}
 	}
-	changed = b.forgetDormant(now, dormant, idle) || changed
+	changed = b.forgetDormant(now, len(idle), quiet) || changed
+	changed = b.fitMembers(now, idle) || changed
 	for m, ts := range b.notes {
 		if len(ts) == 0 || now.Sub(ts[len(ts)-1]) > noteWindow {
 			delete(b.notes, m)

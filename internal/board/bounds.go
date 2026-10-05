@@ -1,6 +1,7 @@
 package board
 
 import (
+	"cmp"
 	"fmt"
 	"maps"
 	"slices"
@@ -149,20 +150,25 @@ func (b *Board) full(ev HookEvent) bool {
 const maxForgetPerSweep = 200
 
 // forgetDormant forgets, when more claims than MaxDormantClaims have no live
-// session, the ones quiet longest (by UpdatedAt, then ID) of those, among
-// idle, that hold no intent: at most maxForgetPerSweep, announced in one
-// activity per repository rather than one each. idle is in ID order. It
-// reports whether it forgot any.
-func (b *Board) forgetDormant(now time.Time, dormant int, idle []*claim) bool {
-	over := min(dormant-b.cfg.MaxDormantClaims, maxForgetPerSweep, len(idle))
+// session, of those among quiet, which no longer listen (listening), first
+// the ones that hold no intent and then the ones that do, each quiet longest
+// first (by UpdatedAt, then ID): at most maxForgetPerSweep, announced in one
+// activity per repository rather than one each. A claim still listening is
+// not forgotten for the bound, however many there are: its agent left less
+// than DormantFor ago, and its changes count in full. quiet is in ID order.
+// It reports whether it forgot any.
+func (b *Board) forgetDormant(now time.Time, dormant int, quiet []*claim) bool {
+	over := min(dormant-b.cfg.MaxDormantClaims, maxForgetPerSweep, len(quiet))
 	if over <= 0 {
 		return false
 	}
-	slices.SortStableFunc(idle, func(x, y *claim) int { return x.UpdatedAt.Compare(y.UpdatedAt) })
+	planned := func(c *claim) int { return min(len(c.Intents), 1) }
+	slices.SortStableFunc(quiet, func(x, y *claim) int {
+		return cmp.Or(planned(x)-planned(y), x.UpdatedAt.Compare(y.UpdatedAt))
+	})
 	forgot := map[string]int{}
-	for _, c := range idle[:over] {
-		b.removeClaim(c)
-		b.unpruned[c.Repo] = true
+	for _, c := range quiet[:over] {
+		b.forget(c)
 		forgot[c.Repo]++
 	}
 	for _, repo := range slices.Sorted(maps.Keys(forgot)) {
@@ -171,6 +177,59 @@ func (b *Board) forgetDormant(now time.Time, dormant int, idle []*claim) bool {
 				plural(forgot[repo], "claim"), b.cfg.MaxDormantClaims)})
 	}
 	return true
+}
+
+// forget takes claim c off the board to keep it within a bound, which a
+// sweep announces for many claims at once.
+func (b *Board) forget(c *claim) {
+	b.removeClaim(c)
+	b.unpruned[c.Repo] = true
+}
+
+// fitMembers forgets, of the claims among idle, which have no live session
+// and are in ID order, those of each member whose footprints hold more than
+// three quarters of MemberFootprintBytes, quiet longest first (by
+// UpdatedAt, then ID), until their claims hold three quarters: a member's
+// new work matters more than their oldest, which would otherwise fill the
+// budget and leave nothing of the new kept, so a sweep leaves room for it.
+// A claim with an agent running is not forgotten for it. It announces one
+// activity per repository and member, and reports whether it forgot any.
+func (b *Board) fitMembers(now time.Time, idle []*claim) bool {
+	mark := b.cfg.MemberFootprintBytes - b.cfg.MemberFootprintBytes/4
+	var over []*claim
+	for _, c := range idle {
+		if !c.removed && c.fpBytes > 0 && b.memberBytes[c.Member] > mark {
+			over = append(over, c)
+		}
+	}
+	if len(over) == 0 {
+		return false
+	}
+	slices.SortStableFunc(over, func(x, y *claim) int { return x.UpdatedAt.Compare(y.UpdatedAt) })
+	type whose struct{ repo, member string }
+	forgot := map[whose]int{}
+	for _, c := range over {
+		if b.memberBytes[c.Member] > mark {
+			b.forget(c)
+			forgot[whose{c.Repo, c.Member}]++
+		}
+	}
+	for _, k := range slices.SortedFunc(maps.Keys(forgot), func(x, y whose) int {
+		return cmp.Or(strings.Compare(x.repo, y.repo), strings.Compare(x.member, y.member))
+	}) {
+		b.record(Activity{At: now, Kind: ActivityClaimForgotten, Repo: k.repo, Member: k.member,
+			Text: fmt.Sprintf("%d of %s's claims nobody had worked in for longest forgotten: the board keeps at most %s "+
+				"of one member's changed files", forgot[k], k.member, sizeText(b.cfg.MemberFootprintBytes))})
+	}
+	return true
+}
+
+// sizeText says n bytes in megabytes, or in kilobytes below one.
+func sizeText(n int) string {
+	if n >= 1<<20 {
+		return fmt.Sprintf("%d MB", n>>20)
+	}
+	return fmt.Sprintf("%d KB", n>>10)
 }
 
 // Footprint byte budgets, which footprintCost counts against: what one

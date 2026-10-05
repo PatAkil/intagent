@@ -67,13 +67,17 @@ past nine tenths of the bound, by dropping the sessions that ended or went gone,
 ones, the longest silent first, down to nine tenths. A flood of fresh session ids, each heard from once and live for two
 hours, would otherwise keep every new session off the board; an agent whose session was dropped while live starts a new
 one when it next reports, and the repository's stats count such sessions (`evicted`). Past `max_dormant_claims` (20,000)
-claims with no live session, each sweep forgets up to 200 of those quiet longest that hold no intent, announced in one
-`claim.forgotten` per repository that names no claim. A footprint counts each file's path and area, and 96 bytes more,
-against two budgets, and then each directory added whole the same way: 512 KB for one claim (2000 files of a large
-monorepo's paths take about 350 KB) and 32 MB for all of one member's claims, a fleet's included. A footprint keeps the
-files its budgets take, the first in the order the client sent them, which puts first the files it would least want left
-out, and is marked truncated. Stats are kept for at most 1024 repositories: a new one takes the place of the repository
-with no claims counted in longest ago.
+claims with no live session, each sweep forgets up to 200 of those that no longer listen (quiet for longer than
+`dormant_for`), those holding no intent first, then those that do, each quiet longest first, announced in one
+`claim.forgotten` per repository that names no claim; a claim still listening is not forgotten for the bound. A
+footprint counts each file's path and area, and 96 bytes more, against two budgets, and then each directory added whole
+the same way: 512 KB for one claim (2000 files of a large monorepo's paths take about 350 KB) and 32 MB for all of one
+member's claims, a fleet's included. A footprint keeps the files its budgets take, the first in the order the client
+sent them, which puts first the files it would least want left out, and is marked truncated. A member's new work matters
+more than their oldest: once their claims hold more than three quarters of the member's budget, each sweep forgets those
+with no agent running, quiet longest first, until they hold three quarters, so their next claims have room; one
+`claim.forgotten` per repository names the member. Stats are kept for at most 1024 repositories: a new one takes the
+place of the repository with no claims counted in longest ago.
 
 The server's sweeper emits `session.stalled` and `session.gone` events once per transition, so the dashboard and the
 owner's next session see them. A webhook hears of them at most once a second, everything waiting in one message, so a
