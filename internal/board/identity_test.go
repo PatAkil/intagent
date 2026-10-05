@@ -133,12 +133,17 @@ func TestWorkerEndForgetsWhatTheWorkerWasTold(t *testing.T) {
 	if n := len(h.activities(ActivityConflict)); n != 1 {
 		t.Errorf("%d conflict activities, want 1", n)
 	}
-	// An end without a worker, or of one never told anything, forgets nothing.
+	// An end without a worker, or of one never told anything, forgets nothing;
+	// nor does the end of a worker whose name ends another's, or is in it.
+	for _, w := range []string{"b", "worker-bb", "x-worker-b"} {
+		h.workerHook(KindPreEdit, w, "svc/pay/retry.go")
+	}
 	before = len(s.Acked)
-	h.workerHook(KindWorkerEnd, "")
-	h.workerHook(KindWorkerEnd, "agent-9")
+	for _, w := range []string{"", "agent-9", "worker-b", "worker-"} {
+		h.workerHook(KindWorkerEnd, w)
+	}
 	if len(s.Acked) != before {
-		t.Errorf("forgot %d things for no worker", before-len(s.Acked))
+		t.Errorf("forgot %d things for no worker, or for others", before-len(s.Acked))
 	}
 }
 

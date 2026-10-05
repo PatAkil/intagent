@@ -92,11 +92,14 @@ func TestBoardTranscriptWithTies(t *testing.T) {
 }
 
 // transcriptSection is one run of the workload, under one configuration.
+// With moves, sessions also report from a second worktree of their slot's,
+// and some events come from subagents (HookEvent.Worker), which end.
 type transcriptSection struct {
 	name  string
 	seed  int64
 	steps int
 	cfg   func(*Config)
+	moves bool
 }
 
 var transcriptSections = []transcriptSection{
@@ -109,6 +112,7 @@ var transcriptSections = []transcriptSection{
 		c.Policy = Policy{Block: ActionOff, Overlap: ActionWarn, Nearby: ActionDeny}
 		c.MaxFootprint, c.NotesPerMinute, c.KeepActivities = 12, 3, 1
 	}},
+	{name: "default policy, sessions that move between worktrees, subagents", seed: 5, steps: 2000, cfg: func(*Config) {}, moves: true},
 }
 
 // compareGolden compares got with a golden file, or rewrites the file with -update.
@@ -189,6 +193,7 @@ type transcriptRun struct {
 	acts   []Activity
 	slots  []*transcriptSlot
 	coarse bool
+	moves  bool
 }
 
 // runTranscript runs one section, writing its full transcript to out and
@@ -199,7 +204,7 @@ func runTranscript(t *testing.T, digest, out *bytes.Buffer, sec transcriptSectio
 	cfg := DefaultConfig()
 	sec.cfg(&cfg)
 	tr := &transcriptRun{digest: digest, out: out, group: out.Len(), cfg: cfg, now: t0, start: t0,
-		rng: rand.New(rand.NewSource(sec.seed)), coarse: coarse}
+		rng: rand.New(rand.NewSource(sec.seed)), coarse: coarse, moves: sec.moves}
 	tr.b = tr.newBoard()
 	for k := range 24 {
 		m := fmt.Sprintf("m%d", k%10)
@@ -408,6 +413,9 @@ func (tr *transcriptRun) hook(i int) {
 	sl := tr.slot()
 	sid := sl.sessions[tr.rng.Intn(len(sl.sessions))]
 	ev := HookEvent{Kind: tr.kind(), Member: sl.member, Agent: sl.agent, SessionID: sid, Where: sl.where, NoAsk: sl.noAsk, LateContext: sl.late}
+	if tr.moves {
+		tr.move(&ev)
+	}
 	switch ev.Kind {
 	case KindPreEdit:
 		n := 1
@@ -466,6 +474,22 @@ func (tr *transcriptRun) hook(i int) {
 		did += ":told"
 	}
 	tr.did = append(tr.did, did)
+}
+
+// move has an event come from the slot's second worktree, as from a session
+// that moved there or a subagent working there, or from a subagent, or say
+// that one ended.
+func (tr *transcriptRun) move(ev *HookEvent) {
+	if tr.rng.Intn(3) == 0 {
+		ev.Where.Worktree += "-x"
+		ev.Where.Branch += "-x"
+	}
+	if tr.rng.Intn(3) == 0 {
+		ev.Worker = fmt.Sprintf("agent-%d", tr.rng.Intn(3))
+		if tr.rng.Intn(12) == 0 {
+			ev.Kind = KindWorkerEnd
+		}
+	}
 }
 
 func (tr *transcriptRun) pattern() string {

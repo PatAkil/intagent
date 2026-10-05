@@ -456,6 +456,8 @@ func TestSubagentsAreNamed(t *testing.T) {
 		{"codex subagent stop", Codex{}, `{"session_id":"019a","turn_id":"t","cwd":"/p","hook_event_name":"SubagentStop",` +
 			`"agent_id":"019b-thread","agent_type":"worker","agent_transcript_path":null,"last_assistant_message":null,"stop_hook_active":false}`,
 			Event{Kind: board.KindWorkerEnd, Name: "SubagentStop", SessionID: "019a", Cwd: "/p", Worker: "019b-thread"}},
+		{"codex subagent stop naming none", Codex{}, `{"session_id":"019a","turn_id":"t","cwd":"/p","hook_event_name":"SubagentStop"}`,
+			Event{Kind: board.KindWorkerEnd, Skip: true, Name: "SubagentStop", SessionID: "019a", Cwd: "/p"}},
 		{"cursor subagent's edit", Cursor{}, `{"conversation_id":"c1","hook_event_name":"preToolUse","cursor_version":"1.0.35",` +
 			`"workspace_roots":["/ws"],"parent_tool_call_id":"tc_7","tool_name":"Write","tool_input":{"file_path":"/ws/a.ts"},"tool_use_id":"t2"}`,
 			Event{Kind: board.KindPreEdit, Name: "preToolUse", SessionID: "c1", Cwd: "/ws", Tool: "Write", ToolUseID: "t2", Worker: "tc_7",
