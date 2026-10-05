@@ -376,6 +376,7 @@ func (b *Board) restoreMail(mail []*mailbox) {
 			b.mail[mailKey(m.Repo, m.Member)] = m
 		}
 	}
+	b.fitAllMail() // an older server kept 1024 mailboxes of 20 notes, whoever sent them
 }
 
 // trimRestored bounds what a claim read from a snapshot remembers of its

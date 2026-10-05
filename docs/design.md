@@ -81,8 +81,11 @@ sessions that ended or went gone last, and up to twice as many between sweeps, a
 working in one worktree may stall together on a network blip, and each that comes back is announced as recovered. The
 board keeps at most `max_sessions` (20,000) sessions: a new session that finds it full makes room, as each sweep does
 past nine tenths of the bound, by dropping the sessions that ended or went gone, then those that stalled, then live
-ones, the longest silent first, down to nine tenths. A flood of fresh session ids, each heard from once and live for two
-hours, would otherwise keep every new session off the board; an agent whose session was dropped while live starts a new
+ones, down to nine tenths; of each, those of the member holding the most go first, each member's longest silent first,
+so that no member loses a session while another holds more. A flood of fresh session ids, each heard from once and live
+for two hours, would otherwise keep every new session off the board; and were live ones dropped longest silent first
+whoever held them, it would drop every teammate's agent deep in a long tool call, whose reservations would stop
+blocking: it costs the flooder's own sessions instead. An agent whose session was dropped while live starts a new
 one when it next reports, and the repository's stats count such sessions (`evicted`). Past `max_dormant_claims` (20,000)
 claims with no live session, each sweep forgets up to 200 of those that no longer listen (quiet for longer than
 `dormant_for`), those holding no intent first, then those that do, each quiet longest first, announced in one
@@ -139,8 +142,11 @@ what claims sharing a large footprint remember grows with the pairs of them, not
 to their claims an agent is at work in, not those an agent that moved on keeps live; to a member with none, or a
 teammate with no claim in the repository yet, it waits in a mailbox for their next session there, in whichever worktree,
 which hears it (the answer's `held_for` names them): a fresh worktree, which a note queued in a worktree they left would
-never reach, or one of those. A mailbox holds 20 notes, the board 1024 mailboxes, and a note waits a day, as an inbox
-item does. A note to whoever changed a path goes to the claims still listening, and for each member none of whose claims
+never reach, or one of those. A mailbox holds 20 notes, and a note waits a day, as an inbox item does. One member's
+notes waiting in mailboxes are at most 64, their own oldest let go of first, so that their notes to people away in
+repositories they name, however many, cannot push out a note a teammate left; the board's are at most 4096, and so are
+its mailboxes, and past that the oldest note of whoever has the most waiting goes, so none goes while another member has
+more. A note to whoever changed a path goes to the claims still listening, and for each member none of whose claims
 there listens, to the one they were last active in. An inbox holds 50 items; a full one lets go first of an item a
 session was already shown, then of the oldest item of the sender holding the most, an alert before a note when senders
 tie, so a flood of one teammate's alerts or notes pushes out their own items rather than another's note the agent has

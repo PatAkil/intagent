@@ -123,8 +123,10 @@ func TestNoteWaitsForAMemberNewToTheRepository(t *testing.T) {
 
 // Mailboxes are bounded: a note a day old is dropped by the sweep, one
 // holds at most maxMailItems, a flood from one sender pushing out its own,
-// and the board at most maxMailboxes, letting go of the one whose newest
-// note is oldest.
+// and one sender's notes waiting across mailboxes are at most
+// maxSenderMail, its own oldest let go of first. Before, the board held
+// 1024 mailboxes and let go of the one whose newest note was oldest, so
+// mallory's notes to invented repositories pushed out carol's.
 func TestMailboxesAreBounded(t *testing.T) {
 	h := newHarness(t, func(c *Config) { c.NotesPerMinute = 1000 })
 	note := func(from, to, repo, text string) {
@@ -144,16 +146,136 @@ func TestMailboxesAreBounded(t *testing.T) {
 	if len(m.Items) != maxMailItems || m.Items[0].From != "carol" {
 		t.Fatalf("bob's mailbox holds %d notes, the first from %s", len(m.Items), m.Items[0].From)
 	}
-	for i := range maxMailboxes {
+	for i := range 1024 {
 		h.advance(time.Second)
 		note("mallory", "bob", fmt.Sprintf("github.com/acme/r%04d", i), "x")
 	}
-	if len(h.b.mail) != maxMailboxes || h.b.mail[mailKey(repo, "bob")] != nil {
-		t.Fatalf("%d mailboxes; the oldest kept: %v", len(h.b.mail), h.b.mail[mailKey(repo, "bob")] != nil)
+	// carol's note, and mallory's newest maxSenderMail, one a mailbox.
+	if m := h.b.mail[mailKey(repo, "bob")]; m == nil || len(m.Items) != 1 || m.Items[0].From != "carol" {
+		t.Fatalf("bob's mailbox in %s: %+v", repo, m)
+	}
+	if len(h.b.mail) != 1+maxSenderMail {
+		t.Fatalf("%d mailboxes, want carol's and %d of mallory's", len(h.b.mail), maxSenderMail)
+	}
+	for i := 1024 - maxSenderMail; i < 1024; i++ {
+		if h.b.mail[mailKey(fmt.Sprintf("github.com/acme/r%04d", i), "bob")] == nil {
+			t.Fatalf("mallory's note %d, one of her newest, was let go of", i)
+		}
 	}
 	h.advance(inboxTTL)
 	h.b.Sweep(h.now)
 	if len(h.b.mail) != 0 {
 		t.Fatalf("%d mailboxes a day later", len(h.b.mail))
 	}
+}
+
+// One member's notes at the rate limit, to someone with no claim in
+// repositories they make up, do not push out a note held for a teammate:
+// in the persist lane's probe, eve's 1024th note, 51 minutes on, evicted
+// the note alice left for carol.
+func TestOneSendersNotesKeepATeammatesHeldNote(t *testing.T) {
+	h := newHarness(t)
+	h.hook(KindSessionStart, "carol", "c1")
+	h.hook(KindSessionEnd, "carol", "c1")
+	res, err := h.b.Note(h.now, NoteRequest{Member: "alice", Where: whereOf("alice"), To: "carol",
+		Text: "the migration lands at 3pm, hold your PR", ToMember: true})
+	if err != nil || res.HeldFor != "carol" {
+		t.Fatalf("alice's note to carol: %+v, %v", res, err)
+	}
+	for i := range 1100 {
+		h.advance(3 * time.Second) // 20 a minute, the default limit
+		w := Where{Repo: fmt.Sprintf("github.com/eve/r%04d", i), Host: "eve-laptop", Worktree: "/w"}
+		if _, err := h.b.Note(h.now, NoteRequest{Member: "eve", Where: w, To: "bob", Text: "ping", ToMember: true}); err != nil {
+			t.Fatalf("note %d: %v", i, err)
+		}
+	}
+	if h.b.mail[mailKey(repo, "carol")] == nil {
+		t.Fatal("carol's note was let go of for eve's")
+	}
+	if ctx := h.hook(KindSessionStart, "carol", "c2").Context; !strings.Contains(ctx, "the migration lands at 3pm") {
+		t.Fatalf("carol's next session was told:\n%s", ctx)
+	}
+}
+
+// Past maxMail notes waiting on the board, which takes more senders than
+// maxMail/maxSenderMail, a new note makes room in fair share: the oldest
+// note of whoever has the most waiting goes, never one of a sender who has
+// fewer while another has more.
+func TestTheBoardsMailIsSharedFairly(t *testing.T) {
+	h := newHarness(t)
+	at := h.now
+	put := func(from string, n int) {
+		for i := range n {
+			at = at.Add(time.Second)
+			k := mailKey(fmt.Sprintf("github.com/%s/r%02d", from, i), "bob")
+			h.b.mail[k] = &mailbox{Repo: fmt.Sprintf("github.com/%s/r%02d", from, i), Member: "bob",
+				Items: []InboxItem{{ID: fmt.Sprintf("%s-%02d", from, i), At: at, Kind: "note", From: from, Text: "x"}}}
+		}
+	}
+	senders := maxMail/maxSenderMail - 1
+	for s := range senders { // each at the bound
+		put(fmt.Sprintf("s%02d", s), maxSenderMail)
+	}
+	put("few", maxSenderMail-4)
+	put("carol", 4)
+	if n := mailNotes(h.b); n != maxMail {
+		t.Fatalf("set up %d notes, want %d", n, maxMail)
+	}
+	h.now = at.Add(time.Second)
+	for _, from := range []string{"carol", "few", "carol"} {
+		h.b.hold(h.now, repo, "dave", InboxItem{Kind: "note", From: from, Text: "y"})
+	}
+	if n := mailNotes(h.b); n != maxMail {
+		t.Fatalf("%d notes held, want %d", n, maxMail)
+	}
+	held := map[string]int{}
+	for _, m := range h.b.mail {
+		for _, it := range m.Items {
+			held[it.From]++
+		}
+	}
+	if held["carol"] != 6 || held["few"] != maxSenderMail-3 {
+		t.Fatalf("carol has %d notes waiting, few %d; want all of each", held["carol"], held["few"])
+	}
+	// The three let go of: the oldest of the senders at the bound, s00's,
+	// s01's and s02's first notes.
+	for s := range senders {
+		k := mailKey(fmt.Sprintf("github.com/s%02d/r00", s), "bob")
+		if gone := h.b.mail[k] == nil; gone != (s < 3) {
+			t.Errorf("s%02d's oldest note let go of: %v", s, gone)
+		}
+	}
+}
+
+// A snapshot from an older server, which kept up to 1024 mailboxes of 20
+// notes whoever sent them, is fitted to the bounds as it is restored.
+func TestRestoredMailIsFitted(t *testing.T) {
+	h := newHarness(t)
+	h.b.mail[mailKey(repo, "carol")] = &mailbox{Repo: repo, Member: "carol",
+		Items: []InboxItem{{ID: "c", At: h.now, Kind: "note", From: "alice", Text: "x"}}}
+	for i := range 100 {
+		r := fmt.Sprintf("github.com/eve/r%03d", i)
+		h.b.mail[mailKey(r, "bob")] = &mailbox{Repo: r, Member: "bob",
+			Items: []InboxItem{{ID: fmt.Sprint("e", i), At: h.now.Add(time.Duration(i+1) * time.Second), Kind: "note", From: "eve", Text: "x"}}}
+	}
+	data, _, err := h.b.Snapshot(h.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := New(DefaultConfig())
+	if err := b.Restore(bytes.NewReader(data), h.now); err != nil {
+		t.Fatal(err)
+	}
+	if len(b.mail) != 1+maxSenderMail || b.mail[mailKey(repo, "carol")] == nil || b.mail[mailKey("github.com/eve/r099", "bob")] == nil {
+		t.Fatalf("restored %d mailboxes; carol's: %v; eve's newest: %v", len(b.mail),
+			b.mail[mailKey(repo, "carol")] != nil, b.mail[mailKey("github.com/eve/r099", "bob")] != nil)
+	}
+}
+
+func mailNotes(b *Board) int {
+	n := 0
+	for _, m := range b.mail {
+		n += len(m.Items)
+	}
+	return n
 }
