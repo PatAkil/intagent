@@ -316,6 +316,68 @@ func answerJSON(v board.View, load *LoadStatus) ([]byte, error) {
 	return append(body, '\n'), nil
 }
 
+// A client that does not take gzip and reads slowly keeps the JSON of the
+// build it was sent for as long as it reads: the write deadline bounds each
+// piece of an answer, not the whole, so at a few kilobytes a second an 18 MB
+// board stays for over half an hour, and a hundred such readers took the
+// server past 2 GB. Browsers and intagent's own clients take gzip, a
+// twentieth of the size; for the others, the builds being sent uncompressed
+// are bounded by the memory they keep, and past the bound a large answer is
+// refused with 503 and Retry-After.
+const (
+	// plainBudget bounds the JSON of the builds being sent uncompressed at
+	// once, each counted once however many requests send it.
+	plainBudget = 32 << 20
+	// plainSmall is the size under which an answer is sent uncompressed
+	// without being counted: a typical repository's board is far larger.
+	plainSmall = 256 << 10
+	// plainRetry is the Retry-After, in seconds, of an answer refused.
+	plainRetry = 5
+)
+
+// plainAnswers counts the builds being sent uncompressed.
+type plainAnswers struct {
+	budget, small int
+	mu            sync.Mutex
+	// sending counts the requests sending each build's JSON, by its first
+	// byte: the map keeps the JSON for no longer than they do, and nothing
+	// else of the build.
+	sending map[*byte]int
+	bytes   int // the JSON of the builds in sending
+}
+
+func newPlainAnswers(budget, small int) *plainAnswers {
+	return &plainAnswers{budget: budget, small: small, sending: map[*byte]int{}}
+}
+
+// take counts a request that sends body, a build's JSON, uncompressed, and
+// reports whether there is room for it: it is small, or being sent already,
+// or fits the budget with the others, or nothing else is being sent.
+// release uncounts it once it is sent.
+func (p *plainAnswers) take(body []byte) (release func(), ok bool) {
+	if len(body) < p.small {
+		return func() {}, true
+	}
+	key := &body[0]
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.sending[key] == 0 {
+		if p.bytes > 0 && p.bytes+len(body) > p.budget {
+			return nil, false
+		}
+		p.bytes += len(body)
+	}
+	p.sending[key]++
+	return func() {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		if p.sending[key]--; p.sending[key] == 0 {
+			delete(p.sending, key)
+			p.bytes -= len(body)
+		}
+	}, true
+}
+
 // gzipWriters keeps compressors for reuse: each holds most of a megabyte of
 // tables.
 var gzipWriters = sync.Pool{New: func() any {

@@ -418,7 +418,12 @@ while degraded), in its log and, if asked, by webhook.
   opens many connections, with a token or without, cannot use up the server's file descriptors and memory. A hook
   turned away fails open at once instead of waiting out its timeout.
 - An answer that makes no progress for 15 seconds is cut off, so a client that stops reading mid-answer (a laptop
-  put to sleep) does not hold the server's memory; a slow client that keeps reading gets all of it.
+  put to sleep) does not hold the server's memory; a slow client that keeps reading gets all of it. That bounds each
+  piece of an answer, not the whole: a client reading a board at a few kilobytes a second keeps its answer for as long
+  as it reads, over half an hour for the 18 MB of a large board. Browsers and intagent's clients take gzip, a
+  twentieth of that. Board answers sent uncompressed are bounded by the memory they keep: the builds being sent so,
+  each counted once however many clients read it, may hold 32 MB of JSON, or one build larger than that; past it a
+  board answer over 256 KB is refused with 503 and `Retry-After`, and the client can ask again, or take gzip.
 - The hook fails open with a short timeout. Only a refused connection is tried again, after 100, 200 and then every
   400 ms while more than half a second of the request's time is left: a server restarting closes its port for a
   moment, and nothing of the request reached it, while a request reset or timed out may have been decided, and an

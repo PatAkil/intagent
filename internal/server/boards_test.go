@@ -859,3 +859,113 @@ func TestAgentBoardTakesTheSlot(t *testing.T) {
 		t.Fatal("the agent's text was not read once the slot was free")
 	}
 }
+
+// The JSON of the builds being sent uncompressed is counted once per build,
+// however many requests send it, and only past the small size.
+func TestPlainAnswersBudget(t *testing.T) {
+	p := newPlainAnswers(100, 10)
+	one, two, small := make([]byte, 60), make([]byte, 60), make([]byte, 9)
+	r1, ok := p.take(one)
+	if !ok {
+		t.Fatal("the first answer was refused")
+	}
+	r1b, ok := p.take(one)
+	if !ok || p.bytes != 60 {
+		t.Fatalf("a second request for the same build: %v, %d bytes", ok, p.bytes)
+	}
+	if _, ok := p.take(two); ok {
+		t.Fatal("another build past the budget was taken")
+	}
+	rs, ok := p.take(small)
+	if !ok || p.bytes != 60 {
+		t.Fatalf("a small answer: %v, %d bytes", ok, p.bytes)
+	}
+	rs()
+	r1()
+	if _, ok := p.take(two); ok {
+		t.Fatal("a build still being sent was let go of")
+	}
+	r1b()
+	if p.bytes != 0 || len(p.sending) != 0 {
+		t.Fatalf("after every answer was sent: %d bytes, %d builds", p.bytes, len(p.sending))
+	}
+	// An answer larger than the whole budget is sent when nothing else is.
+	big, ok := p.take(make([]byte, 500))
+	if !ok {
+		t.Fatal("an answer over the budget was refused with nothing else being sent")
+	}
+	big()
+}
+
+// stalledWriter is a client that takes an answer's headers and then stops
+// reading: its first write blocks until it is released.
+type stalledWriter struct {
+	h       http.Header
+	code    int
+	writing chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (w *stalledWriter) Header() http.Header { return w.h }
+
+func (w *stalledWriter) WriteHeader(code int) { w.code = code }
+
+func (w *stalledWriter) Write(b []byte) (int, error) {
+	w.once.Do(func() { close(w.writing) })
+	<-w.release
+	return len(b), nil
+}
+
+// A client that does not take gzip and reads slowly keeps its build's whole
+// JSON for as long as it reads, past the write deadline, which bounds each
+// piece. Large answers sent uncompressed are bounded by the memory they keep:
+// past the budget the server answers 503 with Retry-After, and answers to
+// clients that take gzip go on as before.
+func TestBoardPlainAnswersAreBounded(t *testing.T) {
+	ts := newTestServer(t)
+	var p fakePacing
+	p.install(ts.boards)
+	ts.do(t, "POST", "/v1/hook", "alice", hookEv(board.KindPostEdit, "alice", "a1", "x/y.go"), nil)
+	b, err := ts.boards.get(context.Background(), repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// One build's answer fits the budget, two do not.
+	ts.plain = newPlainAnswers(len(b.json)+len(b.json)/2, 1)
+	get := func(w http.ResponseWriter, gzip bool) {
+		req, _ := http.NewRequest(http.MethodGet, "/v1/board?repo="+repo, nil)
+		req.Header.Set("Authorization", "Bearer "+ts.tokens["bob"])
+		if gzip {
+			req.Header.Set("Accept-Encoding", "gzip")
+		}
+		ts.Handler().ServeHTTP(w, req)
+	}
+	slow := &stalledWriter{h: http.Header{}, writing: make(chan struct{}), release: make(chan struct{})}
+	free := sync.OnceFunc(func() { close(slow.release) })
+	t.Cleanup(free)
+	done := make(chan struct{})
+	go func() { get(slow, false); close(done) }()
+	<-slow.writing
+	// The next request reads the board again: a build of its own.
+	rec := httptest.NewRecorder()
+	get(rec, false)
+	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") == "" || rec.Header().Get("ETag") != "" {
+		t.Fatalf("a second large uncompressed answer: %d %v %s", rec.Code, rec.Header(), rec.Body)
+	}
+	rec = httptest.NewRecorder()
+	get(rec, true)
+	if rec.Code != http.StatusOK || rec.Header().Get("Content-Encoding") != "gzip" {
+		t.Fatalf("a compressed answer meanwhile: %d %v", rec.Code, rec.Header())
+	}
+	free()
+	<-done
+	if slow.code != http.StatusOK {
+		t.Fatalf("the slow reader's answer: %d", slow.code)
+	}
+	rec = httptest.NewRecorder()
+	get(rec, false)
+	if rec.Code != http.StatusOK || rec.Header().Get("Content-Encoding") != "" {
+		t.Fatalf("an uncompressed answer once the slow one was sent: %d %v", rec.Code, rec.Header())
+	}
+}
