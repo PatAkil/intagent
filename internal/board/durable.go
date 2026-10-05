@@ -408,7 +408,10 @@ func sortedKeys[V any](m map[string]V) []string {
 // and the crash than it was at the snapshot, and one silent a while then
 // may have gone into a tool call since. One the snapshot had stalled stays
 // so, announced. The sessions of the claims that hold reservations are as
-// the durable part has them, or were not live when it was saved.
+// the durable part has them, or were not live when it was saved: those it
+// does not hold lose any doubt the snapshot carries from an earlier
+// restart, which a reservation made since cleared (believe) but only in a
+// durable part that no longer holds them.
 func (b *Board) doubt(sessions []*session) {
 	durable := make(map[string]bool, len(sessions))
 	for _, x := range sessions {
@@ -419,16 +422,14 @@ func (b *Board) doubt(sessions []*session) {
 		return c != nil && holdsReservation(c)
 	}
 	for _, x := range b.sessions {
-		if durable[x.Key] || x.Phase != phaseWorking || x.Reported != StateWorking || reserved(x.ClaimID) {
+		if durable[x.Key] {
 			continue
 		}
-		carries := false
+		carries := reserved(x.ClaimID)
 		for id := range x.Also {
 			carries = carries || reserved(id)
 		}
-		if !carries {
-			x.Unsure = true
-		}
+		x.Unsure = !carries && x.Phase == phaseWorking && x.Reported == StateWorking
 	}
 }
 

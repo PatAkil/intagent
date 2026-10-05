@@ -340,6 +340,47 @@ func TestDoubtGoesByWhatTheSnapshotRecorded(t *testing.T) {
 	}
 }
 
+// A doubt a whole snapshot carries from an earlier restart does not outlive
+// a reservation made since: a second crash, before the next whole save,
+// restores the session with the doubt the snapshot holds, and its claim's
+// reservation from the durable part; that session was not live when the
+// durable part was saved, or the durable part would hold it, so it comes
+// back stalled, not kept live by the guess for tool_stall_after.
+func TestASecondCrashDoesNotBringBackADoubtAReservationCleared(t *testing.T) {
+	h := newHarness(t)
+	h.hook(KindPrompt, "alice", "a1")
+	h.b.mu.Lock()
+	for _, x := range h.b.sessions {
+		x.Unsure = true // as the first restart's doubt left it
+	}
+	h.b.mu.Unlock()
+	snap, version, err := h.b.Snapshot(h.now) // the whole save right after that restart
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.b.SnapshotSaved(version)
+	h.declare("alice", ModeExclusive, "svc", "svc/**") // clears the doubt in memory
+	h.advance(11 * time.Minute)
+	h.b.Sweep(h.now) // alice's agent died with the server: stalled
+	durable := durableOf(t, h.b, h.now)
+
+	b := New(DefaultConfig())
+	restart := h.now.Add(30 * time.Second)
+	if err := b.RestoreAfter(bytes.NewReader(snap), restart, h.now); err != nil {
+		t.Fatal(err)
+	}
+	if applied, err := b.RestoreDurable(bytes.NewReader(durable), restart, h.now); err != nil || !applied {
+		t.Fatalf("RestoreDurable = %t, %v", applied, err)
+	}
+	x := b.sessions[sessionKey("alice", AgentClaudeCode, "a1")]
+	if x == nil {
+		t.Fatal("alice's session was not restored")
+	}
+	if x.Unsure || b.state(restart, x) != StateStalled {
+		t.Errorf("alice's session restored unsure %t and %s, want sure and stalled", x.Unsure, b.state(restart, x))
+	}
+}
+
 // A claim that comes to hold a reservation lets go of the doubt a restart
 // cast on the sessions that keep it live, its own and one that moved from
 // it: whether its reservation blocks is read from them as without a crash,

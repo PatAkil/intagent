@@ -304,7 +304,8 @@ What an unclean stop (a crash, or a clean stop whose final save failed) loses, t
   claim makes after the restart ends the doubt, so that an agent that died with the server does not keep teammates out
   of it for 45 minutes: its agents are then read as any the board does not know to be in a tool call, and one in a tool
   call since before the crash is announced stalled 10 minutes after its last hook, its reservation then bumping a
-  teammate once rather than refusing.
+  teammate once rather than refusing. A second crash does not bring the doubt back from the whole save the first restart
+  made: a session of a reserved claim that the durable part does not hold was not live when it was saved.
 - up to 5 minutes of what agents were told and claims were alerted of: an agent may be warned again, or bumped again (a
   refusal its retry gets past), about what it heard; the alerts queued for a claim since are lost, and come again as the
   teammate's files come back at its next scan.
