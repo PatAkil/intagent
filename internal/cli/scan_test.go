@@ -211,3 +211,19 @@ func TestSessionEndScansAfterAnUnscannedCommand(t *testing.T) {
 	}
 	t.Fatal("svc/pay/new.go, written by the session's last shell command, never reached the board")
 }
+
+// An absolute XDG_CACHE_HOME places intagent's cache on every system: on
+// macOS os.UserCacheDir ignores it, and the hook log, the stamps and the
+// ledgers would land in ~/Library/Caches. A relative one is not a place.
+func TestCacheDirHonoursXDGCacheHome(t *testing.T) {
+	x := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", x)
+	if got := cacheDir(); got != filepath.Join(x, "intagent") {
+		t.Fatalf("cacheDir() = %q, want it under %s", got, x)
+	}
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", "relative/cache")
+	if got := cacheDir(); strings.HasPrefix(got, "relative") {
+		t.Fatalf("cacheDir() = %q from a relative XDG_CACHE_HOME", got)
+	}
+}

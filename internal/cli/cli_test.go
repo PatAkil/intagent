@@ -87,7 +87,13 @@ func newTeamWith(t *testing.T, cfg board.Config, members ...string) *team {
 	for _, k := range []string{"INTAGENT_URL", "INTAGENT_TOKEN", "INTAGENT_DISABLE", "INTAGENT_FAIL", "CLAUDE_PROJECT_DIR"} {
 		t.Setenv(k, "")
 	}
-	tm := &team{t: t, dir: t.TempDir(), tokens: map[string]string{}}
+	// The real path, as git reports a worktree's root: on macOS t.TempDir is
+	// under /var, a link to /private/var.
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tm := &team{t: t, dir: dir, tokens: map[string]string{}}
 	var ms []server.Member
 	for _, m := range members {
 		tok, hash, err := server.NewToken()

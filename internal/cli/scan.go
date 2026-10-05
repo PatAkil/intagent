@@ -44,11 +44,16 @@ func scanDue(root string, kind board.Kind, now time.Time) bool {
 
 // cacheDir is intagent's directory in the user's cache, where the hook log,
 // the stamps that pace scans, the index copies they keep and the ledgers of
-// edits that went ahead unchecked live, or "" if there is none.
+// edits that went ahead unchecked live, or "" if there is none. An absolute
+// XDG_CACHE_HOME is honoured on every system, macOS included, as most
+// command-line tools there do; otherwise it is the system's own cache.
 func cacheDir() string {
-	dir, err := os.UserCacheDir()
-	if err != nil {
-		return ""
+	dir := os.Getenv("XDG_CACHE_HOME")
+	if !filepath.IsAbs(dir) {
+		var err error
+		if dir, err = os.UserCacheDir(); err != nil {
+			return ""
+		}
 	}
 	dir = filepath.Join(dir, "intagent")
 	if os.MkdirAll(dir, 0o700) != nil {

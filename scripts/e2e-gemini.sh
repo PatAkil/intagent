@@ -29,10 +29,12 @@ finish() {
   if [ "$status" -eq 0 ] && [ "${KEEP:-}" != 1 ]; then
     rm -rf "$WORK" 2>/dev/null || echo "workdir: $WORK (not all of it could be removed)"
   else
+    [ "$status" -eq 0 ] || diagnose "$WORK"
     echo "workdir: $WORK"
   fi
 }
 trap finish EXIT
+. "$ROOT/scripts/e2e-diagnose.sh"
 
 export GIT_CONFIG_GLOBAL=/dev/null GIT_AUTHOR_NAME=e2e GIT_AUTHOR_EMAIL=e2e@example.com \
   GIT_COMMITTER_NAME=e2e GIT_COMMITTER_EMAIL=e2e@example.com XDG_CACHE_HOME="$WORK/cache"

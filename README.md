@@ -259,9 +259,10 @@ its member has sent too many of those, or the server stays busy with other large
 answers it unchecked, as it answers an edit it got to too late, and the hook lets it through or, under
 `INTAGENT_FAIL=closed`, refuses it. The agent is then told which of its edits went ahead without a check: by the server
 when the edit is reported, with what a check finds then, and otherwise by the hook, from a ledger it keeps per worktree
-and session in the user cache directory (`~/.cache/intagent` on Linux) for a day, or until the session ends. The
-dashboard counts the edits the server got to too late beside the checked ones, and the server's log counts the large
-requests it let through or turned away for load, in a warning at most once a minute.
+and session in the user cache directory (`$XDG_CACHE_HOME/intagent` when that is set, on macOS too, otherwise
+`~/.cache/intagent` on Linux) for a day, or until the session ends. The dashboard counts the edits the server got to too
+late beside the checked ones, and the server's log counts the large requests it let through or turned away for load, in
+a warning at most once a minute.
 
 People see it too. Once more than 5% of the last 10 seconds' edits (and at least 3) went ahead unchecked, the server
 is degraded, until it has been so for 30 seconds and fewer than 1% do. Meanwhile the dashboard shows a banner, the
