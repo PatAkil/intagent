@@ -266,23 +266,24 @@ send again matters before they do: a reservation blocks teammates only while its
 tool call sends nothing until the call ends, and one that ended sends nothing more. So the durable part also holds the
 live sessions of the claims that hold exclusive intents, with what their liveness is read from (their claims, the claims
 they keep live from elsewhere, their phases, their tool calls and when they were last heard from), and which sessions
-ended and which claims were released or forgotten since the whole board was last saved. That durable part is saved in
-`board.json.durable` within about a second of a change to an intent, a note, the mail, a session's end, a claim's
-release, or the claim, phase or tool calls of a session that keeps a reservation live (a digest of them tells), and
-within 30 seconds of any other change to it (the feed, the stats, when those sessions were last heard from); the whole
-board in `board.json` at most every 5 minutes while it changes, and at a clean stop. Each is spaced by what it last cost
-too, nine times its duration after it started, the durable part at most 30 seconds apart. A restart restores
-`board.json`, and then `board.json.durable` if it holds a later version of the board (each records the board's version,
-which goes on from the snapshot's): each claim's intents and notes are the durable part's, and a claim made since comes
-back with them; the sessions it holds take the place of the snapshot's, their silence credited with the downtime as the
-snapshot's are (below); the sessions it says ended are ended, and the claims it says were released or forgotten are
-gone; and the mail, feed and stats are its. A claim made since that held notes and nothing else is not kept, as nothing
-would keep it on the board until its agent reports again: its notes wait in its member's mailbox for their next session
-in its repository. Until the whole board is saved again, which a server that restored a durable part does within a
-second, its own durable part says what ended since the older snapshot too. On the acceptance churn (1000 agents, 200
-hooks a second) the durable part is about 600 KB, 80 KB compressed, of which the 33 sessions keeping reservations live
-take 11 KB and the 1,500 sessions that ended in the 5 minutes between whole saves 67 KB; it is saved about once a
-second, and the server writes about 0.4 GB an hour, where saving the whole board every few seconds wrote 20 to 37 GB.
+ended and which claims were released or forgotten since the whole save before the last (which a restart restores if it
+finds the last damaged, below). That durable part is saved in `board.json.durable` within about a second of a change to
+an intent, a note, the mail, a session's end, a claim's release, or the claim, phase or tool calls of a session that
+keeps a reservation live (a digest of them tells), and within 30 seconds of any other change to it (the feed, the stats,
+when those sessions were last heard from); the whole board in `board.json` at most every 5 minutes while it changes, and
+at a clean stop. Each is spaced by what it last cost too, nine times its duration after it started, the durable part at
+most 30 seconds apart. A restart restores `board.json`, and then `board.json.durable` if it holds a later version of the
+board (each records the board's version, which goes on from the snapshot's): each claim's intents and notes are the
+durable part's, and a claim made since comes back with them; the sessions it holds take the place of the snapshot's,
+their silence credited with the downtime as the snapshot's are (below); the sessions it says ended are ended, and the
+claims it says were released or forgotten are gone; and the mail, feed and stats are its. A claim made since that held
+notes and nothing else is not kept, as nothing would keep it on the board until its agent reports again: its notes wait
+in its member's mailbox for their next session in its repository. Until the whole board has been saved twice again, the
+first time within a second of a restart that restored a durable part, its own durable part says what ended since the
+older snapshot too. On the acceptance churn (1000 agents, 200 hooks a second) the durable part is about 660 KB, 90 KB
+compressed, of which the 33 sessions keeping reservations live take 11 KB and the 3,000 sessions that ended in the 10
+minutes of the last two whole saves 130 KB; it is saved about once a second, and the server writes about 0.45 GB an
+hour, where saving the whole board every few seconds wrote 20 to 37 GB.
 
 What an unclean stop (a crash, or a clean stop whose final save failed) loses, then:
 
@@ -315,9 +316,10 @@ keeps the snapshot it replaces as `board.json.prev`, a hard link made before the
 temporary files of saves that were killed halfway are removed, and a snapshot that is cut short or damaged is set aside
 as `board.json.corrupt-<unix time>` and `board.json.prev` put in its place and restored, or nothing: a server that will
 not start leaves every agent unchecked, and one stopped before its next save restores the same again. What changed
-between the two whole saves is then lost but for what the durable part holds. A damaged `board.json.durable` is set
-aside as `board.json.durable.corrupt-<unix time>`, and what it held since `board.json` lost. One older than the snapshot
-of an older server, which records no version of the board, is set aside as `board.json.durable.stale-<unix time>`, and a
+between the two whole saves is then lost but for what the durable part holds, which says what ended and what was
+released or forgotten since the older one. A damaged `board.json.durable` is set aside as
+`board.json.durable.corrupt-<unix time>`, and what it held since `board.json` lost. One older than the snapshot of an
+older server, which records no version of the board, is set aside as `board.json.durable.stale-<unix time>`, and a
 warning logged: a rollback to that server and an upgrade again leave one, and it would undo what was done under the
 older server. A snapshot of a newer format, or one that cannot be read, still stops it. The port opens once the board is
 restored: the server counts a hook's wait from when it reads it, so one that waited in the kernel's queue meanwhile

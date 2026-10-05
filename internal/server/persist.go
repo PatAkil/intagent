@@ -26,10 +26,11 @@ import (
 // cannot send again (the claims' intents, the notes in their inboxes and in
 // members' mailboxes, the feed and the stats), and what reservations need
 // before they do (the sessions keeping them live, and which sessions ended
-// and which claims went since the last whole save): board.Durable, a small
-// part of it, saved soon after it changes, in board.json.durable. The whole
-// board is saved in board.json at most every bulkSaveEvery while it changes,
-// and at a clean stop. So a crash loses up to bulkSaveEvery of files, of
+// and which claims went since the whole save before the last, which a
+// restart restores if the last is damaged): board.Durable, a small part of
+// it, saved soon after it changes, in board.json.durable. The whole board is
+// saved in board.json at most every bulkSaveEvery while it changes, and at a
+// clean stop. So a crash loses up to bulkSaveEvery of files, of
 // other sessions and of what agents were told, which they send again or
 // which at worst tells them something again, and about a second of the
 // rest (docs/design.md says exactly what). Both files are compressed with
@@ -397,8 +398,14 @@ func (s *Server) removeTemps() {
 // file beside the last, which it then replaces (fsutil.WriteFileFunc); the
 // one it replaces is kept as board.json.prev. Once stop is closed, the save
 // is abandoned at its next write; a nil stop never is.
+//
+// The durable part then stops saying what ended before the snapshot kept as
+// board.json.prev (board.SnapshotSaved), not before the new one: a restart
+// that finds the new one damaged restores that one, and the durable part
+// saved since says what ended after it.
 func (s *Server) save(stop <-chan struct{}) error {
-	if s.dataDir == "" || s.board.Version() == s.saves.saved() {
+	kept := s.saves.saved() // what board.json holds, kept as board.json.prev
+	if s.dataDir == "" || s.board.Version() == kept {
 		return nil
 	}
 	start := s.clock()
@@ -413,7 +420,7 @@ func (s *Server) save(stop <-chan struct{}) error {
 	}
 	s.saves.finished(start, s.clock(), version, err, s.log)
 	if err == nil {
-		s.board.SnapshotSaved(version)
+		s.board.SnapshotSaved(kept)
 	}
 	return err
 }

@@ -286,16 +286,16 @@ answers 503, with `"ok": false`, while degraded, for monitors that alert.
 The board lives in memory and is saved to `--data` in two parts, both compressed with gzip. What agents cannot send
 again (intents, notes waiting to be heard, the feed and the stats), and what a reservation needs before they do (whether
 the agents holding it are at work, in a long tool call say, and which agents ended and which claims were released since
-the whole board was last saved), is saved in `board.json.durable` within about a second of a change to it, and within 30
+the whole save before the last), is saved in `board.json.durable` within about a second of a change to it, and within 30
 seconds of a change to the feed or the stats. The whole board, most of it what agents send again at their next scan or
 hook (changed files, sessions, what each was told), is saved in `board.json` at most every 5 minutes while it changes,
 and when the server stops cleanly. So a crash loses about a second of intents, notes, reservations and ends, and up to 5
 minutes of changed files, which agents at work send again, and of what agents were told, which they may be told again;
 [docs/design.md](docs/design.md#components) lists all it can lose. A restart restores `board.json` and then
-`board.json.durable`, if it was saved after it. On a board under steady load that is about 0.4 GB written an hour, where
-saving the whole board every few seconds wrote tens of gigabytes. A `board.json` an older intagent saved, as plain JSON,
-restores as well; an older intagent cannot read the compressed one, and sets it aside as damaged and starts empty. To go
-back to one, unpack both snapshots first (`gunzip -c board.json > plain && mv plain board.json`, and the same for
+`board.json.durable`, if it was saved after it. On a board under steady load that is about 0.45 GB written an hour,
+where saving the whole board every few seconds wrote tens of gigabytes. A `board.json` an older intagent saved, as plain
+JSON, restores as well; an older intagent cannot read the compressed one, and sets it aside as damaged and starts empty.
+To go back to one, unpack both snapshots first (`gunzip -c board.json > plain && mv plain board.json`, and the same for
 `board.json.prev`); upgrading again afterwards sets aside the `board.json.durable` left from before, as
 `board.json.durable.stale-<unix time>`, rather than undo what changed under the older one. When saves fail (a full disk,
 say), the server logs it at once and then once a minute, keeps every change in memory, tries again with a growing pause,

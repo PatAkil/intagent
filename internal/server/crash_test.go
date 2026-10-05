@@ -355,10 +355,12 @@ func TestACrashKeepsAnEnd(t *testing.T) {
 	}
 }
 
-// Once the whole board is saved, the durable part no longer says what it
-// holds: the sessions that ended and the claims taken off the board before
-// it are in it.
-func TestASaveOfTheWholeBoardForgetsWhatEndedBefore(t *testing.T) {
+// Once the whole board is saved twice, the durable part no longer says what
+// ended before the first of those saves: both board.json and the snapshot
+// it replaced, kept as board.json.prev, hold it. After one save it still
+// does, for a restart that finds board.json damaged and restores
+// board.json.prev.
+func TestADurablePartForgetsWhatEndedOnlyOnceBothSnapshotsHoldIt(t *testing.T) {
 	r := newCrashRun(t)
 	r.hook(board.KindPrompt, "alice", "a1", where("alice"))
 	r.run(time.Second)
@@ -369,9 +371,42 @@ func TestASaveOfTheWholeBoardForgetsWhatEndedBefore(t *testing.T) {
 		t.Fatalf("the durable part saved after the end says %d sessions ended, want 1", n)
 	}
 	r.busy(bulkSaveEvery)
-	d := durableIn(t, r.ts)
-	if len(d.Ended) != 0 || len(d.Removed) != 0 {
-		t.Errorf("after the whole board was saved again, the durable part says %v ended and %v were removed", d.Ended, d.Removed)
+	if d := durableIn(t, r.ts); len(d.Ended) != 1 || len(d.Removed) != 1 {
+		t.Errorf("after one whole save with the end, the durable part says %v ended and %v were removed, want both "+
+			"for board.json.prev", d.Ended, d.Removed)
+	}
+	r.busy(bulkSaveEvery)
+	if d := durableIn(t, r.ts); len(d.Ended) != 0 || len(d.Removed) != 0 {
+		t.Errorf("after two whole saves with the end, the durable part says %v ended and %v were removed", d.Ended, d.Removed)
+	}
+}
+
+// A restart that finds board.json damaged restores board.json.prev, the
+// whole save before it, and the durable part: what ended between the two
+// saves stays ended. Here alice edits svc/a.go, the board is saved whole,
+// she commits and ends, which releases her claim, and the board is saved
+// whole again; then board.json is damaged. Before, each whole save made the
+// durable part forget the ends that save held, so board.json.prev came back
+// with alice's agent working and her claim holding svc/a.go, and bob's edit
+// of the file she had committed was bumped.
+func TestARestoreOfThePreviousSnapshotKeepsWhatEndedSince(t *testing.T) {
+	r := newCrashRun(t)
+	r.hook(board.KindPrompt, "alice", "a1", where("alice"))
+	r.hook(board.KindPostEdit, "alice", "a1", where("alice"), "svc/a.go")
+	r.run(time.Second) // saved whole, alice at work on svc/a.go
+	r.busy(time.Minute)
+	r.scanned(board.KindSessionEnd, "alice", "a1") // committed: the claim is released
+	r.busy(bulkSaveEvery)                          // saved whole again, with the end
+	r.busy(10 * time.Second)
+	if err := os.WriteFile(r.ts.snapshotPath(), []byte("\x1f\x8b damaged"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	b := r.crash(20 * time.Second)
+	if st, _ := r.sessionState(b, "alice", "a1"); st != "" && st != board.StateEnded {
+		t.Errorf("alice's session that ended between the two whole saves is %s", st)
+	}
+	if got := r.hookOn(b, board.KindPreEdit, "bob", "b1", where("bob"), "svc/a.go"); got.Decision != board.DecisionAllow {
+		t.Errorf("bob's edit of the file alice committed and released: %s\n%s", got.Decision, got.Reason)
 	}
 }
 

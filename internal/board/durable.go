@@ -29,8 +29,8 @@ import (
 // more at all. So the durable part also holds the live sessions of the claims
 // that hold exclusive intents, with what their liveness is read from, and
 // which sessions ended and which claims were taken off the board since the
-// board was last saved whole, which a restore then applies to the older
-// snapshot.
+// oldest snapshot a restore may read was saved (SnapshotSaved), which a
+// restore then applies to an older snapshot.
 
 // durableFormat is the format of a durable part this board writes.
 const durableFormat = 1
@@ -56,8 +56,8 @@ type durableState struct {
 	// from.
 	Sessions []*session `json:"sessions,omitempty"`
 	// Ended are the keys of the sessions that ended, and Removed the IDs of
-	// the claims taken off the board, since the board was last saved whole
-	// (Board.SnapshotSaved), each in order.
+	// the claims taken off the board, since the oldest snapshot a restore
+	// may read (Board.SnapshotSaved), each in order.
 	Ended   []string `json:"ended,omitempty"`
 	Removed []string `json:"removed,omitempty"`
 }
@@ -433,8 +433,8 @@ func (b *Board) doubt(sessions []*session) {
 }
 
 // noteEnded notes, for the durable part, that session s ended, if it did
-// (end), or that it reports again, if it ended since the board was last
-// saved whole.
+// (end), or that it reports again, if it ended since the oldest snapshot a
+// restore may read.
 func (b *Board) noteEnded(s *session, end bool) {
 	switch {
 	case end:
@@ -455,10 +455,11 @@ func (b *Board) noteRemoved(c *claim) {
 }
 
 // maxNoted bounds the sessions that ended, and the claims taken off the
-// board, the durable part says were since the board was last saved whole.
-// The acceptance churn ends about 1,500 sessions in the 5 minutes between
-// whole saves; this many are held only while those saves fail, and past it
-// a crash brings back the earliest.
+// board, the durable part says were since the oldest snapshot a restore may
+// read. The acceptance churn ends about 1,500 sessions in the 5 minutes
+// between whole saves, 3,000 over the two whole saves a server keeps; this
+// many are held only while those saves fail, and past it a crash brings
+// back the earliest.
 const maxNoted = 20_000
 
 // boundNoted lets go of the earliest noted past maxNoted, to nine tenths of
@@ -478,9 +479,11 @@ func boundNoted(noted map[string]uint64) {
 	}
 }
 
-// SnapshotSaved tells the board that a snapshot holding its version was
-// saved whole (WriteSnapshot): the sessions that ended and the claims taken
-// off it by then are in it, and its durable part need not say so any more.
+// SnapshotSaved tells the board that every snapshot of it a restore may
+// read holds version at least (WriteSnapshot): the sessions that ended and
+// the claims taken off it by then are in each, and its durable part need not
+// say so any more. A server that keeps the snapshot before its last, should
+// the last be found damaged, passes the version that one holds.
 func (b *Board) SnapshotSaved(version uint64) {
 	b.mu.Lock()
 	defer b.mu.Unlock()

@@ -216,9 +216,9 @@ type Board struct {
 	mail map[string]*mailbox
 
 	// ended holds the sessions that ended, by key, and removed the claims
-	// taken off the board, by ID, since the board was last saved whole
-	// (SnapshotSaved), each with the board's version when it was: the
-	// durable part says so, as the snapshot does not (durable.go).
+	// taken off the board, by ID, that a snapshot a restore may read does
+	// not hold (SnapshotSaved), each with the board's version when it was:
+	// the durable part says so, as that snapshot does not (durable.go).
 	ended, removed map[string]uint64
 	// restored is the snapshot the board was restored from, if any.
 	restored *restoredFrom
