@@ -83,8 +83,11 @@ func (c *boardBuilds) waiting(repo string) int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	e := c.repos[repo]
-	if repo == nowhere {
+	switch repo {
+	case nowhere:
 		e = c.empty
+	case allRepos:
+		e = c.all
 	}
 	if e != nil && e.next != nil {
 		return e.next.requests
@@ -751,5 +754,108 @@ func TestAgentBoardText(t *testing.T) {
 		if code, _ := text(bad); code != http.StatusBadRequest {
 			t.Errorf("%s: %d", bad, code)
 		}
+	}
+}
+
+// wrapList replaces the function builds read the repository list with.
+func (c *boardBuilds) wrapList(wrap func(func() []board.RepoSummary) func() []board.RepoSummary) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.list = wrap(c.list)
+}
+
+// Every open dashboard asks for the repository list every 15 s, and their
+// timers line up: the list is read once for all who ask at once, as a
+// repository's board is, and not once each under the board's lock.
+func TestReposSharesBuilds(t *testing.T) {
+	ts := newTestServer(t)
+	ts.do(t, "POST", "/v1/hook", "alice", hookEv(board.KindPostEdit, "alice", "a1", "x/y.go"), nil)
+	read, release := make(chan struct{}), make(chan struct{})
+	free := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(free)
+	var calls atomic.Int64
+	ts.boards.wrapList(func(list func() []board.RepoSummary) func() []board.RepoSummary {
+		return func() []board.RepoSummary {
+			l := list()
+			if calls.Add(1) == 1 {
+				close(read)
+				<-release
+			}
+			return l
+		}
+	})
+	const readers = 50
+	var wg sync.WaitGroup
+	got := make([][]board.RepoSummary, readers)
+	codes := make([]int, readers)
+	get := func(i int) {
+		defer wg.Done()
+		codes[i] = ts.do(t, http.MethodGet, "/v1/repos", "bob", nil, &got[i])
+	}
+	wg.Add(1)
+	go get(0)
+	select {
+	case <-read:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the repository list was not read through the builds")
+	}
+	for i := 1; i < readers; i++ {
+		wg.Add(1)
+		go get(i)
+	}
+	waitFor(t, "the readers to queue", func() bool { return ts.boards.waiting(allRepos) == readers-1 })
+	free()
+	wg.Wait()
+	if n := calls.Load(); n > 2 {
+		t.Fatalf("%d readers read the repository list %d times, want at most 2", readers, n)
+	}
+	for i := range readers {
+		if codes[i] != http.StatusOK || len(got[i]) != 1 || got[i][0].Repo != repo || got[i][0].Epoch != ts.epoch {
+			t.Fatalf("reader %d: %d %+v", i, codes[i], got[i])
+		}
+	}
+	// The list is written as before.
+	rec := httptest.NewRecorder()
+	writeJSON(rec, http.StatusOK, ts.repoList())
+	req, _ := http.NewRequest(http.MethodGet, ts.url+"/v1/repos", nil)
+	req.Header.Set("Authorization", "Bearer "+ts.tokens["bob"])
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	if !bytes.Equal(body, rec.Body.Bytes()) || resp.Header.Get("Content-Type") != "application/json" {
+		t.Fatalf("the list changed: %q %q, want %q", resp.Header.Get("Content-Type"), body, rec.Body.Bytes())
+	}
+}
+
+// An agent's text is read under the server's slot, one read of a whole
+// repository at a time, so a hook waits behind at most one: agents and
+// scripts asking at once would otherwise queue on the board's lock ahead of
+// hooks.
+func TestAgentBoardTakesTheSlot(t *testing.T) {
+	ts := newTestServer(t)
+	ts.do(t, "POST", "/v1/hook", "alice", hookEv(board.KindPostEdit, "alice", "a1", "x/y.go"), nil)
+	ts.boards.slot <- struct{}{}
+	done := make(chan int, 1)
+	go func() {
+		w := where("bob")
+		done <- ts.do(t, http.MethodGet, "/v1/board?format=text&limit=20&repo="+repo+"&host="+w.Host+"&worktree="+w.Worktree,
+			"bob", nil, nil)
+	}()
+	select {
+	case code := <-done:
+		t.Fatalf("an agent's text was read while another read held the slot: %d", code)
+	case <-time.After(100 * time.Millisecond):
+	}
+	<-ts.boards.slot
+	select {
+	case code := <-done:
+		if code != http.StatusOK {
+			t.Fatalf("agent text: %d", code)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the agent's text was not read once the slot was free")
 	}
 }

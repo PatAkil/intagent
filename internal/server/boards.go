@@ -27,6 +27,9 @@ import (
 // have builds of their own. Every name it has nothing of shares one paced
 // build of the empty view, which each request's answer then names: made-up
 // names take no repository's place, and cost no more however many there are.
+// The repository list, which every dashboard asks for on the same timer and
+// which walks every claim and session on the board, is shared and paced the
+// same way.
 
 const (
 	// boardSpacing is the least time between the starts of two builds of one
@@ -41,6 +44,9 @@ const (
 	// nowhere is the repository the shared build of the empty view reads: a
 	// request names none, since the server refuses one without a name.
 	nowhere = ""
+	// allRepos keys the builds of the repository list. No repository's name
+	// holds a space (board.RepoID).
+	allRepos = "all repositories"
 )
 
 // errBoardBuild is what the requests sharing a build get when it failed.
@@ -81,6 +87,8 @@ type boardBuilds struct {
 	// shows reports whether the board has anything of a repository to show;
 	// the others share the builds of the empty view, paced by empty.
 	shows func(repo string) bool
+	// list reads the repository list, for the builds paced by all.
+	list func() []board.RepoSummary
 	// load reports the server's load status for answers to carry.
 	load func() *LoadStatus
 	// clock and sleep pace builds. They are the process's own clock, not the
@@ -91,22 +99,26 @@ type boardBuilds struct {
 	// encode makes a build's answer from its view; a field for tests.
 	encode func(b *boardBuild, v board.View)
 	// slot lets one build read a board at a time across the server, so a
-	// hook waits behind at most one read. Encoding takes no lock and runs
-	// outside it. Encodings stay few all the same: each repository encodes
-	// one build at a time, and builds start no faster than they can read.
+	// hook waits behind at most one read; other reads of a whole repository
+	// or of the whole board take it too (reading). Encoding takes no lock
+	// and runs outside it. Encodings stay few all the same: each repository
+	// encodes one build at a time, and builds start no faster than they can
+	// read.
 	slot chan struct{}
 
 	mu    sync.Mutex
 	repos map[string]*boardEntry
 	empty *boardEntry // paces the builds of nowhere, kept apart from repos
+	all   *boardEntry // paces the builds of the repository list
 }
 
-func newBoardBuilds(view func(repo string) board.View, shows func(repo string) bool, load func() *LoadStatus,
-	log *slog.Logger,
+func newBoardBuilds(view func(repo string) board.View, shows func(repo string) bool, list func() []board.RepoSummary,
+	load func() *LoadStatus, log *slog.Logger,
 ) *boardBuilds {
 	return &boardBuilds{
 		view:   view,
 		shows:  shows,
+		list:   list,
 		load:   load,
 		encode: encodeBoard,
 		clock:  time.Now,
@@ -115,6 +127,7 @@ func newBoardBuilds(view func(repo string) board.View, shows func(repo string) b
 		slot:   make(chan struct{}, 1),
 		repos:  map[string]*boardEntry{},
 		empty:  &boardEntry{turn: make(chan struct{}, 1)},
+		all:    &boardEntry{turn: make(chan struct{}, 1)},
 	}
 }
 
@@ -133,8 +146,23 @@ func (c *boardBuilds) get(ctx context.Context, repo string) (*boardBuild, error)
 	return named(b, repo)
 }
 
-// join returns a build of repo's board that read the board after join was
-// called, shared with the requests that join it.
+// repoList returns a build of the repository list that read the board after
+// repoList was called, shared as a repository's builds are.
+func (c *boardBuilds) repoList(ctx context.Context) (*boardBuild, error) {
+	return c.join(ctx, allRepos)
+}
+
+// reading runs read, a read of a whole repository or of the whole board under
+// its lock, once no build or other such read is reading.
+func (c *boardBuilds) reading(read func()) {
+	c.slot <- struct{}{}
+	defer func() { <-c.slot }()
+	read()
+}
+
+// join returns a build of repo's board, or of the list for allRepos, that
+// read the board after join was called, shared with the requests that join
+// it.
 func (c *boardBuilds) join(ctx context.Context, repo string) (*boardBuild, error) {
 	c.mu.Lock()
 	e := c.entry(repo)
@@ -161,8 +189,11 @@ func (c *boardBuilds) join(ctx context.Context, repo string) (*boardBuild, error
 // entry returns repo's entry, first dropping entries with nothing left to
 // pace. When every slot is taken it returns an entry that is not kept.
 func (c *boardBuilds) entry(repo string) *boardEntry {
-	if repo == nowhere {
+	switch repo {
+	case nowhere:
 		return c.empty
+	case allRepos:
+		return c.all
 	}
 	if e := c.repos[repo]; e != nil {
 		return e
@@ -193,8 +224,8 @@ func named(b *boardBuild, repo string) (*boardBuild, error) {
 	return &boardBuild{requests: 1, view: v, json: body, etag: boardETag(body), load: b.load}, nil
 }
 
-// run makes build b of repo once the build before it has finished and its
-// gap has passed.
+// run makes build b of repo, or of the list for allRepos, once the build
+// before it has finished and its gap has passed.
 func (c *boardBuilds) run(repo string, e *boardEntry, b *boardBuild) {
 	b.err = errBoardBuild // kept if the build panics: its requests then fail, not hang
 	defer func() {
@@ -211,7 +242,16 @@ func (c *boardBuilds) run(repo string, e *boardEntry, b *boardBuild) {
 	if wait > 0 {
 		c.sleep(wait)
 	}
-	v, requests, read := c.read(repo, e, b)
+	if repo == allRepos {
+		var list []board.RepoSummary
+		requests, read := c.read(e, b, func() { list = c.list() })
+		b.json, b.err = listJSON(list)
+		c.log.Debug("repository list built", "requests", requests, "read", read.Round(time.Microsecond),
+			"bytes", len(b.json))
+		return
+	}
+	var v board.View
+	requests, read := c.read(e, b, func() { v = c.view(repo) })
 	b.load = c.load()
 	start := c.clock()
 	c.encode(b, v)
@@ -219,11 +259,11 @@ func (c *boardBuilds) run(repo string, e *boardEntry, b *boardBuild) {
 		"encoded", c.clock().Sub(start).Round(time.Microsecond), "bytes", len(b.json), "gzip_bytes", len(b.gz))
 }
 
-// read reads repo's board for build b once no other build is reading one,
-// and notes in e when it started and how long it took. b stops taking
-// requests just before. It returns the view, the requests sharing it and the
-// time it took.
-func (c *boardBuilds) read(repo string, e *boardEntry, b *boardBuild) (board.View, int, time.Duration) {
+// read runs fn, which reads the board for build b, once no other build is
+// reading, and notes in e when it started and how long it took. b stops
+// taking requests just before. It returns the requests sharing b and the
+// time the read took.
+func (c *boardBuilds) read(e *boardEntry, b *boardBuild, fn func()) (int, time.Duration) {
 	c.slot <- struct{}{}
 	defer func() { <-c.slot }()
 	c.mu.Lock()
@@ -233,12 +273,21 @@ func (c *boardBuilds) read(repo string, e *boardEntry, b *boardBuild) (board.Vie
 	requests := b.requests
 	c.mu.Unlock()
 
-	v := c.view(repo)
+	fn()
 	took := c.clock().Sub(start)
 	c.mu.Lock()
 	e.took = took
 	c.mu.Unlock()
-	return v, requests, took
+	return requests, took
+}
+
+// listJSON is the repository list as writeJSON would write it.
+func listJSON(list []board.RepoSummary) ([]byte, error) {
+	body, err := json.Marshal(list)
+	if err != nil {
+		return nil, err
+	}
+	return append(body, '\n'), nil
 }
 
 // encodeBoard makes b's answer from v and b.load: the JSON writeJSON would

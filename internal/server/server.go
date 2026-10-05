@@ -193,7 +193,7 @@ func New(o Options) (*Server, error) {
 		return nil, err
 	}
 	s.epoch = hex.EncodeToString(epoch[:8])
-	s.boards = newBoardBuilds(s.boardView, s.board.Shows, s.boardLoad, s.log)
+	s.boards = newBoardBuilds(s.boardView, s.board.Shows, s.repoList, s.boardLoad, s.log)
 	return s, nil
 }
 
@@ -759,15 +759,40 @@ func (s *Server) handleAgentBoard(w http.ResponseWriter, r *http.Request, repo s
 		return
 	}
 	where := board.Where{Repo: repo, Host: q.Get("host"), Worktree: q.Get("worktree")}
-	writeText(w, s.board.AgentText(s.now(), where, memberFrom(r), limit)+"\n")
+	// It ranks the repository's claims under the board's lock, as a build
+	// reads them, and takes the builds' slot: agents asking at once then
+	// keep at most one such read ahead of a hook.
+	var text string
+	s.boards.reading(func() { text = s.board.AgentText(s.now(), where, memberFrom(r), limit) })
+	writeText(w, text+"\n")
 }
 
-func (s *Server) handleRepos(w http.ResponseWriter, _ *http.Request) {
+// handleRepos answers with the repository list, read once for all who ask at
+// once and at most a few times a second (boardBuilds).
+func (s *Server) handleRepos(w http.ResponseWriter, r *http.Request) {
+	b, err := s.boards.repoList(r.Context())
+	if err != nil {
+		if r.Context().Err() == nil {
+			s.log.Error("repository list failed", "err", err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+		}
+		return
+	}
+	h := w.Header()
+	h.Set("Content-Type", "application/json")
+	h.Set("Content-Length", strconv.Itoa(len(b.json)))
+	w.WriteHeader(http.StatusOK)
+	_, _ = progress(w).Write(b.json)
+}
+
+// repoList is the repository list a build reads: every repository with
+// claims, each with the server's epoch.
+func (s *Server) repoList() []board.RepoSummary {
 	repos := s.board.Repos(s.now())
 	for i := range repos {
 		repos[i].Epoch = s.epoch
 	}
-	writeJSON(w, http.StatusOK, repos)
+	return repos
 }
 
 // acceptsGzip reports whether an Accept-Encoding header allows gzip: named

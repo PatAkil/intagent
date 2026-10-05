@@ -276,7 +276,11 @@ repository of 300 claims at 2000 files each, 13 ms of a 310 ms read). Encoding t
 limit. Up to 256 repositories are paced at once, and only those the board has something of: claims, counts, or
 activities in its feed. Anyone can name any repository in `?repo=`; every name the board has nothing of shares one
 paced build of the empty view, which each answer then names. Made-up names, however many, then cost a few builds a
-second, and cannot take the places of real repositories and leave their dashboards each building their own.
+second, and cannot take the places of real repositories and leave their dashboards each building their own. The
+repository list (`/v1/repos`), which every dashboard asks for on the same 15-second timer and which walks every claim
+and session on the board under its lock, is shared and paced the same way, so tabs opened together cost one read of it
+rather than one each. An agent's text (`team_board`) is the caller's own, so it is not shared, but it waits for the
+same turn as builds: agents asking at once keep at most one such read ahead of a hook.
 
 The dashboard follows a repository through a server-sent event stream. Each activity is encoded once, and the server
 keeps the last 1024 publishes, up to 16 MB of them, in one ring that every stream reads at its own pace, so publishing
@@ -307,7 +311,7 @@ All endpoints take and return JSON and require `Authorization: Bearer <token>`, 
 | `POST /v1/check` | MCP, CLI, guard | Who else claims or touched these paths, the first 200 of them (`unchecked` counts the rest, and `text` says so; intagent's CLI, MCP tool and guard send more in several checks). Read-only. |
 | `POST /v1/notes` | MCP, CLI | Send a note to a claim, a member or whoever changed a path. A note to a member with no agent running in the repository waits for their next session there (`held_for`). |
 | `GET /v1/board` | CLI, dashboard | Every claim and session in a repo, with derived states. Gzip when the client takes it, and a weak `ETag` for `If-None-Match`. Its `epoch` changes when the server restarts, and `server` is there while agents' edits go ahead unchecked (below). With `format=text`, the board as text; adding `limit`, `host` and `worktree` gives an agent at most `limit` claims (16 KB), those sharing files or areas with its own first, as the MCP `team_board` tool shows them. |
-| `GET /v1/repos` | dashboard | The repositories with claims, each with the server's `epoch`. |
+| `GET /v1/repos` | dashboard | The repositories with claims, each with the server's `epoch`. Read once for all who ask at once, at most every 250 ms. |
 | `GET /v1/stream` | dashboard | Server-sent events. |
 | `GET /v1/whoami` | CLI | The member a token belongs to. |
 | `GET /healthz` | monitors | Up, and whether agents' edits go ahead unchecked: `ok`, `version`, `degraded`, `since`, `pre_edits_60s` and `unchecked_60s`; with a data directory, `snapshot`: `ok`, `saved_at`, and while saves fail `failing_since`, `attempts` and `error` (the operation and the system's error, no paths). Always 200, except with `?strict=1`: 503 while degraded or while saves fail. |
