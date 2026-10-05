@@ -2465,7 +2465,9 @@ func (b *Board) Sweep(now time.Time) {
 	// Which claims still have a session, and which a live one, once old
 	// sessions are dropped: gathered in this pass, not by a search of every
 	// session for every claim. A session holds, and keeps live, the claims
-	// it reported from before it moved (Also) as it does its own.
+	// it reported from before it moved (Also) as it does its own, but lets
+	// go of one with nothing in it that it left a while ago, such as the
+	// worktree of a subagent that changed nothing, which its agent removed.
 	live, held := map[string]bool{}, make(map[string]bool, len(b.claims))
 	var ended, stalled []*session // those kept that are not live, in the order of keys
 	for _, k := range keys {
@@ -2501,7 +2503,12 @@ func (b *Board) Sweep(now time.Time) {
 			continue
 		}
 		held[s.ClaimID] = true
-		for id := range s.Also {
+		for id, at := range s.Also {
+			if o := b.claims[id]; len(o.Intents) == 0 && len(o.Footprint) == 0 && now.Sub(at) > b.cfg.StallAfter {
+				b.alsoOff(s, id)
+				changed = true
+				continue
+			}
 			held[id] = true
 		}
 		switch {

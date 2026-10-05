@@ -61,17 +61,19 @@ footprint still produces warnings, but its exclusive intents stop blocking. A cl
 and an empty footprint is released. Claims with no activity for `forget_after` (7 days) are removed.
 
 A session that reports from another worktree (an agent that moved there under the same session id, as Claude Code's
-`EnterWorktree` does, or subagents working in worktrees of their own) keeps every claim it reported from as its own
-for liveness: each is active while the session is live, so a reservation made in one worktree keeps refusing
-teammates while the agent works in another, and a sweep neither releases nor forgets it. To the session, and to any
-other session in the worktree it reports from, a claim kept live only by sessions that moved from it to there is their
-own work, as their own claim is: what they left there neither refuses nor warns them, nor is it news to them there; git
-finding their changes inside a reservation they left is no breach; `intagent guard` does not refuse their commit; and
-they can declare the same reservation where they now work. (Claude Code's MCP server declares in the directory Claude
-started in, so a reservation declared after `EnterWorktree` lands in the worktree the agent left.) A claim another
-agent is at work in, or keeps live from a third worktree, counts as before. A session keeps the 32 claims it reported
-from last, the dashboard lists it under each and counts it once, and its end releases each that has nothing left to
-tell anyone. The cost is that a reservation in a worktree the agent has left for good blocks teammates until the
+`EnterWorktree` does, or subagents working in worktrees of their own) keeps every claim it reported from as its own for
+liveness: each is active while the session is live, so a reservation made in one worktree keeps refusing teammates while
+the agent works in another, and a sweep neither releases nor forgets it. To the session, and to any other session in the
+worktree it reports from, a claim kept live only by sessions that moved from it to there is their own work, as their own
+claim is: what they left there neither refuses nor warns them, nor is it news to them there; git finding their changes
+inside a reservation they left is no breach; `intagent guard` does not refuse their commit; and they can declare the
+same reservation where they now work. (Claude Code's MCP server declares in the directory Claude started in, so a
+reservation declared after `EnterWorktree` lands in the worktree the agent left.) A claim another agent is at work in,
+or keeps live from a third worktree, counts as before. A session keeps the 32 claims it reported from last, the
+dashboard lists it under each and counts it in the repository it reports from, and greetings count a claim's agents. A
+claim with nothing in it, as the worktree of a subagent that changed nothing is, the session lets go of once it has not
+reported from it for `stall_after`, and the sweep releases it; and the session's end releases each that has nothing left
+to tell anyone. The cost is that a reservation in a worktree the agent has left for good blocks teammates until the
 session ends or goes quiet.
 
 What the board keeps is bounded whatever clients send, and nothing past a bound refuses a hook. A claim keeps the 20

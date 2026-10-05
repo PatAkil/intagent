@@ -4,7 +4,6 @@ import (
 	"cmp"
 	"fmt"
 	"slices"
-	"sort"
 	"strings"
 	"time"
 )
@@ -207,7 +206,7 @@ func insertTop[T any](top []T, x T, k int, order func(a, b T) int) []T {
 func (b *Board) summarizeClaim(now time.Time, o *claim, active bool) string {
 	var sb strings.Builder
 	sb.WriteString("- " + o.Member)
-	if agents := b.agentsOf(now, o); agents != "" {
+	if agents := b.agentsCounted(now, o.ID); agents != "" {
 		sb.WriteString(" (" + agents + ")")
 	}
 	if o.Branch != "" {
@@ -229,19 +228,6 @@ func (b *Board) summarizeClaim(now time.Time, o *claim, active bool) string {
 		}
 	}
 	return sb.String()
-}
-
-// agentsOf describes the live sessions on a claim, e.g. "claude-code working",
-// those that moved to another worktree since (Also) included.
-func (b *Board) agentsOf(now time.Time, c *claim) string {
-	var parts []string
-	for s := range b.sessionsOf(c.ID) {
-		if st := b.state(now, s); st != StateEnded && st != StateGone {
-			parts = append(parts, string(s.Agent)+" "+string(st))
-		}
-	}
-	sort.Strings(parts)
-	return strings.Join(parts, ", ")
 }
 
 // fileAt is a changed file, taken out of a footprint to be ordered.

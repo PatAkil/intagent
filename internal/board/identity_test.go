@@ -303,7 +303,7 @@ func TestAWorktreeMoveKeepsItsReservation(t *testing.T) {
 	if r := h.b.Repos(h.now)[0]; r.ActiveClaims != 3 || r.LiveSessions != 2 {
 		t.Errorf("repos: %+v, want 3 active claims and 2 live sessions", r)
 	}
-	if got := h.b.agentsOf(h.now, h.b.findClaim("alice", whereOf("alice"))); got != "claude-code working" {
+	if got := h.b.agentsCounted(h.now, h.b.findClaim("alice", whereOf("alice")).ID); got != "claude-code working" {
 		t.Errorf("the greeting says alice's first worktree has %q", got)
 	}
 	// Back in her first worktree, alice's agent edits inside her own reservation.
@@ -483,6 +483,46 @@ func TestANoteWaitsForAMemberWhoseAgentMovedToAnotherRepository(t *testing.T) {
 	h.advance(time.Minute)
 	if ctx := h.at(KindSessionStart, "bob", "fresh", "b2").Context; !strings.Contains(ctx, "go.mod is mine today") {
 		t.Fatalf("bob's next session here, in a fresh worktree, was told:\n%s", ctx)
+	}
+}
+
+// A session is counted among a repository's live sessions only where it
+// reports from, in the view as in the list of repositories, though it is
+// listed under each claim it keeps live; and a greeting counts a claim's
+// agents rather than naming each. Before, a session that moved on to
+// another repository was counted in the view of the one it left but not in
+// the list, and a claim three agents had moved from read "claude-code
+// working" three times in every teammate's greeting.
+func TestMovedSessionsAreCountedOnce(t *testing.T) {
+	h := newHarness(t)
+	h.declare("alice", ModeShared, "", "docs/**")
+	other := worktree("lib")
+	other.Repo = "github.com/acme/lib"
+	for _, id := range []string{"s1", "s2", "s3"} {
+		ev := HookEvent{Kind: KindSessionStart, Member: "alice", Agent: AgentClaudeCode, SessionID: id, Where: whereOf("alice")}
+		if _, err := h.b.Hook(h.now, ev); err != nil {
+			t.Fatal(err)
+		}
+		ev.Kind, ev.Where = KindPrompt, worktree(id)
+		if id == "s1" {
+			ev.Where = other
+		}
+		if _, err := h.b.Hook(h.now, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	v := h.b.View(h.now, repo)
+	first := slices.IndexFunc(v.Claims, func(c ClaimView) bool { return c.Worktree == whereOf("alice").Worktree })
+	if v.Sessions != 2 || first < 0 || !v.Claims[first].Active || len(v.Claims[first].Sessions) != 3 {
+		t.Fatalf("view: %d live sessions, want 2; the first claim: %+v, want it active with all three", v.Sessions, v.Claims[max(first, 0)])
+	}
+	for _, r := range h.b.Repos(h.now) {
+		if want := map[string]int{repo: 2, other.Repo: 1}[r.Repo]; r.LiveSessions != want || h.b.View(h.now, r.Repo).Sessions != want {
+			t.Errorf("%s: %d live sessions listed, %d in its view; want %d", r.Repo, r.LiveSessions, h.b.View(h.now, r.Repo).Sessions, want)
+		}
+	}
+	if ctx := h.hook(KindSessionStart, "bob", "b1").Context; !strings.Contains(ctx, "- alice (3 claude-code working) on feat/alice;") {
+		t.Errorf("bob's greeting:\n%s", ctx)
 	}
 }
 
@@ -711,8 +751,10 @@ func TestARestoreRebuildsWhatSessionsKeepLive(t *testing.T) {
 
 // A sweep treats the claims a session moved from as it treats the session's
 // own: kept, and not forgotten, while the session is live, however long ago
-// it last reported from them; and not released while a session that may
-// come back, stalled, holds them.
+// it last reported from them. But it lets go of one with nothing in it that
+// the session left longer ago than a session takes to stall, as an agent
+// removes the worktree of a subagent that changed nothing, and releases it.
+// Before, those stayed on the board, up to 32 a session, until it ended.
 func TestASweepKeepsWhatAMovedSessionKeepsLive(t *testing.T) {
 	h := newHarness(t)
 	h.aliceFrom(KindSessionStart, whereOf("alice"))
@@ -731,13 +773,20 @@ func TestASweepKeepsWhatAMovedSessionKeepsLive(t *testing.T) {
 		t.Fatalf("bob's edit inside alice's reservation, a week on: %s", res.Decision)
 	}
 
-	// A claim with nothing in it, moved from, then the session stalls.
-	h.aliceFrom(KindToolEnd, worktree("c"))
+	h.aliceFrom(KindPostEdit, worktree("c"), "svc/ledger/book.go")
 	h.aliceFrom(KindToolEnd, worktree("d"))
 	h.advance(h.b.cfg.StallAfter + time.Minute)
+	h.aliceFrom(KindToolEnd, worktree("e"))
+	h.aliceFrom(KindToolEnd, worktree("f"))
 	h.b.Sweep(h.now)
-	if h.b.findClaim("alice", worktree("c")) == nil {
-		t.Fatal("the sweep released the claim a stalled session moved from")
+	for _, w := range []struct {
+		where Where
+		kept  bool
+	}{{whereOf("alice"), true}, {worktree("b"), false}, {worktree("c"), true}, {worktree("d"), false}, {worktree("e"), true}} {
+		c := h.b.findClaim("alice", w.where)
+		if kept := c != nil && h.b.liveAt(h.now).claim(c.ID); kept != w.kept || (c == nil) == w.kept {
+			t.Errorf("claim in %s: on the board %t, kept live %t; want both %t", w.where.Worktree, c != nil, kept, w.kept)
+		}
 	}
 	mustIndex(t, h.b, "the sweeps")
 }

@@ -202,16 +202,25 @@ func (b *Board) oldIntentOverlaps(c *claim, in Intent, live map[string]bool) []C
 	return out
 }
 
-// oldAgentsOf is agentsOf as it was, over every session on the board.
+// oldAgentsOf is agentsOf as it was, over every session on the board, with
+// repeats counted as a greeting now counts them: what the oracle checks is
+// which sessions it describes.
 func (b *Board) oldAgentsOf(now time.Time, c *claim) string {
-	var parts []string
+	counts := map[string]int{}
 	for _, s := range b.sessions {
 		if s.ClaimID != c.ID {
 			continue
 		}
 		if st := b.state(now, s); st != StateEnded && st != StateGone {
-			parts = append(parts, string(s.Agent)+" "+string(st))
+			counts[string(s.Agent)+" "+string(st)]++
 		}
+	}
+	var parts []string
+	for k, n := range counts {
+		if n > 1 {
+			k = fmt.Sprintf("%d %s", n, k)
+		}
+		parts = append(parts, k)
 	}
 	sort.Strings(parts)
 	return strings.Join(parts, ", ")

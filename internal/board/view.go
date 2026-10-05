@@ -92,14 +92,15 @@ func (b *Board) View(now time.Time, repo string) View {
 		}
 	}
 	members := map[string]bool{}
-	// A session is listed under each claim it keeps live, and counted once.
-	live := map[string]bool{}
 	for _, c := range claims {
 		members[c.view.Member] = true
 		cv := c.view
+		// A session is listed under each claim it keeps live, and counted
+		// under the one it reports from, as Repos counts it: a session that
+		// moved to another repository is not counted in this one.
 		for _, s := range c.sessions {
-			if s.view.State.Live() {
-				live[s.key] = true
+			if s.here && s.view.State.Live() {
+				v.Sessions++
 			}
 		}
 		cv.Sessions = sessionViews(c.sessions)
@@ -128,7 +129,6 @@ func (b *Board) View(now time.Time, repo string) View {
 		v.Members = append(v.Members, m)
 	}
 	sort.Strings(v.Members)
-	v.Sessions = len(live)
 	return v
 }
 
@@ -145,6 +145,7 @@ type claimCopy struct {
 type sessionCopy struct {
 	key  string
 	view SessionView
+	here bool // the session reports from the claim
 }
 
 // viewCopy copies, under the lock, what View shows of a repository: the
@@ -170,7 +171,7 @@ func (b *Board) viewCopy(now time.Time, repo string) (View, []claimCopy) {
 		}
 		for s := range b.sessionsOf(c.ID) {
 			cc.sessions = append(cc.sessions, sessionCopy{key: s.Key, view: SessionView{ID: s.ID, Agent: s.Agent, State: b.state(now, s),
-				Tool: s.Tool, ToolSince: s.ToolSince, StartedAt: s.StartedAt, LastSeen: s.LastSeen}})
+				Tool: s.Tool, ToolSince: s.ToolSince, StartedAt: s.StartedAt, LastSeen: s.LastSeen}, here: s.ClaimID == c.ID})
 		}
 		for _, it := range c.Inbox {
 			if now.Sub(it.At) < inboxTTL && len(it.DeliveredTo) == 0 {
