@@ -302,9 +302,10 @@ type session struct {
 	// Prompted is set once a prompt of the session's has named its claim's
 	// task: a later one does not name it again.
 	Prompted bool `json:"prompted,omitempty"`
-	// Heard holds, for each claim the session reports from, the Seq of the
-	// newest item of its inbox the session heard (deliverInbox). Only hear
-	// sets it, and replaces it rather than change it: a snapshot shares it.
+	// Heard holds, for each claim the session reports from, or reported from
+	// and is still on the board (up to maxHeard), the Seq of the newest item
+	// of its inbox the session heard (deliverInbox). Only hear sets it, and
+	// replaces it rather than change it: a snapshot shares it.
 	Heard map[string]uint64 `json:"heard,omitempty"`
 	// Reported is the last derived state announced as an activity.
 	Reported State `json:"reported,omitempty"`

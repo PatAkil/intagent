@@ -1073,6 +1073,44 @@ func TestEachSessionHearsAnItemOnce(t *testing.T) {
 	}
 }
 
+// A session remembers what it heard in a worktree it left while that
+// worktree's claim is on the board, after the sweep lets the session go of
+// it: back there, it does not hear again, as earlier news, what it heard
+// before. It used to forget it at the first news it heard elsewhere.
+func TestHeardOutlastsWhatASessionKeepsLive(t *testing.T) {
+	h := newHarness(t)
+	h.at(KindPrompt, "bob", "a", "b1")
+	h.at(KindPrompt, "bob", "a", "b2") // which keeps a's claim on the board
+	if _, err := h.b.Note(h.now, NoteRequest{Member: "alice", Where: whereOf("alice"), To: "bob", Text: "first"}); err != nil {
+		t.Fatal(err)
+	}
+	if ctx := h.at(KindPrompt, "bob", "a", "b1").Context; !strings.Contains(ctx, "first") {
+		t.Fatalf("b1 did not hear the note:\n%s", ctx)
+	}
+	h.advance(time.Minute)
+	h.at(KindPrompt, "bob", "b", "b1") // b1 moves to b, and keeps a live
+	for range 3 {
+		h.advance(5 * time.Minute)
+		h.at(KindPrompt, "bob", "a", "b2")
+		h.at(KindPrompt, "bob", "b", "b1")
+		h.b.Sweep(h.now)
+	}
+	if _, ok := h.b.sessions[sessionKey("bob", AgentClaudeCode, "b1")].Also[h.claimIn("bob", "a").ID]; ok {
+		t.Fatal("the sweep did not let b1 go of a, which the test needs")
+	}
+	if _, err := h.b.Note(h.now, NoteRequest{Member: "alice", Where: whereOf("alice"), To: h.claimIn("bob", "b").ID,
+		Text: "second"}); err != nil {
+		t.Fatal(err)
+	}
+	if ctx := h.at(KindPrompt, "bob", "b", "b1").Context; !strings.Contains(ctx, "second") {
+		t.Fatalf("b1 did not hear the note in b:\n%s", ctx)
+	}
+	h.advance(time.Minute)
+	if ctx := h.at(KindPrompt, "bob", "a", "b1").Context; strings.Contains(ctx, "first") {
+		t.Errorf("b1, back in a, heard again the note it heard there:\n%s", ctx)
+	}
+}
+
 // A snapshot from an older server, whose inbox items name the sessions that
 // heard them, is restored with each session hearing next what it had not
 // heard, as it would have, and saved again without the names.

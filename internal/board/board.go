@@ -2079,24 +2079,45 @@ func (b *Board) deliverInbox(now time.Time, c *claim, s *session) string {
 		it.Shown = true
 		heard = max(heard, it.Seq)
 	}
-	s.hear(c.ID, heard)
+	b.hear(s, c.ID, heard)
 	return b.renderInbox(now, fresh, earlier)
 }
 
-// hear notes that the session heard claim id's inbox up to the item seq. It
-// puts a new map in Heard, which a snapshot may share, holding only the claims
-// the session reports from: its own and those it keeps live (Also).
-func (s *session) hear(id string, seq uint64) {
+// maxHeard bounds the claims a session remembers what it heard of: those it
+// reports from, and as many of those it reported from before, still on the
+// board, as make up twice maxAlsoClaims.
+const maxHeard = 2 * maxAlsoClaims
+
+// hear notes that session s heard claim id's inbox up to the item seq. It
+// puts a new map in Heard, which a snapshot may share, holding what s heard of
+// the claims it reports from (its own and Also), and of those it reported from
+// before that are still on the board, up to maxHeard, in order of ID: a
+// session the sweep let go of a worktree it left (Also), which comes back to
+// it, does not hear its news again.
+func (b *Board) hear(s *session, id string, seq uint64) {
 	if s.Heard[id] == seq {
 		return
 	}
 	m := make(map[string]uint64, len(s.Heard)+1)
+	var left []string // the claims it left that are on the board
 	for k, v := range s.Heard {
-		if _, also := s.Also[k]; also || k == s.ClaimID {
+		_, also := s.Also[k]
+		switch {
+		case k == id:
+		case also || k == s.ClaimID:
 			m[k] = v
+		case b.claims[k] != nil:
+			left = append(left, k)
 		}
 	}
 	m[id] = seq
+	slices.Sort(left)
+	for _, k := range left {
+		if len(m) >= maxHeard {
+			break
+		}
+		m[k] = s.Heard[k]
+	}
 	s.Heard = m
 }
 

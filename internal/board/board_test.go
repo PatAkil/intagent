@@ -1205,7 +1205,7 @@ func TestClonesShareNothingMutable(t *testing.T) {
 		}
 	}
 	heard := s.Heard
-	s.hear("c", 2)
+	New(DefaultConfig()).hear(s, "c", 2)
 	if heard["c"] != 1 || sc.Heard["c"] != 1 || s.Heard["c"] != 2 {
 		t.Errorf("hearing changed the map a snapshot shares: %v there, %v in the session", sc.Heard, s.Heard)
 	}

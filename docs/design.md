@@ -131,8 +131,10 @@ Awareness is symmetric. When an agent touches a file another claim has also touc
 delivered at its agent's next hook. Inbox items (notes and alerts) are delivered once per session through
 `additionalContext` on `SessionStart`, `UserPromptSubmit` and `PostToolUse`, five at a time, in the order they were
 queued. A session remembers, of each worktree it reports from, the newest item it heard there, not each item the
-sessions that heard it, which sessions coming and going for the day an item lives made hundreds; so a session the board
-let go of (an hour after it ended, or to make room) that reports again may hear an item again. Only claims still
+sessions that heard it, which sessions coming and going for the day an item lives made hundreds. It remembers it of a
+worktree it left as well, while that worktree's claim is on the board, for up to 64 worktrees; so a session the board
+let go of (an hour after it ended, or to make room) that reports again may hear an item again, as may one back from more
+worktrees than that. Only claims still
 listening are queued anything: those with a live session, or active within `dormant_for` (a day). A claim quiet for
 longer counts only as nearby work, so nothing is queued for it, nor remembered of what it would have been told; an agent
 that comes back to it hears of teammates' work from its greeting and its checks, and may hear again of a change it heard
