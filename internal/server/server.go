@@ -58,8 +58,10 @@ type Options struct {
 	Webhook WebhookConfig
 	// Streams caps the dashboard streams open at once.
 	Streams StreamLimits
-	// MaxConnections caps the connections open at once; more are closed as
-	// soon as they are accepted. Zero takes DefaultMaxConnections.
+	// MaxConnections caps the connections open at once. Past it, a new one
+	// takes the place of one waiting on its client (connTable), or is
+	// closed as soon as it is accepted when every one is busy. Zero takes
+	// DefaultMaxConnections.
 	MaxConnections int
 	// TLS serves HTTPS with this configuration; nil serves HTTP. Serve adds
 	// TLS to the listener it is given, which must not have it already.
@@ -371,14 +373,20 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 		MaxHeaderBytes: maxHeaderBytes,
 	}
 	// The limit counts TCP connections, below TLS, so that the HTTP server
-	// still sees each TLS connection as one, for HTTP/2.
-	ln = newLimitListener(ln, s.maxConns, s.log)
+	// still sees each TLS connection as one, for HTTP/2. It follows which
+	// are waiting on their clients through the server's hooks.
+	conns := newConnTable(s.maxConns, s.log)
+	ln = &limitListener{Listener: ln, t: conns}
 	if s.tls != nil {
 		ln = &tlsListener{Listener: ln, config: s.tls, timeout: s.handshakeTimeout}
 	}
+	srv.Handler, srv.ConnContext = conns.handler(srv.Handler), conns.context
 	srv.RegisterOnShutdown(func() { s.closeOnce.Do(func() { close(s.closing) }) })
 	fresh := &freshConns{conns: map[net.Conn]struct{}{}, quiet: s.unusedAfter}
-	srv.ConnState = fresh.track
+	srv.ConnState = func(c net.Conn, st http.ConnState) {
+		fresh.track(c, st)
+		conns.state(c, st)
+	}
 	srv.RegisterOnShutdown(fresh.closeAll)
 	// The sweeper and the persister stop as the server starts to stop: no
 	// sweep runs while it does, and a save in flight is abandoned for the

@@ -449,10 +449,26 @@ while degraded), in its log and, if asked, by webhook.
   declarations are paced per member and worktree, one at a time and five a second with a burst of 20 (429 past that),
   since each holds the board's lock for as long as its paths and patterns take; an orchestrator's agents, each in its
   own worktree, are paced apart. Hooks are never paced, since a fleet's agents share one token.
-- A client has 15 seconds to send a whole request and 16 KB for its headers, and past 4096 open connections
-  (`serve --max-connections`) the server closes new ones as soon as it accepts them, so a client that sends slowly, or
-  opens many connections, with a token or without, cannot use up the server's file descriptors and memory. A hook
-  turned away fails open at once instead of waiting out its timeout.
+- A client has 15 seconds to send a whole request and 16 KB for its headers, and the server keeps at most 4096
+  connections open (`serve --max-connections`), so a client that sends slowly, or opens many connections, with a token
+  or without, cannot use up the server's file descriptors and memory. Nor may it lock the team out by holding them: a
+  hook turned away fails open, so one client holding 4096 idle connections, which needs no token (`/healthz`), would
+  let every edit through unchecked. So past the cap a new connection takes the place of one that waits on its client:
+  from when it is accepted, or answered, until its next request has arrived whole, headers and body, a connection may
+  be idle, in its TLS handshake or sending slowly, and costs the server nothing to close. Room is made from the client
+  (an IP address, an IPv6 /64) with the most connections waiting, by closing the one that has waited longest, counted
+  from when it began to wait and not from its last byte: a flood of idle connections, or of slow ones trickling their
+  headers or bodies under the timeouts, gives way to itself and to newer arrivals before anyone else's connections do,
+  and trickling earns nothing. A kept-alive connection's wait starts again when its next request begins to arrive, so
+  a client that reuses one is not cut off mid-request for having been idle. Behind a reverse proxy every connection is
+  the proxy's, room is made from the longest waiting, and the proxy itself holds its clients' idle and slow
+  connections, opening one to the server only to send a whole request. A connection the server is working for (a hook
+  being decided, a dashboard's stream, an answer being written) is never closed to make room, unless a write to it has
+  waited a second or more for its client to read; only when every connection is so busy is a new one closed at once,
+  and its hook fails open at once instead of waiting out its timeout. Each change of a connection's state costs a lock
+  and a heap update over the clients waiting, so a member's hook gets in unless someone opens connections faster than
+  the server can accept them, which no bound on connections prevents. Against 4096 held idle connections, a member's
+  hooks went from all failing to none.
 - An answer that makes no progress for 15 seconds is cut off, so a client that stops reading mid-answer (a laptop
   put to sleep) does not hold the server's memory; a slow client that keeps reading gets all of it. That bounds each
   piece of an answer, not the whole: a client reading a board at a few kilobytes a second keeps its answer for as long

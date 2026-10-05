@@ -106,22 +106,24 @@ runs on another machine.
 | `--data` | `intagent-data` | Where the board's snapshot and the key that signs dashboard sessions are kept; `""` keeps both in memory. |
 | `--tls-cert`, `--tls-key` | none | Serve HTTPS. Give them twice, an ECDSA pair and an RSA pair, to serve both; empty ones are ignored. |
 | `--public-read` | off | Anyone who can reach the server can see the board without a token. |
-| `--max-connections` | 4096 | Connections open at once; past it, new ones are closed as soon as they are accepted. |
+| `--max-connections` | 4096 | Connections open at once. Past it, a new one takes the place of the one that has waited longest on its client (idle, or sending its request), from the client with the most such, and is closed as soon as it is accepted only when every connection is busy. |
 | `--max-streams` | 500 | Dashboards connected at once, in all; 0 allows none. |
 | `--max-member-streams` | 20 | Dashboards one member may have connected at once; 0 allows none. |
 | `--max-public-streams` | 100 | Dashboards connected without a token, with `--public-read`; 0 allows none. |
 | `--memory-limit` | 85% of the container's | A soft limit on the server's memory (`1536MiB`, `2GiB`), at which Go collects garbage harder; by default 85% of the memory limit of its cgroup, unless `GOMEMLIMIT` is set; `off` sets none. |
 | `--log-level` | `info` | `debug`, `info`, `warn` or `error`. |
 
-A client has 15 seconds to send a request and 16 KB for its headers, and an answer that makes no progress for 15
-seconds is cut off. Board answers sent to clients that do not take gzip may hold 32 MB at once; past that a large one
-is answered 503 with `Retry-After` (browsers and intagent's clients take gzip; for `curl`, add `--compressed`). A
-dashboard over its stream cap is answered 429 and tries again later. A path has at most 64 segments of 255 bytes, and
-an intent's pattern at most 32 segments, 4 of them `**`, with wildcard segments of at most 64 bytes. An edit or a check
-is compared with all of teammates' work on its first 200 paths, and with their reservations on all of them up to 2000;
-past 2000 its agent is told what was not checked. A hook, check or declaration may compare paths with teammates'
-patterns only so much; one that would take longer lets through what it did not compare (but refuses an exclusive intent
-it could not compare with every reservation), its agent is told, and the dashboard counts it. These are not settings.
+A client has 15 seconds to send a request and 16 KB for its headers, and an answer that makes no progress for 15 seconds
+is cut off. Past `--max-connections`, the connections waiting longest on their clients, idle or sending slowly, make
+room for new ones, so no one can shut the team's hooks out by holding connections. Board answers sent to clients that do
+not take gzip may hold 32 MB at once; past that a large one is answered 503 with `Retry-After` (browsers and intagent's
+clients take gzip; for `curl`, add `--compressed`). A dashboard over its stream cap is answered 429 and tries again
+later. A path has at most 64 segments of 255 bytes, and an intent's pattern at most 32 segments, 4 of them `**`, with
+wildcard segments of at most 64 bytes. An edit or a check is compared with all of teammates' work on its first 200
+paths, and with their reservations on all of them up to 2000; past 2000 its agent is told what was not checked. A hook,
+check or declaration may compare paths with teammates' patterns only so much; one that would take longer lets through
+what it did not compare (but refuses an exclusive intent it could not compare with every reservation), its agent is
+told, and the dashboard counts it. These are not settings.
 
 **Each repository, once** (one person; then commit the files it writes):
 

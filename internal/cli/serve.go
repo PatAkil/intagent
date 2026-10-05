@@ -31,7 +31,7 @@ func (a *App) serve(ctx context.Context, args []string) error {
 	fs.Var(&tlsCerts, "tls-cert", "serve HTTPS with this certificate chain (PEM), with --tls-key; give an ECDSA and an RSA one "+
 		"each with its key to serve both, ECDSA to the clients that take it")
 	fs.Var(&tlsKeys, "tls-key", "the certificate's private key (PEM)")
-	maxConns := fs.Int("max-connections", server.DefaultMaxConnections, "connections open at once; more are closed as soon as they are accepted")
+	maxConns := fs.Int("max-connections", server.DefaultMaxConnections, "connections open at once; past it, a new one takes the place of one waiting longest on its client, or is closed at once if all are busy")
 	maxStreams := fs.Int("max-streams", 500, "dashboards connected at once, in all (0 for none); more are refused until one closes")
 	memberStreams := fs.Int("max-member-streams", 20, "dashboards one member may have connected at once (0 for none)")
 	publicStreams := fs.Int("max-public-streams", 100, "dashboards connected at once without a token, with --public-read (0 for none)")
