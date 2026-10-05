@@ -203,8 +203,9 @@ func TestSweepPrunesAlertsOfRemovedClaims(t *testing.T) {
 			t.Errorf("%s's claim remembers alerts of %v, want %v (keys %v)", c.Member, got, ids, keys(c))
 		}
 	}
-	want(bob, alice.ID, carolID)
-	want(alice, bob.ID, bob.ID, carolID)
+	// alice's claim remembers bob's breach of her reservation too.
+	want(bob, carolID)
+	want(alice, bob.ID, bob.ID, bob.ID, carolID)
 
 	// carol's work is merged: her claim is released.
 	h.scanAt("carol", "w", "c1")
@@ -213,12 +214,16 @@ func TestSweepPrunesAlertsOfRemovedClaims(t *testing.T) {
 		t.Fatal("carol's claim was not released")
 	}
 	h.b.Sweep(h.now)
-	want(bob, alice.ID)
-	want(alice, bob.ID, bob.ID)
+	want(bob)
+	want(alice, bob.ID, bob.ID, bob.ID)
 
-	// A snapshot that still holds alerts of a claim removed long ago heals.
-	bob.Alerted["touch|c_gone|x.go"] = true
-	bob.Alerted["unchecked|deny|c_gone|retry/**|1|retry/r.go"] = true
+	// A snapshot that still holds alerts and breaches of a claim removed
+	// long ago heals, and an older server's mark of bob's breach, kept in
+	// bob's claim, is dropped.
+	since := alice.Intents[0].DeclaredAt.UnixNano()
+	alice.Alerted["touch|c_gone|x.go"] = true
+	alice.Alerted[fmt.Sprintf("breach|deny|c_gone|%d|retry/**|retry/r.go", since)] = true
+	bob.Alerted = map[string]bool{fmt.Sprintf("unchecked|deny|%s|retry/**|%d|retry/r.go", alice.ID, since): true}
 	data, _, err := h.b.Snapshot(h.now)
 	if err != nil {
 		t.Fatal(err)
@@ -228,7 +233,8 @@ func TestSweepPrunesAlertsOfRemovedClaims(t *testing.T) {
 		t.Fatal(err)
 	}
 	b.Sweep(h.now)
-	want(b.claims[bob.ID], alice.ID)
+	want(b.claims[alice.ID], bob.ID, bob.ID, bob.ID)
+	want(b.claims[bob.ID])
 }
 
 // A claim forgotten to keep within a bound is pruned from the alerts other
@@ -647,6 +653,7 @@ func TestRestoreTrimsWhatOlderServersRemembered(t *testing.T) {
 	h.scanAt("bob", "w", "b1", "retry/r.go", "x.go") // a breach, remembered once
 	h.scanAt("carol", "w", "c1", "x.go")
 	bob, carol := h.claimIn("bob", "w"), h.claimIn("carol", "w")
+	alice := h.b.findClaim("alice", whereOf("alice"))
 	// As an older server left them: no counts, every file remembered and
 	// listed.
 	files := make([]string, 2000)
@@ -657,10 +664,10 @@ func TestRestoreTrimsWhatOlderServersRemembered(t *testing.T) {
 	bob.Told = nil
 	bob.Inbox = append(bob.Inbox, InboxItem{ID: "i_old", At: h.now, Kind: "overlap", From: "carol", FromClaim: carol.ID,
 		Text: "carol's agent also changed svc/f0000.go and 1999 more.", Paths: files})
-	unchecked := 0
-	for k := range bob.Alerted {
-		if strings.HasPrefix(k, "unchecked|") {
-			unchecked++
+	breaches := 0 // of alice's reservation, which her claim remembers
+	for k := range alice.Alerted {
+		if strings.HasPrefix(k, "breach|") {
+			breaches++
 		}
 	}
 	data, _, err := h.b.Snapshot(h.now)
@@ -672,17 +679,20 @@ func TestRestoreTrimsWhatOlderServersRemembered(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := b.claims[bob.ID]
-	pairs, kept := map[string]int{}, 0
+	pairs := map[string]int{}
 	for k := range got.Alerted {
-		switch {
-		case strings.HasPrefix(k, "touch|"):
+		if strings.HasPrefix(k, "touch|") {
 			pairs[alertedClaim(k)]++
-		case strings.HasPrefix(k, "unchecked|"):
+		}
+	}
+	kept := 0
+	for k := range b.claims[alice.ID].Alerted {
+		if strings.HasPrefix(k, "breach|") {
 			kept++
 		}
 	}
-	if pairs[carol.ID] != maxToldPaths || !maps.Equal(pairs, got.Told) || kept != unchecked || unchecked == 0 {
-		t.Fatalf("bob's claim remembers %v alerts per teammate, counts %v, and %d of %d breaches", pairs, got.Told, kept, unchecked)
+	if pairs[carol.ID] != maxToldPaths || !maps.Equal(pairs, got.Told) || kept != breaches || breaches == 0 {
+		t.Fatalf("bob's claim remembers %v alerts per teammate, counts %v; alice's %d of %d breaches", pairs, got.Told, kept, breaches)
 	}
 	for _, it := range got.Inbox {
 		if len(it.Paths) > maxToldPaths {
@@ -1027,5 +1037,71 @@ func TestRestoreReadsWhoHeardItemsFromOlderSnapshots(t *testing.T) {
 	}
 	if bytes.Contains(data, []byte(`"delivered_to"`)) {
 		t.Errorf("saved again, the snapshot names the sessions that heard items:\n%s", data)
+	}
+}
+
+// breachKeys counts what the board's claims remember of breaches of
+// reservations reported (reportUnchecked, recordUncheckedBreach).
+func (h *harness) breachKeys() int {
+	n := 0
+	for _, c := range h.b.claims {
+		for k := range c.Alerted {
+			if strings.HasPrefix(k, "unchecked|") || strings.HasPrefix(k, "breach|") {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+// What the board remembers of a change made inside a teammate's reservation
+// without a check, so as to report it once, goes when the reservation does:
+// released, or declared again. It was kept as long as the claim that made the
+// change listened, and on the persist lane's boards 95-98% of those marks
+// named reservations no longer held, more than the alerts of teammates' files
+// after five days. A change is still reported once per reservation, and again
+// under a new one.
+func TestBreachesOfReleasedReservationsAreForgotten(t *testing.T) {
+	h := newHarness(t)
+	h.hook(KindPrompt, "alice", "a1")
+	breaches := func() int {
+		n := 0
+		for _, a := range h.activities(ActivityConflict) {
+			if a.Breach {
+				n++
+			}
+		}
+		return n
+	}
+	var files []string
+	for i := range 20 {
+		h.advance(time.Minute)
+		h.hook(KindPrompt, "alice", "a1") // her agent at work, so that her reservation holds
+		h.declare("alice", ModeExclusive, "Rework svc", "svc/**")
+		files = append(files, fmt.Sprintf("svc/f%02d.go", i))
+		h.scanAt("bob", "w", "b1", files...) // git finds one more file inside alice's reservation
+		h.scanAt("bob", "w", "b1", files...) // and again: reported once
+		if n, kept := breaches(), h.breachKeys(); n != i+1 || kept != 1 {
+			t.Fatalf("cycle %d: %d breaches reported, %d remembered; want %d and 1", i, n, kept, i+1)
+		}
+		if _, err := h.b.Release(h.now, ReleaseRequest{Member: "alice", Where: whereOf("alice")}); err != nil {
+			t.Fatal(err)
+		}
+		if kept := h.breachKeys(); kept != 0 {
+			t.Fatalf("cycle %d: %d breaches remembered once alice released her reservation", i, kept)
+		}
+	}
+	// Declared again without a release: a new reservation, whose breaches
+	// are news, and the old one's are forgotten.
+	h.declare("alice", ModeExclusive, "Rework svc", "svc/**")
+	h.scanAt("bob", "w", "b1", append(files, "svc/new.go")...)
+	h.advance(time.Minute)
+	h.declare("alice", ModeExclusive, "Rework svc again", "svc/**")
+	if kept := h.breachKeys(); kept != 0 {
+		t.Fatalf("%d breaches remembered once alice declared her reservation again", kept)
+	}
+	h.scanAt("bob", "w", "b1", append(files, "svc/new.go", "svc/newer.go")...)
+	if n, kept := breaches(), h.breachKeys(); n != 22 || kept != 1 {
+		t.Fatalf("%d breaches reported, %d remembered; want 22 and 1", n, kept)
 	}
 }

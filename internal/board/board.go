@@ -1210,7 +1210,7 @@ func (b *Board) reportUnchecked(now time.Time, c *claim, s *session, added []Pat
 		}
 		// Once per file, reservation and policy: a new reservation, or a
 		// policy that now refuses what it only warned about, is news.
-		if c.alert(uncheckedKey(action, cf)) {
+		if b.claims[cf.ClaimID].alert(breachKey(action, c.ID, cf)) {
 			if len(paths) == 0 {
 				first = cf
 			}
@@ -2086,6 +2086,9 @@ func (b *Board) Declare(now time.Time, r DeclareRequest) (DeclareResult, error) 
 		c.Intents = upsertIntent(c.Intents, in)
 		res.Accepted = append(res.Accepted, in)
 	}
+	if len(res.Accepted) > 0 {
+		c.pruneBreaches() // of the reservations declared again
+	}
 	if len(res.Accepted) > 0 && summary != "" {
 		c.Task = summary
 	}
@@ -2263,6 +2266,7 @@ func (b *Board) Release(now time.Time, r ReleaseRequest) (int, error) {
 	c.Intents = keep
 	c.UpdatedAt = now
 	if len(gone) > 0 {
+		c.pruneBreaches()
 		b.record(Activity{At: now, Kind: ActivityIntentReleased, Repo: c.Repo, Member: c.Member, ClaimID: c.ID, Paths: gone})
 	}
 	return len(gone), nil
@@ -2733,12 +2737,12 @@ func (c *claim) pruneAlerted(claims map[string]*claim) bool {
 }
 
 // alertedClaim is the claim an Alerted key names: alertOthers' touch|<claim>|
-// <path>, or uncheckedKey's unchecked|<action>|<claim>|...
+// <path>, or breachKey's breach|<action>|<claim>|...
 func alertedClaim(k string) string {
 	kind, rest, _ := strings.Cut(k, "|")
 	switch kind {
 	case "touch":
-	case "unchecked":
+	case "breach":
 		_, rest, _ = strings.Cut(rest, "|")
 	default:
 		return ""

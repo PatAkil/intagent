@@ -183,10 +183,11 @@ Actions: `deny` (refuse every time), `ask` (the person decides; headless agents 
 
 Changes made through the shell cannot be checked before they happen. When git later shows one inside an active
 teammate's exclusive intent, every live agent session in that worktree is told (the scan that finds it may follow
-another session's command) and the change is recorded as a breach, which the webhook sends; under `block: warn` it is
-a warning instead, and under `block: off` nothing. A teammate's change inside your reservation
-that intagent learned of after you declared it (a hook reports a change as it is made, git when it first sees it)
-does not bump your own agent: it is warned instead.
+another session's command) and the change is recorded as a breach, which the webhook sends; under `block: warn` it is a
+warning instead, and under `block: off` nothing. Each is reported once per file and reservation: the reservation's claim
+remembers it while it holds the reservation, and forgets it when it releases it or declares it again. A teammate's
+change inside your reservation that intagent learned of after you declared it (a hook reports a change as it is made,
+git when it first sees it) does not bump your own agent: it is warned instead.
 
 **Start with radar mode.** To measure how often agents would collide before enforcing anything, run a pilot with
 `{"policy": {"block": "warn", "overlap": "warn", "nearby": "off"}}`. The dashboard counts every check, overlap,

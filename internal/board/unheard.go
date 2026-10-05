@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -94,7 +95,7 @@ func (b *Board) recordUncheckedBreach(now time.Time, c *claim, s *session, told 
 		if cf.Severity != SeverityBlock || cf.SameClaim {
 			continue
 		}
-		if !c.alert(uncheckedKey(action, cf)) {
+		if !b.claims[cf.ClaimID].alert(breachKey(action, c.ID, cf)) {
 			continue
 		}
 		if len(paths) == 0 {
@@ -116,12 +117,52 @@ func (b *Board) recordUncheckedBreach(now time.Time, c *claim, s *session, told 
 		Text: fmt.Sprintf("%s → %s (%s)", first.Path, first.Member, why)})
 }
 
-// uncheckedKey remembers in Alerted that an unchecked change to a file inside
-// a reservation was reported under a policy action. reportUnchecked and
-// recordUncheckedBreach both keep it, so a change is reported once whichever
-// finds it.
-func uncheckedKey(action Action, cf Conflict) string {
-	return fmt.Sprintf("unchecked|%s|%s|%s|%d|%s", action, cf.ClaimID, cf.Pattern, cf.Since.UnixNano(), cf.Path)
+// breachKey remembers, in the Alerted of the claim whose reservation cf
+// is, that claim breacher's unchecked change to a file inside it was reported
+// under a policy action. reportUnchecked and recordUncheckedBreach both keep
+// it, so a change is reported once whichever finds it. The claim holding
+// the reservation lets go of it with the reservation (pruneBreaches), so
+// what a claim remembers of breaches is bounded by what it holds; and a
+// breacher's go when it is removed (pruneAlerts), as alerts of it do.
+func breachKey(action Action, breacher string, cf Conflict) string {
+	return fmt.Sprintf("breach|%s|%s|%d|%s|%s", action, breacher, cf.Since.UnixNano(), cf.Pattern, cf.Path)
+}
+
+// pruneBreaches lets go of the breaches the claim remembers of reservations
+// it no longer holds: intents released, or declared again since.
+func (c *claim) pruneBreaches() {
+	held := func(k string) bool {
+		rest, ok := strings.CutPrefix(k, "breach|")
+		if !ok {
+			return true // not a breach
+		}
+		f := strings.SplitN(rest, "|", 4) // action, breacher, since, pattern|path
+		if len(f) < 4 {
+			return false
+		}
+		for _, in := range c.Intents {
+			if in.Mode == ModeExclusive && strconv.FormatInt(in.DeclaredAt.UnixNano(), 10) == f[2] && strings.HasPrefix(f[3], in.Pattern+"|") {
+				return true
+			}
+		}
+		return false
+	}
+	dead := 0
+	for k := range c.Alerted {
+		if !held(k) {
+			dead++
+		}
+	}
+	if dead == 0 {
+		return
+	}
+	if c.alertedShared {
+		c.Alerted, c.alertedShared = maps.Clone(c.Alerted), false
+	}
+	maps.DeleteFunc(c.Alerted, func(k string, _ bool) bool { return !held(k) })
+	if len(c.Alerted) == 0 {
+		c.Alerted = nil
+	}
 }
 
 // renderUnanswered tells an agent what a check of an edit it already made

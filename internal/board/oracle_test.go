@@ -238,8 +238,9 @@ func areasOf(c *claim) map[string]bool {
 
 // oldReportUnchecked is reportUnchecked as it was: the full conflict
 // computation for every added file, keeping only block conflicts. It tells
-// the sessions as reportUnchecked does now, so that the oracle checks which
-// files and reservations are found.
+// the sessions, and remembers the breach in the reservation's claim, as
+// reportUnchecked does now, so that the oracle checks which files and
+// reservations are found.
 func (b *Board) oldReportUnchecked(now time.Time, c *claim, s *session, added []PathRef) {
 	action := b.cfg.Policy.action(SeverityBlock)
 	if action == ActionOff {
@@ -253,11 +254,11 @@ func (b *Board) oldReportUnchecked(now time.Time, c *claim, s *session, added []
 			if cf.Severity != SeverityBlock || cf.SameClaim {
 				continue
 			}
-			if k := fmt.Sprintf("unchecked|%s|%s|%s|%d|%s", action, cf.ClaimID, cf.Pattern, cf.Since.UnixNano(), p.Path); !c.Alerted[k] {
-				if c.Alerted == nil {
-					c.Alerted = map[string]bool{}
+			if h, k := b.claims[cf.ClaimID], breachKey(action, c.ID, cf); !h.Alerted[k] {
+				if h.Alerted == nil {
+					h.Alerted = map[string]bool{}
 				}
-				c.Alerted[k] = true
+				h.Alerted[k] = true
 				if len(paths) == 0 {
 					first = cf
 				}
@@ -394,14 +395,15 @@ func testReportUncheckedMatchesTheOracle(t *testing.T, ties bool) {
 			}
 			oldB.oldReportUnchecked(now, oldB.claims[c.ID], oldB.sessions[key], added)
 			newB.reportUnchecked(now, newB.claims[c.ID], newB.sessions[key], added)
-			oc, nc := oldB.claims[c.ID], newB.claims[c.ID]
 			for k, was := range oldB.sessions {
 				if op, np := was.Pending, newB.sessions[k].Pending; op != np {
 					t.Fatalf("round %d: pending of %s differs:\nold: %q\nnew: %q", round, k, op, np)
 				}
 			}
-			if !reflect.DeepEqual(oc.Alerted, nc.Alerted) {
-				t.Fatalf("round %d: alerted differs:\nold: %v\nnew: %v", round, oc.Alerted, nc.Alerted)
+			for _, id := range ids {
+				if oa, na := oldB.claims[id].Alerted, newB.claims[id].Alerted; !reflect.DeepEqual(oa, na) {
+					t.Fatalf("round %d: %s's alerted differs:\nold: %v\nnew: %v", round, id, oa, na)
+				}
 			}
 			if !reflect.DeepEqual(oldB.pending, newB.pending) {
 				t.Fatalf("round %d: activities differ:\nold: %+v\nnew: %+v", round, oldB.pending, newB.pending)

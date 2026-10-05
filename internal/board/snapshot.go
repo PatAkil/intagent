@@ -319,6 +319,7 @@ func (b *Board) RestoreAfter(r io.Reader, now, stopped time.Time) error {
 			continue
 		}
 		c.Intents = b.validIntents(c)
+		c.pruneBreaches() // of the intents dropped or cleaned
 		b.addClaim(c)
 		// A snapshot from an older server keeps alerts of claims it removed.
 		b.unpruned[c.Repo] = true
@@ -392,6 +393,10 @@ func (c *claim) trimRestored() {
 			it.Paths = slices.Clone(it.Paths[:maxToldPaths])
 		}
 	}
+	// An older server kept, in the claim that made it, a change made inside
+	// a teammate's reservation without a check, and never let go of it; it
+	// is reported again at worst, should the reservation still be held.
+	maps.DeleteFunc(c.Alerted, func(k string, _ bool) bool { return strings.HasPrefix(k, "unchecked|") })
 	told, over := map[string]int{}, false
 	for k := range c.Alerted {
 		if id, ok := toldClaim(k); ok {

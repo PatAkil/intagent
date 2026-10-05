@@ -235,6 +235,7 @@ func (b *Board) setDurable(c, k *claim) {
 	if len(inbox) > 0 {
 		c.Inbox = inbox
 	}
+	c.pruneBreaches()
 }
 
 func laterOf(a, b time.Time) time.Time {
