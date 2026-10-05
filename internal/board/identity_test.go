@@ -1,7 +1,9 @@
 package board
 
 import (
+	"bytes"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -592,6 +594,76 @@ func TestSnapshotsKeepWhatSessionsKeepLive(t *testing.T) {
 		if b.liveAt(h.now).claim("c_1") {
 			t.Error("a claim no session keeps live is live")
 		}
+	}
+}
+
+// A snapshot's session that keeps more claims live than a session may, as a
+// server with another bound may have written, keeps those it reported from
+// last.
+func TestARestoredSessionKeepsAtMostTheBound(t *testing.T) {
+	h := newHarness(t)
+	var ids []string
+	for i := range maxAlsoClaims + 9 {
+		h.advance(time.Second)
+		w := worktree(fmt.Sprintf("w%02d", i))
+		h.aliceFrom(KindToolEnd, w)
+		ids = append(ids, h.b.findClaim("alice", w).ID)
+	}
+	data, _, err := h.b.Snapshot(h.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Every claim but the last, the session's own, each when it was opened.
+	var all []string
+	for i, id := range ids[:len(ids)-1] {
+		all = append(all, fmt.Sprintf("%q:%q", id, t0.Add(time.Duration(i+1)*time.Second).Format(time.RFC3339)))
+	}
+	also := regexp.MustCompile(`"also":\{[^}]*\}`)
+	if n := len(also.FindAllIndex(data, -1)); n != 1 {
+		t.Fatalf("the snapshot keeps %d sets of claims live, want 1", n)
+	}
+	b := New(DefaultConfig())
+	if err := b.Restore(bytes.NewReader(also.ReplaceAll(data, []byte(`"also":{`+strings.Join(all, ",")+`}`))), h.now); err != nil {
+		t.Fatal(err)
+	}
+	mustIndex(t, b, "the restore")
+	s := b.sessions[sessionKey("alice", AgentClaudeCode, "s1")]
+	for i, id := range ids[:len(ids)-1] {
+		if _, kept := s.Also[id]; kept != (i >= len(ids)-1-maxAlsoClaims) {
+			t.Errorf("claim %s, reported from %d of %d: kept %t", id, i+1, len(ids)-1, kept)
+		}
+	}
+}
+
+// Restoring a snapshot into a board that has sessions of its own leaves
+// none of them keeping a claim live. Before, the index of the claims each
+// kept live was not rebuilt, and a session that was not on the board kept
+// a reservation blocking whose session had ended in the snapshot.
+func TestARestoreRebuildsWhatSessionsKeepLive(t *testing.T) {
+	h := newHarness(t)
+	h.aliceFrom(KindSessionStart, whereOf("alice"))
+	h.declare("alice", ModeExclusive, "rework payments", "svc/pay/**")
+	h.aliceFrom(KindSessionEnd, whereOf("alice"))
+	data, _, err := h.b.Snapshot(h.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Another session of alice's comes, and moves on.
+	ev := HookEvent{Kind: KindPrompt, Member: "alice", Agent: AgentClaudeCode, SessionID: "s2", Where: whereOf("alice")}
+	if _, err := h.b.Hook(h.now, ev); err != nil {
+		t.Fatal(err)
+	}
+	ev.Where = worktree("b")
+	if _, err := h.b.Hook(h.now, ev); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.b.Restore(bytes.NewReader(data), h.now); err != nil {
+		t.Fatal(err)
+	}
+	mustIndex(t, h.b, "a restore into a board in use")
+	h.hook(KindSessionStart, "bob", "b1")
+	if res := h.hook(KindPreEdit, "bob", "b1", "svc/pay/retry.go"); res.Decision == DecisionRefuse && res.Conflicts[0].Severity == SeverityBlock {
+		t.Errorf("bob is refused for a reservation whose session ended: %s", res.Reason)
 	}
 }
 
