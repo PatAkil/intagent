@@ -61,5 +61,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      # Codex's sandbox is bubblewrap, which needs user namespaces; Ubuntu 24.04
+      # keeps them from unprivileged users through AppArmor.
+      - name: Let Codex's sandbox create user namespaces
+        if: matrix.agent == 'codex'
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: End-to-end with ${{ matrix.agent }}
         run: ./scripts/e2e-${{ matrix.agent }}.sh

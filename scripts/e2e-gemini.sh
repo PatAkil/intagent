@@ -43,14 +43,16 @@ step() { printf '\n== %s\n' "$*"; }
 fail() { printf '\nFAIL: %s\n' "$*"; exit 1; }
 
 step "build"
-mkdir -p "$WORK/bin" "$WORK/model" "$WORK/home/.gemini"
+mkdir -p "$WORK/bin" "$WORK/model" "$WORK/home-bob/.gemini" "$WORK/home-carol/.gemini"
 (cd "$ROOT" && go build -o "$WORK/bin/intagent" ./cmd/intagent && go build -o "$WORK/fakemodel" ./scripts/fakemodel)
 if [ -z "${GEMINI:-}" ]; then
   (cd "$WORK" && npm install --silent --no-audit --no-fund @google/gemini-cli@0.62.0 >/dev/null)
   GEMINI="$WORK/node_modules/.bin/gemini"
 fi
 # With only GOOGLE_GEMINI_BASE_URL, Gemini CLI picks an auth type that headless runs reject.
-echo '{"security":{"auth":{"selectedType":"gemini-api-key"}}}' >"$WORK/home/.gemini/settings.json"
+for who in bob carol; do
+  echo '{"security":{"auth":{"selectedType":"gemini-api-key"}}}' >"$WORK/home-$who/.gemini/settings.json"
+done
 WITHOUT="$PATH"
 export PATH="$WORK/bin:$PATH"
 
@@ -84,13 +86,18 @@ alice_hook '{"session_id":"a1","cwd":"'"$A"'","hook_event_name":"UserPromptSubmi
 alice_hook '{"session_id":"a1","cwd":"'"$A"'","hook_event_name":"PostToolUse","tool_name":"Edit","tool_input":{"file_path":"'"$A"'/services/billing/invoice.go"}}'
 git clone -q origin.git bob 2>/dev/null
 git clone -q origin.git carol 2>/dev/null
-(cd bob && as bob intagent login --url "$URL" --token "$BOB" >/dev/null)
+# Bob signs in as a member does, into the configuration in their home. Gemini
+# CLI hands its hooks only PATH, HOME and a few more when it runs in GitHub
+# Actions (GITHUB_SHA is set), so INTAGENT_CONFIG would not reach them there.
+(cd bob && env -u INTAGENT_CONFIG -u XDG_CONFIG_HOME HOME="$WORK/home-bob" \
+  intagent login --url "$URL" --token "$BOB" >/dev/null)
 
-# gemini <member> <PATH> <prompt>: one headless Gemini CLI run in that member's clone.
+# gemini <member> <PATH> <prompt>: one headless Gemini CLI run in that member's
+# clone, with the member's home.
 gemini() {
   rm -f "$WORK"/model/req-*.json
-  (cd "$WORK/$1" && env PATH="$2" HOME="$WORK/home" GEMINI_CLI_TRUST_WORKSPACE=true GEMINI_API_KEY=fake \
-    GOOGLE_GEMINI_BASE_URL="http://127.0.0.1:$LLM" INTAGENT_CONFIG="$WORK/$1.json" INTAGENT_HOST="$1-laptop" \
+  (cd "$WORK/$1" && env -u INTAGENT_CONFIG -u XDG_CONFIG_HOME PATH="$2" HOME="$WORK/home-$1" \
+    GEMINI_CLI_TRUST_WORKSPACE=true GEMINI_API_KEY=fake GOOGLE_GEMINI_BASE_URL="http://127.0.0.1:$LLM" \
     timeout 120 "$GEMINI" -p "$3" --yolo -m gemini-2.5-flash </dev/null >"$WORK/$1.out" 2>"$WORK/$1.err") \
     || fail "gemini exited $? for $1 (see $WORK/$1.err)"
 }

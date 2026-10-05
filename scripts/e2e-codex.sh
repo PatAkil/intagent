@@ -13,6 +13,10 @@
 #
 # Usage: scripts/e2e-codex.sh   (CODEX=/path/to/codex to skip the install,
 # KEEP=1 to keep the work directory after a pass)
+#
+# Codex writes Carol's file in its sandbox, bubblewrap, which needs user
+# namespaces. Ubuntu 24.04 keeps them from unprivileged users; there, run
+# sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 first, as CI does.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -115,6 +119,6 @@ jq -n --argjson a "$(exec_js "tools.apply_patch($(jq -n --arg p "$P2" '$p'))")" 
 PATH="$WITHOUT" command -v intagent >/dev/null && fail "intagent is installed outside the test"
 codex carol "$WITHOUT" "Say hello in the README"
 ! told "Command blocked by PreToolUse hook" || fail "carol's edit was refused"
-grep -qx hello carol/README.md || fail "carol's edit did not happen"
+grep -qx hello carol/README.md || fail "carol's edit did not happen (can Codex's sandbox create user namespaces?)"
 
 printf '\nPASS: bob was told about the team and refused twice, carol was left alone.\n'
