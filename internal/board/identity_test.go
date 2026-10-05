@@ -392,6 +392,56 @@ func TestAReservationAnotherAgentKeepsStillHoldsBack(t *testing.T) {
 	}
 }
 
+// A note to a member goes where their agents are at work, not to every claim
+// one of them keeps live after moving on: the worktree an agent left hears
+// it only if the agent comes back, and then again after it heard it where it
+// went. Before, the note was queued in both and the agent heard it twice.
+func TestANoteToAMemberGoesWhereTheirAgentIs(t *testing.T) {
+	h := newHarness(t)
+	h.aliceFrom(KindSessionStart, whereOf("alice"))
+	h.advance(time.Minute)
+	h.aliceFrom(KindPrompt, worktree("b"))
+	res, err := h.b.Note(h.now, NoteRequest{Member: "bob", Where: whereOf("bob"), To: "alice", Text: "ping", ToMember: true})
+	if b := h.b.findClaim("alice", worktree("b")); err != nil || !slices.Equal(res.Delivered, []string{b.ID}) {
+		t.Fatalf("note to alice: %+v %v, want it queued in %s, where her agent is", res, err, b.ID)
+	}
+	heard := 0
+	for _, w := range []Where{worktree("b"), whereOf("alice"), worktree("b")} {
+		h.advance(time.Minute)
+		if strings.Contains(h.aliceFrom(KindPrompt, w).Context, "ping") {
+			heard++
+		}
+	}
+	if n := h.b.statsFor(repo).Notes; heard != 1 || n != 1 {
+		t.Errorf("alice's agent heard the note %d times, and it counts as %d notes; want once and 1", heard, n)
+	}
+}
+
+// A note to a member whose only agent moved on to another repository waits
+// for their next session in this one, which hears it in whichever worktree.
+// Before, it was queued in the claim the agent left, which kept it from the
+// member's mailbox, and their next session, in a fresh worktree, never heard
+// it.
+func TestANoteWaitsForAMemberWhoseAgentMovedToAnotherRepository(t *testing.T) {
+	h := newHarness(t)
+	h.edit("bob", "b1", "go.mod")
+	h.advance(time.Minute)
+	other := whereOf("bob")
+	other.Repo = "github.com/acme/lib"
+	ev := HookEvent{Kind: KindPrompt, Member: "bob", Agent: AgentClaudeCode, SessionID: "b1", Where: other}
+	if _, err := h.b.Hook(h.now, ev); err != nil {
+		t.Fatal(err)
+	}
+	res, err := h.b.Note(h.now, NoteRequest{Member: "alice", Where: whereOf("alice"), To: "bob", Text: "go.mod is mine today", ToMember: true})
+	if err != nil || res.HeldFor != "bob" || len(res.Delivered) != 0 {
+		t.Fatalf("note to bob, whose agent is in another repository: %+v %v, want it held for him", res, err)
+	}
+	h.advance(time.Minute)
+	if ctx := h.at(KindSessionStart, "bob", "fresh", "b2").Context; !strings.Contains(ctx, "go.mod is mine today") {
+		t.Fatalf("bob's next session here, in a fresh worktree, was told:\n%s", ctx)
+	}
+}
+
 // A session whose workers each report from a worktree of their own, under the
 // session's id, keeps every one of those claims live: the parent's
 // reservation refuses every one of a teammate's edits, and no claim is

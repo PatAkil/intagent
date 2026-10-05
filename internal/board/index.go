@@ -460,6 +460,10 @@ func (l liveness) claim(id string) bool {
 	return l.find(id).live
 }
 
+// own reports whether a session that reports from claim id is live: an
+// agent is at work there now, not only one that moved from it.
+func (l liveness) own(id string) bool { return l.find(id).own }
+
 // carried reports whether claim id is live only through sessions that moved
 // from it to claim self and report from there now. To self it is their own
 // work in another worktree: what they left there neither holds them back

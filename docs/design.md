@@ -130,18 +130,18 @@ nearby work, so nothing is queued for it, nor remembered of what it would have b
 hears of teammates' work from its greeting and its checks, and may hear again of a change it heard of before it left. An
 alert names at most five files and counts the rest, and a claim remembers being told of at most five files of each
 teammate's claim: past those, a file that comes back into the teammate's changes is told again, so what claims sharing a
-large footprint remember grows with the pairs of them, not with the files. A note to a member goes to their claims with
-an agent running; to a member with none, or a teammate with no claim in the repository yet, it waits in a mailbox for
-their next session there, in whichever worktree, which hears it (the answer's `held_for` names them): a fresh worktree,
-which a note queued in a worktree they left would never reach, or one of those. A mailbox holds 20 notes, the board 1024
-mailboxes, and a note waits a day, as an inbox item does. A note to whoever changed a path goes to the claims still
-listening, and for each member none of whose claims there listens, to the one they were last active in. An inbox holds
-50 items; a full one lets go first of an item a session was already shown, then of the oldest item of the sender holding
-the most, an alert before a note when senders tie, so a flood of one teammate's alerts or notes pushes out their own
-items rather than another's note the agent has not heard yet. The sweeper drops inbox items a day old, which no session
-is shown any more, and the alerts a claim that no longer listens remembers having heard; and once a claim is removed,
-the alerts other claims remember of it, which nothing can match again since a claim's ID is never reused. A snapshot an
-older server wrote is trimmed to these bounds as it is read.
+large footprint remember grows with the pairs of them, not with the files. A note to a member goes to their claims an
+agent is at work in, not those an agent that moved on keeps live; to a member with none, or a teammate with no claim in
+the repository yet, it waits in a mailbox for their next session there, in whichever worktree, which hears it (the
+answer's `held_for` names them): a fresh worktree, which a note queued in a worktree they left would never reach, or one
+of those. A mailbox holds 20 notes, the board 1024 mailboxes, and a note waits a day, as an inbox item does. A note to
+whoever changed a path goes to the claims still listening, and for each member none of whose claims there listens, to
+the one they were last active in. An inbox holds 50 items; a full one lets go first of an item a session was already
+shown, then of the oldest item of the sender holding the most, an alert before a note when senders tie, so a flood of
+one teammate's alerts or notes pushes out their own items rather than another's note the agent has not heard yet. The
+sweeper drops inbox items a day old, which no session is shown any more, and the alerts a claim that no longer listens
+remembers having heard; and once a claim is removed, the alerts other claims remember of it, which nothing can match
+again since a claim's ID is never reused. A snapshot an older server wrote is trimmed to these bounds as it is read.
 
 Every acknowledgement is remembered per session, so an agent hears about a given overlap once, not on every edit; and
 within a session per worker, where the agent names its subagents (Claude Code, Codex, Cursor; see

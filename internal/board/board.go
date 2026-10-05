@@ -2313,11 +2313,13 @@ func (b *Board) Note(now time.Time, r NoteRequest) (NoteResult, error) {
 	case path != "" || to == r.Member:
 		targets = b.listeners(live, targets)
 	default:
-		// To a member: their claims with an agent running, or else their
-		// mailbox, which their next session in the repository hears in
-		// whichever worktree. One left a while ago, still listening, would
-		// keep it from a session in a fresh worktree.
-		targets = slices.DeleteFunc(targets, func(c *claim) bool { return !live.claim(c.ID) })
+		// To a member: the claims their agents are at work in now, or else
+		// their mailbox, which their next session in the repository hears
+		// in whichever worktree. One left a while ago, still listening,
+		// would keep it from a session in a fresh worktree; so would one an
+		// agent left for another worktree and keeps live (Also), where the
+		// agent hears it only if it comes back, and then a second time.
+		targets = slices.DeleteFunc(targets, func(c *claim) bool { return !live.own(c.ID) })
 		if len(targets) == 0 {
 			res.HeldFor = to
 		}
