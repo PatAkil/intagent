@@ -47,6 +47,25 @@ func TestNoteWaitsForAMembersNextSession(t *testing.T) {
 	}
 }
 
+// A note to a member whose agent left a worktree a few hours ago, which
+// still listens, waits for their next session all the same, which hears it
+// in a fresh worktree. Before, it went to the worktree they had left, which
+// per-task worktrees never go back to.
+func TestNoteReachesAMembersFreshWorktree(t *testing.T) {
+	h := newHarness(t)
+	h.at(KindPostEdit, "bob", "task1", "b1", "go.mod")
+	h.at(KindSessionEnd, "bob", "task1", "b1")
+	h.advance(2 * time.Hour)
+	res, err := h.b.Note(h.now, NoteRequest{Member: "alice", Where: whereOf("alice"), To: "bob", Text: "go.mod is mine today", ToMember: true})
+	if err != nil || res.HeldFor != "bob" || len(res.Delivered) != 0 {
+		t.Fatalf("note to bob, who left an hour ago: %+v, %v", res, err)
+	}
+	h.advance(time.Hour)
+	if ctx := h.at(KindSessionStart, "bob", "task2", "b2").Context; !strings.Contains(ctx, "go.mod is mine today") {
+		t.Fatalf("bob's next session, in a fresh worktree, was told:\n%s", ctx)
+	}
+}
+
 // A note to a member of the team who has no claim in the repository yet
 // waits for their first session there; one to a name the team does not
 // know, and nothing on the board answers to, finds no one.

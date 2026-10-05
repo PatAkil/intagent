@@ -85,11 +85,10 @@ func TestOnlyListeningClaimsAreTold(t *testing.T) {
 	}
 }
 
-// A note to a member goes to their claims still listening, not to every
-// worktree they left. One to a member none of whose claims listens waits for
-// their next session (mail.go). One to whoever changed a path goes to those
-// still listening, and for each member none of whose claims there listens,
-// to the one they were last active in.
+// A note to a member goes to their claims with an agent running, and
+// waits for their next session (mail.go) when none has one. One to whoever
+// changed a path goes to the claims still listening, and for each member
+// none of whose claims there listens, to the one they were last active in.
 func TestNotesGoToClaimsStillListening(t *testing.T) {
 	h := newHarness(t)
 	for _, wt := range []string{"w1", "w2", "w3"} {
@@ -113,19 +112,24 @@ func TestNotesGoToClaimsStillListening(t *testing.T) {
 	}
 	w1, w2, w3 := h.claimIn("bob", "w1").ID, h.claimIn("bob", "w2").ID, h.claimIn("bob", "w3").ID
 	carol := h.claimIn("carol", "c").ID
-	if got := note("bob"); !slices.Equal(got, []string{w2, w3}) {
-		t.Errorf("a note to bob went to %v, want his claims quiet for less than a day, %v", got, []string{w2, w3})
+	if got := note("bob"); len(got) != 0 || held != "bob" {
+		t.Errorf("a note to bob, with no agent running, went to %v, held for %q; want it held for bob", got, held)
+	}
+	if got := note("go.mod"); !slices.Equal(got, []string{w2, w3, carol}) {
+		t.Errorf("a note to whoever changed go.mod went to %v, want the claims quiet for less than a day, %v",
+			got, []string{w2, w3, carol})
 	}
 	h.advance(15 * time.Hour)
-	if got := note("bob"); len(got) != 0 || held != "bob" {
-		t.Errorf("a note to bob, away from every claim, went to %v, held for %q; want it held for bob", got, held)
-	}
 	if got := note("go.mod"); !slices.Equal(got, []string{w3, carol}) {
 		t.Errorf("a note to whoever changed go.mod went to %v, want bob's newest claim and carol's, %v", got, []string{w3, carol})
 	}
 	// A claim named by ID hears it, listening or not.
 	if got := note(w1); !slices.Equal(got, []string{w1}) {
 		t.Errorf("a note to claim %s went to %v", w1, got)
+	}
+	h.at(KindPrompt, "bob", "w2", "b-again")
+	if got := note("bob"); !slices.Equal(got, []string{w2}) || held != "" {
+		t.Errorf("a note to bob, at work in w2, went to %v, held for %q; want %v", got, held, []string{w2})
 	}
 }
 

@@ -2214,8 +2214,8 @@ type NoteRequest struct {
 type NoteResult struct {
 	Delivered []string `json:"delivered"`
 	// HeldFor names the member a note waits for when none of their
-	// worktrees in the repository is listening: their next session there
-	// hears it, in whichever worktree.
+	// worktrees in the repository has an agent running: their next session
+	// there hears it, in whichever worktree.
 	HeldFor string `json:"held_for,omitempty"`
 }
 
@@ -2252,8 +2252,11 @@ func (b *Board) Note(now time.Time, r NoteRequest) (NoteResult, error) {
 	case path != "" || to == r.Member:
 		targets = b.listeners(live, targets)
 	default:
-		// To a member: their claims still listening, or their mailbox.
-		targets = slices.DeleteFunc(targets, func(c *claim) bool { return !b.listening(live, c) })
+		// To a member: their claims with an agent running, or else their
+		// mailbox, which their next session in the repository hears in
+		// whichever worktree. One left a while ago, still listening, would
+		// keep it from a session in a fresh worktree.
+		targets = slices.DeleteFunc(targets, func(c *claim) bool { return !live.claim(c.ID) })
 		if len(targets) == 0 {
 			res.HeldFor = to
 		}

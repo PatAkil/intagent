@@ -7,9 +7,9 @@ import (
 	"time"
 )
 
-// A note to a member none of whose worktrees in a repository is listening
-// (listening) waits in a mailbox, which their next session there hears,
-// in whichever worktree: a fresh one, which a note queued in a worktree they
+// A note to a member none of whose worktrees in a repository has an agent
+// running waits in a mailbox, which their next session there hears, in
+// whichever worktree: a fresh one, which a note queued in a worktree they
 // left would never reach, or one of those they left.
 
 // mailbox holds the notes waiting for a member in a repository.
