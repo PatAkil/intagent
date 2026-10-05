@@ -2,6 +2,7 @@ package server
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -413,6 +414,57 @@ func TestFreshConnsCloseLateArrivals(t *testing.T) {
 	}
 }
 
+// Over TLS the table finds its connection under the TLS one, for HTTP/1.1
+// and HTTP/2 alike: an idle connection makes room for a hook, and a
+// dashboard's stream, older but busy, does not.
+func TestEncryptedConnectionsMakeRoom(t *testing.T) {
+	cert, pool := ecdsaCert(t)
+	for _, proto := range []string{"HTTP/1.1", "HTTP/2.0"} {
+		t.Run(proto, func(t *testing.T) {
+			ts := newTestServer(t, func(o *Options) {
+				o.MaxConnections = 2
+				o.TLS = TLSConfig([]tls.Certificate{cert})
+			})
+			base := "https://" + ts.serve(t)
+			client := func() *http.Client {
+				tr := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool, ServerName: "127.0.0.1", MinVersion: tls.VersionTLS12}}
+				if proto == "HTTP/2.0" {
+					tr.ForceAttemptHTTP2 = true
+				} else {
+					tr.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
+				}
+				t.Cleanup(tr.CloseIdleConnections)
+				return &http.Client{Transport: tr}
+			}
+			req, _ := http.NewRequest(http.MethodGet, base+"/v1/stream?repo="+repo, nil)
+			req.Header.Set("Authorization", "Bearer "+ts.tokens["bob"])
+			resp, err := client().Do(req)
+			if err != nil || resp.StatusCode != http.StatusOK || resp.Proto != proto {
+				t.Fatalf("stream: %v %v", resp, err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			idle, err := client().Get(base + "/healthz")
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _ = io.Copy(io.Discard, idle.Body)
+			_ = idle.Body.Close()
+			body, _ := json.Marshal(hookEv(board.KindPrompt, "alice", "a1"))
+			req, _ = http.NewRequest(http.MethodPost, base+"/v1/hook", bytes.NewReader(body))
+			req.Header.Set("Authorization", "Bearer "+ts.tokens["alice"])
+			hook, err := client().Do(req)
+			if err != nil || hook.StatusCode != http.StatusOK {
+				t.Fatalf("a hook with the cap held by a stream and an idle connection: %v %v", hook, err)
+			}
+			_ = hook.Body.Close()
+			// The stream hears of the hook's session: it was not closed.
+			if evs := readEvents(t, bufio.NewReader(resp.Body), 1); evs[0].Member != "alice" {
+				t.Fatalf("stream: %+v", evs)
+			}
+		})
+	}
+}
+
 // fromConn is one end of a pipe, which says it comes from addr.
 type fromConn struct {
 	net.Conn
@@ -504,7 +556,7 @@ func TestStuckWritesMakeRoom(t *testing.T) {
 	tt.admit("reader", "10.0.0.1")
 	tt.admit("busy", "10.0.0.2")
 	for _, name := range []string{"reader", "busy"} {
-		tt.table.arrived(tt.conns[name])
+		tt.table.arrive(&request{c: tt.conns[name]})
 	}
 	if got := tt.admit("new", "10.0.0.3"); got != "refused" {
 		t.Fatalf("with every connection busy, a new one closed %q", got)
@@ -534,7 +586,9 @@ func TestKeptAliveConnectionsWaitAgain(t *testing.T) {
 	tt.admit("trickling", "10.0.0.1")
 	tt.admit("young", "10.0.0.1")
 	for _, name := range []string{"old", "trickling", "young"} {
-		tt.table.arrived(tt.conns[name])
+		r := &request{c: tt.conns[name]}
+		tt.table.arrive(r)
+		tt.table.finish(r)
 		tt.table.state(tt.conns[name], http.StateIdle)
 	}
 	// trickling's next request begins, then old's, and trickling sends
@@ -552,4 +606,31 @@ func TestKeptAliveConnectionsWaitAgain(t *testing.T) {
 	if got := tt.admit("newer", "10.0.0.1"); got != "trickling" {
 		t.Fatalf("closed %q, want trickling, whose second byte did not start its wait again", got)
 	}
+}
+
+// An HTTP/2 connection carries requests side by side: it is busy while any
+// that has arrived whole is being handled, and the frames it reads then are
+// no new request's; once only requests still arriving are left, it waits on
+// its client. One whose only quick request was answered, while another's
+// body trickled, held its place; one whose client sent a window update after
+// it went idle was taken for idle again while busy.
+func TestConnectionsWaitPerRequest(t *testing.T) {
+	tt := newTableTest(t, 1)
+	tt.admit("h2", "10.0.0.1")
+	c, peer := tt.conns["h2"], tt.peers["h2"]
+	tt.table.state(c, http.StateIdle) // as the HTTP/2 server starts serving it
+	quick, slow := &request{c: c}, &request{c: c}
+	tt.table.arrive(quick)
+	go func() { _, _ = peer.Write([]byte("a window update")) }()
+	if _, err := c.Read(make([]byte, 64)); err != nil {
+		t.Fatal(err)
+	}
+	if got := tt.admit("new", "10.0.0.2"); got != "refused" {
+		t.Fatalf("a connection busy with a request made room: %q", got)
+	}
+	tt.table.finish(quick)
+	if got := tt.admit("new", "10.0.0.2"); got != "h2" {
+		t.Fatalf("closed %q, want h2, whose only request left is still arriving", got)
+	}
+	tt.table.finish(slow) // its handler returns as the connection closes
 }

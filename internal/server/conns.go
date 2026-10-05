@@ -20,10 +20,11 @@ import (
 // and far fewer than the file descriptors and memory that run out first.
 const DefaultMaxConnections = 4096
 
-// stuckWrite is how long a write must have waited on its client to read
-// before its connection counts as waiting on its client: an answer to a
-// hook fits in the socket's buffer at once, while one whose client stopped
-// reading waits until its write deadline.
+// stuckWrite is how long a write must have waited for its client to read
+// before its connection, though busy, may be closed to make room when none
+// is waiting on its client: an answer to a hook fits in the socket's buffer
+// at once, while one whose client stopped reading waits until its write
+// deadline.
 const stuckWrite = time.Second
 
 // connTable keeps at most max connections open, bounding the file
@@ -37,7 +38,9 @@ const stuckWrite = time.Second
 // until its next request has arrived whole, headers and body: it may be idle
 // between requests, in its TLS handshake, or sending its request, however
 // slowly. Closing it costs the server nothing. It is busy while the server
-// works on its request and writes the answer.
+// works on a request of its that has arrived whole, and writes the answer;
+// an HTTP/2 connection, which carries requests side by side, is busy while
+// any such is being handled, whatever its other streams are sending.
 //
 // Room is made from the source (a client address, an IPv6 /64) with the
 // most connections waiting, by closing the one that has waited longest: one
@@ -229,29 +232,68 @@ func (t *connTable) leave(c *limitConn) {
 	}
 }
 
-// arrived marks c busy: its request has arrived whole.
-func (t *connTable) arrived(c *limitConn) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.unwait(c)
+// request is one request on a connection, from when its handler starts.
+type request struct {
+	c *limitConn
+	// Under t.mu: arrived is set once the request has arrived whole, and
+	// over once its handler has returned.
+	arrived, over bool
 }
 
-// waitAgain marks c waiting on its client again from now.
-func (t *connTable) waitAgain(c *limitConn) {
+// arrive marks r arrived whole: its connection is busy until r is over,
+// and the next bytes it reads are no new request's.
+func (t *connTable) arrive(r *request) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.wait(c)
+	if r.arrived || r.over {
+		return
+	}
+	r.arrived = true
+	r.c.busy++
+	r.c.idle.Store(false)
+	t.unwait(r.c)
+}
+
+// finish marks r over: a connection with no request left that has arrived
+// waits on its client again, from now.
+func (t *connTable) finish(r *request) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if r.over {
+		return
+	}
+	r.over = true
+	if r.arrived {
+		if r.c.busy--; r.c.busy == 0 {
+			t.wait(r.c)
+		}
+	}
+}
+
+// begun restarts the wait of c, which has been idle, as the first bytes of
+// its next request arrive; a connection that is busy, as an HTTP/2 one may
+// be while it reads other frames, is left busy.
+func (t *connTable) begun(c *limitConn) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if c.busy == 0 && c.since != 0 {
+		t.wait(c)
+	}
 }
 
 // state is http.Server's ConnState: a connection that goes idle, answered,
-// waits on its client again.
+// waits on its client again, from now.
 func (t *connTable) state(c net.Conn, st http.ConnState) {
 	if st != http.StateIdle {
 		return
 	}
 	if lc := limited(c); lc != nil {
 		lc.idle.Store(true)
-		t.waitAgain(lc)
+		t.mu.Lock()
+		defer t.mu.Unlock()
+		if lc.busy == 0 {
+			t.wait(lc)
+		}
 	}
 }
 
@@ -267,28 +309,35 @@ func (t *connTable) context(ctx context.Context, c net.Conn) context.Context {
 }
 
 // handler marks a request's connection busy once the request has arrived
-// whole: at once for a request without a body, and for one with a body
-// when the handler has read it, as many bytes as it said, or to its end.
-// One whose body never arrives, read by the handler or by the server after
-// it, keeps its connection waiting on its client.
+// whole, until its handler returns: at once for a request without a body,
+// and for one with a body when the handler has read it, as many bytes as it
+// said, or to its end. A request whose body never arrives, read by the
+// handler or by the server after it, leaves its connection waiting on its
+// client; so does an HTTP/2 connection whose only streams are such.
 func (t *connTable) handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if lc, ok := r.Context().Value(connKey{}).(*limitConn); ok {
-			if r.ContentLength == 0 {
-				t.arrived(lc)
-			} else {
-				r.Body = &arrivingBody{ReadCloser: r.Body, c: lc, left: r.ContentLength}
-			}
+		lc, ok := r.Context().Value(connKey{}).(*limitConn)
+		if !ok {
+			next.ServeHTTP(w, r)
+			return
+		}
+		req := &request{c: lc}
+		defer t.finish(req)
+		if r.ContentLength == 0 {
+			t.arrive(req)
+		} else {
+			r.Body = &arrivingBody{ReadCloser: r.Body, t: t, r: req, left: r.ContentLength}
 		}
 		next.ServeHTTP(w, r)
 	})
 }
 
-// arrivingBody is a request body that marks its connection busy once it
-// has all arrived.
+// arrivingBody is a request body that marks its request arrived once it has
+// all arrived.
 type arrivingBody struct {
 	io.ReadCloser
-	c    *limitConn
+	t    *connTable
+	r    *request
 	left int64 // bytes still to come, or -1 when the request did not say
 	done bool
 }
@@ -301,7 +350,7 @@ func (b *arrivingBody) Read(p []byte) (int, error) {
 		}
 		if b.left == 0 || err == io.EOF {
 			b.done = true
-			b.c.t.arrived(b.c)
+			b.t.arrive(b.r)
 		}
 	}
 	return n, err
@@ -390,10 +439,12 @@ type limitConn struct {
 	// Under t.mu: since is when it began waiting on its client, on t's
 	// clock, or 0 while it is not; prev and next link its source's
 	// waiting connections; pos is its place in t.open, or -1 once it has
-	// left the table.
+	// left the table; busy counts its requests that have arrived whole and
+	// whose handlers have not returned.
 	since      int64
 	prev, next *limitConn
 	pos        int
+	busy       int
 }
 
 func (c *limitConn) Read(p []byte) (int, error) {
@@ -401,7 +452,7 @@ func (c *limitConn) Read(p []byte) (int, error) {
 	if n > 0 {
 		c.heard.Store(time.Now().UnixNano())
 		if c.idle.Load() && c.idle.CompareAndSwap(true, false) {
-			c.t.waitAgain(c)
+			c.t.begun(c)
 		}
 	}
 	return n, err
