@@ -53,6 +53,7 @@ started, was stopped at the exact edit that would have collided, and Alice's age
 | **After every write** | Records the file. If a teammate's agent touched the same file, *their* agent hears about it at its next step: awareness is symmetric. |
 | **Between turns and at the end** | Re-reads `git diff` against the default branch, so reverted or merged work disappears by itself. |
 | **Silence** | A working agent that goes quiet for 10 minutes (45 inside a tool call) shows as *stalled*; its exclusive intents stop blocking anyone. After 2 hours it counts as *gone*. Nothing an agent holds outlives it for long. |
+| **Subagents and worktrees** | Each of an agent's subagents hears of a collision itself, where the agent says which subagent is editing (Claude Code, Codex, Cursor). An agent that moves to another worktree in the same session keeps the reservations it made in the first while it runs. |
 
 Agents can also act deliberately through the MCP tools: `declare_intent` (with `shared` or `exclusive` mode),
 `check_paths`, `team_board`, `send_note` and `release_intent`.
@@ -149,7 +150,8 @@ intagent doctor                                     # checks every link, and say
 ```
 
 `init` in a clone that is already enrolled keeps the team's choices and only adds what you asked for. Re-run
-`--trust-codex` after upgrading intagent: Codex stops trusting a hook whose command changes.
+`--trust-codex` after upgrading intagent: Codex stops trusting a hook whose command changes, and does not trust one
+added since.
 
 ## Supported agents
 
@@ -208,7 +210,10 @@ refusal and alert per repository.
 agent session makes room by dropping those silent longest, ended ones first and live ones last, and past the second the
 claims with no agent running that were quiet longest are forgotten, once they have been quiet for `dormant_for`, those
 holding an intent last. Both default to 20,000, twenty times the scale intagent is meant for; a server older than these
-settings refuses a team file that sets one.
+settings refuses a team file that sets one. Not settings: one claim's changed files may take 512 KB on the server, and
+all of one member's claims 32 MB (each file counts its path, its area and 96 bytes), a fleet's under one token included;
+past that a footprint keeps the files its client sent first and is marked truncated, and once a member's claims hold
+three quarters of their budget, each sweep forgets those with no agent running, quiet longest first.
 
 ## People hear about stuck agents
 
@@ -270,15 +275,20 @@ server logs a warning when it starts and another when it ends, webhooks can send
 `/healthz` still answers 200, so a restart probe never turns a slow server into an absent one; `/healthz?strict=1`
 answers 503, with `"ok": false`, while degraded, for monitors that alert.
 
-The board lives in memory and is saved to `--data` a few seconds after it changes: each save waits nine times as long
-as the last one took, between 1 and 30 seconds, so a crash loses at most that much; a clean stop saves once more. When
-saves fail (a full disk, say), the server logs it at once and then once a minute, keeps every change in memory, tries
-again with a growing pause, and `/healthz` carries `"snapshot": {"ok": false, "failing_since": ..., "attempts": ...,
-"error": "write: no space left on device"}`, which `?strict=1` answers with 503 too. `serve` exits non-zero when its
-final save fails. Each save keeps the snapshot it replaces as `board.json.prev`, so the snapshot takes twice its size on
-disk. A `board.json` that is cut short or damaged is set aside as `board.json.corrupt-<unix time>`, and the server puts
-`board.json.prev` in its place and starts from it, or empty, and logs an error; one of a newer version of intagent, or
-one it cannot read, still stops it, so that it is not overwritten.
+The board lives in memory and is saved to `--data` a few seconds after it changes: each save waits nine times as long as
+the last one took, between 1 and 30 seconds, so a crash loses what changed since the last save began, a few seconds'
+work on a large board; a clean stop saves once more. When saves fail (a full disk, say), the server logs it at once and
+then once a minute, keeps every change in memory, tries again with a growing pause, and `/healthz` carries `"snapshot":
+{"ok": false, "failing_since": ..., "attempts": ..., "error": "write: no space left on device"}`, which `?strict=1`
+answers with 503 too. `serve` exits non-zero when its final save fails. Each save keeps the snapshot it replaces as
+`board.json.prev`, so the snapshot takes twice its size on disk. A `board.json` that is cut short or damaged is set
+aside as `board.json.corrupt-<unix time>`, and the server puts `board.json.prev` in its place and starts from it, or
+empty, and logs an error; one of a newer version of intagent, or one it cannot read, still stops it, so that it is not
+overwritten.
+
+A restart does not count the time the server was down as its agents' silence: agents still at work are not announced
+stalled when it comes back, and their reservations keep refusing teammates' edits. The server opens its port once the
+board is restored; hooks refused meanwhile try again while their time allows, and fail open after it.
 
 ## Commands
 
@@ -294,7 +304,7 @@ one it cannot read, still stops it, so that it is not overwritten.
 | `intagent check <path>...` | Who else is working on these paths. |
 | `intagent declare [-x] -m <why> <glob>...` | Declare intent for this worktree (`-x`: exclusive). |
 | `intagent release [<glob>...]` | Release intents. |
-| `intagent note <member\|claim\|path> <text>` | Leave a note for another member's agents. |
+| `intagent note <member\|claim\|path> <text>` | Leave a note for another member's agents. A member with no agent running in the repository hears it at their next session there, in any worktree, within a day. |
 | `intagent watch` | Keep a worktree on the board for agents without hooks. |
 | `intagent guard` | Pre-commit check against teammates' exclusive intents. |
 | `intagent hook [<agent>]` / `intagent mcp` | Called by agents; the hook recognises the agent from what it sends. |

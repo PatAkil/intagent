@@ -36,6 +36,7 @@ twice. intagent moves that meeting point to the moment an agent is about to edit
 | **Team server** | `intagent serve`. One per team. Holds the board in memory, persists it to a snapshot file. |
 | **Member** | A person. Identified by their bearer token. |
 | **Session** | One agent run: a Claude Code session, a Codex session, a Cursor conversation, a Copilot CLI or Gemini CLI session, or an `intagent watch` loop. Has a liveness state. |
+| **Worker** | A subagent inside a session, which reports under the session's id with an id of its own where the agent gives one. |
 | **Claim** | The unit of ownership: one per member, host and worktree. Holds intents, footprint, a task summary and an inbox. Sessions in the same worktree share a claim, because they write the same files. |
 | **Intent** | A declared path or glob with a mode (`shared` or `exclusive`) and a summary. "I am about to change `services/payments/**`." |
 | **Footprint** | The files a claim has actually changed relative to the default branch: added by `PostToolUse`, reconciled against git at session start, stop and end. |
@@ -58,6 +59,14 @@ A session's state is derived from its last event and the clock:
 A claim is **active** when at least one of its sessions is `working` or `waiting`. Otherwise it is **dormant**: its
 footprint still produces warnings, but its exclusive intents stop blocking. A claim with no live session, no intents
 and an empty footprint is released. Claims with no activity for `forget_after` (7 days) are removed.
+
+A session that reports from another worktree (an agent that moved there under the same session id, as Claude Code's
+`EnterWorktree` does, or subagents working in worktrees of their own) keeps every claim it reported from as its own
+for liveness: each is active while the session is live, so a reservation made in one worktree keeps refusing
+teammates while the agent works in another, and a sweep neither releases nor forgets it. A session keeps the 32
+claims it reported from last, the dashboard lists it under each and counts it once, and its end releases each that
+has nothing left to tell anyone. The cost is that a reservation in a worktree the agent has left for good blocks
+until the session ends or goes quiet.
 
 What the board keeps is bounded whatever clients send, and nothing past a bound refuses a hook. A claim keeps the 20
 sessions that ended or went gone last, and up to twice as many between sweeps, and the 200 that stalled last; a fleet
@@ -115,20 +124,24 @@ nearby work, so nothing is queued for it, nor remembered of what it would have b
 hears of teammates' work from its greeting and its checks, and may hear again of a change it heard of before it left. An
 alert names at most five files and counts the rest, and a claim remembers being told of at most five files of each
 teammate's claim: past those, a file that comes back into the teammate's changes is told again, so what claims sharing a
-large footprint remember grows with the pairs of them, not with the files. A note to a member goes to their claims with an agent
-running; to a member with none, or a teammate with no claim in the repository yet, it waits in a mailbox for their next
-session there, in whichever worktree, which hears it (the answer's `held_for` names them): a fresh worktree, which a
-note queued in a worktree they left would never reach, or one of those. A mailbox holds 20 notes, the board 1024 mailboxes, and a note waits a day, as an inbox item
-does. A note to whoever changed a path goes to the claims still listening, and for each member none of whose claims
-there listens, to the one they were last active in. An inbox holds 50 items; a full one lets go first of an item a
-session was already shown, then of the oldest item of the sender holding the most, an alert before a note when senders
-tie, so a flood of one teammate's alerts or notes pushes out their own items rather than another's note the agent has
-not heard yet. The sweeper drops inbox items a day old, which no session is shown any more, and the alerts a claim that
-no longer listens remembers having heard; and once a claim is removed, the alerts other claims remember of it, which
-nothing can match again since a claim's ID is never reused. A snapshot an older server wrote is trimmed to these bounds
-as it is read.
+large footprint remember grows with the pairs of them, not with the files. A note to a member goes to their claims with
+an agent running; to a member with none, or a teammate with no claim in the repository yet, it waits in a mailbox for
+their next session there, in whichever worktree, which hears it (the answer's `held_for` names them): a fresh worktree,
+which a note queued in a worktree they left would never reach, or one of those. A mailbox holds 20 notes, the board 1024
+mailboxes, and a note waits a day, as an inbox item does. A note to whoever changed a path goes to the claims still
+listening, and for each member none of whose claims there listens, to the one they were last active in. An inbox holds
+50 items; a full one lets go first of an item a session was already shown, then of the oldest item of the sender holding
+the most, an alert before a note when senders tie, so a flood of one teammate's alerts or notes pushes out their own
+items rather than another's note the agent has not heard yet. The sweeper drops inbox items a day old, which no session
+is shown any more, and the alerts a claim that no longer listens remembers having heard; and once a claim is removed,
+the alerts other claims remember of it, which nothing can match again since a claim's ID is never reused. A snapshot an
+older server wrote is trimmed to these bounds as it is read.
 
-Every acknowledgement is remembered per session, so an agent hears about a given overlap once, not on every edit. A
+Every acknowledgement is remembered per session, so an agent hears about a given overlap once, not on every edit; and
+within a session per worker, where the agent names its subagents (Claude Code, Codex, Cursor; see
+[integrations](integrations.md)): subagents run side by side with contexts of their own, so each is bumped, warned and
+asked once itself, rather than the second taking the first's refusal as its own retry. A collision is still counted
+and announced once per session, and when a subagent ends (`SubagentStop`) the board forgets what it told it. A
 collision is announced (a `conflict` activity, for the dashboard and webhooks) under the teammate whose work decided the
 answer, and names at most four others it newly ran into, a member's many worktrees with the same news in one line,
 then counts the rest.
@@ -161,11 +174,11 @@ the worktree's real footprint:
 - `git ls-files --others --exclude-standard` (new files).
 
 The diff runs on a private copy of the index (`GIT_INDEX_FILE`): git diff writes back the index it refreshed, under
-`.git/index.lock`, even with `GIT_OPTIONAL_LOCKS=0`, and that lock refuses the person's and other agents' `git add` while
-it is held. The refreshed copy is kept in intagent's cache directory, named by the real index it began as, and the next
-scan starts from it while the real index is unchanged, so after a formatter only the first scan checks the content of
-the files it touched. Git out of time is stopped with SIGTERM, so it removes its lock files (Windows has no such signal:
-there it is killed, and the private index is what keeps the real one unlocked).
+`.git/index.lock`, even with `GIT_OPTIONAL_LOCKS=0`, and that lock refuses the person's and other agents' `git add`
+while it is held. The refreshed copy is kept in intagent's cache directory, named by the real index it began as, and the
+next scan starts from it while the real index is unchanged, so after a formatter only the first scan checks the content
+of the files it touched. Git out of time is stopped with SIGTERM, so it removes its lock files (Windows has no such
+signal: there it is killed, and the private index is what keeps the real one unlocked).
 
 The files the repository's `ignore` patterns match are left out first. A footprint keeps at most 2000 files; past
 that, the client keeps one file of each changed area, then the files the branch has not committed, a new package
@@ -193,7 +206,8 @@ command. Once a branch is merged and the worktree is clean, the footprint is emp
   without a remote, or the `repo` field of `.intagent.json`.
 - **Paths**: relative to the worktree root, forward slashes, cleaned. Absolute paths and `..` are rejected.
 - **Member**: from the bearer token. The server never trusts a member name sent by a client.
-- **Session**: the agent's own session id, namespaced by member and agent kind.
+- **Session**: the agent's own session id, namespaced by member and agent kind. Its subagents report under it, each
+  with the worker id the agent gives it, if any.
 - **Claim**: member + host + worktree path, with a short random id.
 
 ## Components
@@ -217,26 +231,31 @@ internal/web           the dashboard, embedded
 
 The server keeps the board in memory behind one mutex. Each mutation marks the board dirty, and a goroutine of its own
 saves an atomic snapshot (write, fsync, rename) of a changed board, spaced by what the last save cost: nine times its
-duration after it started, between 1 and 30 seconds. An unclean stop loses what changed since the last save, which on a
-large board is a few seconds' work. A snapshot shares the claims' footprints and alerts with the board, which copies one
-before it next changes it, so the lock is held only to copy the claims and sessions, and it is written to disk a claim
-at a time. Saves that fail are tried again after 1, 2, 4, 8 and 16 seconds, then every 30; the server logs the first
-failure, then one a minute, then the recovery, and `/healthz` says so. Stalled sessions are looked for on a goroutine of
-their own, so a slow or stuck disk does not delay the news. A clean stop abandons a save in flight, waits for the
-requests in flight, and saves once more; `serve` exits non-zero if that save fails. Each save keeps the snapshot it
-replaces as `board.json.prev`, a hard link made before the new one is renamed in. At start, the temporary files of saves
-that were killed halfway are removed, and a snapshot that is cut short or damaged is set aside as
-`board.json.corrupt-<unix time>` and `board.json.prev` put in its place and restored, or nothing: a server that will not
-start leaves every agent unchecked, and one stopped before its next save restores the same again. A snapshot of a newer
-format, or one that cannot be read, still stops it. Beside its maps the board keeps indexes, rebuilt from the snapshot
-on a restart: each repository's claims, each claim's sessions, and for each claim the latest change in each area it
-changed files in and its changed paths in order. A check of a path then looks at
-each claim of its repository once, asks the sessions of only the claims that matter to it whether they are live, and
-finds nearby work by a lookup rather than a walk of every file; a declared intent is matched against the files under
-the directory it is rooted in. What a check costs grows with the claims of its repository, not with every session and
-file on the server. The scale it is meant for is about
-200 members running a thousand agent sessions in 30 repositories, with 100 dashboards open; `scripts/loadgen` drives a
-running server that way, with clients and dashboards that behave as intagent's do, and reports how it held up.
+duration after it started, between 1 and 30 seconds. An unclean stop loses what changed since the last save began, which
+on a large board is a few seconds' work. Go's soft memory limit is set to 85% of the memory limit of the server's cgroup
+(`serve --memory-limit` sets another, or `off` none; `GOMEMLIMIT`, if set, wins), so a large board's saves collect
+garbage harder rather than run the container out of memory. A snapshot shares the claims' footprints and alerts with the
+board, which copies one before it next changes it, so the lock is held only to copy the claims and sessions, and it is
+written to disk a claim at a time. Saves that fail are tried again after 1, 2, 4, 8 and 16 seconds, then every 30; the
+server logs the first failure, then one a minute, then the recovery, and `/healthz` says so. Stalled sessions are looked
+for on a goroutine of their own, so a slow or stuck disk does not delay the news. A clean stop abandons a save in
+flight, waits for the requests in flight, and saves once more; `serve` exits non-zero if that save fails. Each save
+keeps the snapshot it replaces as `board.json.prev`, a hard link made before the new one is renamed in. At start, the
+temporary files of saves that were killed halfway are removed, and a snapshot that is cut short or damaged is set aside
+as `board.json.corrupt-<unix time>` and `board.json.prev` put in its place and restored, or nothing: a server that will
+not start leaves every agent unchecked, and one stopped before its next save restores the same again. A snapshot of a
+newer format, or one that cannot be read, still stops it. The port opens once the board is restored: the server counts a
+hook's wait from when it reads it, so one that waited in the kernel's queue meanwhile could be decided after its client
+had gone ahead without the answer, while one refused tries again for as long as its time allows (below).
+
+Beside its maps the board keeps indexes, rebuilt from the snapshot on a restart: each repository's claims, each claim's
+sessions and those that moved from it, and for each claim the latest change in each area it changed files in and its
+changed paths in order. A check of a path then looks at each claim of its repository once, asks the sessions of only the
+claims that matter to it whether they are live, and finds nearby work by a lookup rather than a walk of every file; a
+declared intent is matched against the files under the directory it is rooted in. What a check costs grows with the
+claims of its repository, not with every session and file on the server. The scale it is meant for is about 200 members
+running a thousand agent sessions in 30 repositories, with 100 dashboards open; `scripts/loadgen` drives a running
+server that way, with clients and dashboards that behave as intagent's do, and reports how it held up.
 
 Reads of a repository's board are shared, because every open dashboard reloads it a moment after each of its events.
 A request joins the build of the board that has not read the board yet, so no answer is older than its request (a
@@ -270,7 +289,7 @@ All endpoints take and return JSON and require `Authorization: Bearer <token>`, 
 
 | Method and path | Used by | Purpose |
 |---|---|---|
-| `POST /v1/hook` | hooks | One normalised lifecycle event in, a decision and context out. The conflicts an edit's answer lists are those that block or overlap, up to 200, and the 20 newest nearby; `more_conflicts` counts the rest. |
+| `POST /v1/hook` | hooks | One normalised lifecycle event in, with the worker it comes from where the agent names one, a decision and context out. The conflicts an edit's answer lists are those that block or overlap, up to 200, and the 20 newest nearby; `more_conflicts` counts the rest. |
 | `POST /v1/intents` | MCP, CLI | Declare intents for a claim. Returns overlaps. |
 | `POST /v1/intents/release` | MCP, CLI | Release some or all intents. |
 | `POST /v1/check` | MCP, CLI, guard | Who else claims or touched these paths, the first 200 of them (`unchecked` counts the rest, and `text` says so; intagent's CLI, MCP tool and guard send more in several checks). Read-only. |
