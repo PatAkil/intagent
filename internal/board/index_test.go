@@ -80,6 +80,9 @@ func (b *Board) checkIndexes() error {
 	if listed != len(b.sessions) {
 		return fmt.Errorf("%d sessions listed under claims, %d on the board", listed, len(b.sessions))
 	}
+	if err := b.checkAlso(); err != nil {
+		return err
+	}
 	members := map[string]int{}
 	for id, c := range b.claims {
 		if err := c.checkFootprintIndex(); err != nil {
@@ -105,6 +108,41 @@ func (b *Board) checkIndexes() error {
 		if members[m] != n || n == 0 {
 			return fmt.Errorf("the board counts %d footprint bytes for %s, whose claims count %d", n, m, members[m])
 		}
+	}
+	return nil
+}
+
+// checkAlso compares the sessions listed as keeping each claim live from
+// elsewhere with the sessions' Also: each claim in it is on the board and
+// not the session's own, and a session keeps at most maxAlsoClaims.
+func (b *Board) checkAlso() error {
+	listed := 0
+	for id, m := range b.alsoSessions {
+		if len(m) == 0 {
+			return fmt.Errorf("claim %s keeps an empty set of sessions from elsewhere", id)
+		}
+		for k, s := range m {
+			if _, ok := s.Also[id]; b.sessions[k] != s || !ok {
+				return fmt.Errorf("session %s is listed as keeping claim %s live, but does not or is not on the board", k, id)
+			}
+			listed++
+		}
+	}
+	also := 0
+	for k, s := range b.sessions {
+		if s.Also != nil && len(s.Also) == 0 || len(s.Also) > maxAlsoClaims {
+			return fmt.Errorf("session %s keeps %d claims live from elsewhere, in a map that is not nil: %t", k, len(s.Also), s.Also != nil)
+		}
+		for id := range s.Also {
+			if b.claims[id] == nil || id == s.ClaimID || b.alsoSessions[id][k] != s {
+				return fmt.Errorf("session %s keeps claim %s live from elsewhere: on the board %t, its own %t, listed %t",
+					k, id, b.claims[id] != nil, id == s.ClaimID, b.alsoSessions[id][k] == s)
+			}
+			also++
+		}
+	}
+	if listed != also {
+		return fmt.Errorf("%d sessions listed as keeping claims live from elsewhere, %d claims kept", listed, also)
 	}
 	return nil
 }

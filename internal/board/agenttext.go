@@ -122,10 +122,11 @@ func near(self, o *claim) bool {
 }
 
 // agentsCounted describes claim id's sessions that have not ended or gone,
-// as "claude-code working", with repeats counted: "2 codex waiting".
+// those that moved to another worktree since (Also) included, as
+// "claude-code working", with repeats counted: "2 codex waiting".
 func (b *Board) agentsCounted(now time.Time, id string) string {
 	counts := map[string]int{}
-	for _, s := range b.claimSessions[id] {
+	for s := range b.sessionsOf(id) {
 		if st := b.state(now, s); st != StateEnded && st != StateGone {
 			counts[string(s.Agent)+" "+string(st)]++
 		}

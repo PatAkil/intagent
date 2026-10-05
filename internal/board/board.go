@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"iter"
 	"log/slog"
+	"maps"
 	"slices"
 	"sort"
 	"strings"
@@ -169,9 +170,11 @@ type Board struct {
 	claims   map[string]*claim
 	byKey    map[string]string
 	sessions map[string]*session
-	// byRepo and claimSessions index claims and sessions (index.go).
+	// byRepo, claimSessions and alsoSessions index claims and sessions
+	// (index.go).
 	byRepo        map[string]*repoIndex
 	claimSessions map[string]map[string]*session
+	alsoSessions  map[string]map[string]*session
 	memberBytes   map[string]int
 	recent        []Activity
 	seq           uint64
@@ -236,6 +239,7 @@ func New(cfg Config, opts ...Option) *Board {
 		sessions:      map[string]*session{},
 		byRepo:        map[string]*repoIndex{},
 		claimSessions: map[string]map[string]*session{},
+		alsoSessions:  map[string]map[string]*session{},
 		memberBytes:   map[string]int{},
 		notes:         map[string][]time.Time{},
 		stats:         map[string]*Stats{},
@@ -638,6 +642,12 @@ func (b *Board) Hook(now time.Time, ev HookEvent) (HookResult, error) {
 	s.Reported = b.state(now, s)
 	if ev.Kind == KindSessionEnd {
 		b.releaseIfDone(now, c)
+		// And the claims it kept live from elsewhere, in ID order.
+		for _, id := range slices.Sorted(maps.Keys(s.Also)) {
+			if o := b.claims[id]; o != nil {
+				b.releaseIfDone(now, o)
+			}
+		}
 	}
 	return res, nil
 }
@@ -2425,7 +2435,8 @@ func (b *Board) Sweep(now time.Time) {
 	})
 	// Which claims still have a session, and which a live one, once old
 	// sessions are dropped: gathered in this pass, not by a search of every
-	// session for every claim.
+	// session for every claim. A session holds, and keeps live, the claims
+	// it reported from before it moved (Also) as it does its own.
 	live, held := map[string]bool{}, make(map[string]bool, len(b.claims))
 	var ended, stalled []*session // those kept that are not live, in the order of keys
 	for _, k := range keys {
@@ -2461,9 +2472,15 @@ func (b *Board) Sweep(now time.Time) {
 			continue
 		}
 		held[s.ClaimID] = true
+		for id := range s.Also {
+			held[id] = true
+		}
 		switch {
 		case st.Live():
 			live[s.ClaimID] = true
+			for id := range s.Also {
+				live[id] = true
+			}
 		case st == StateStalled:
 			stalled = append(stalled, s)
 		default:

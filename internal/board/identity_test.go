@@ -1,6 +1,8 @@
 package board
 
 import (
+	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -190,4 +192,275 @@ func TestWorkerIsCleaned(t *testing.T) {
 	if strings.ContainsRune(ev.Worker, '\n') || utf8.RuneCountInString(ev.Worker) > 201 {
 		t.Fatalf("worker %q", ev.Worker)
 	}
+}
+
+// worktree is one of alice's worktrees other than her own.
+func worktree(name string) Where {
+	w := whereOf("alice")
+	w.Worktree, w.Branch = "/work/alice-"+name, "feat/alice-"+name
+	return w
+}
+
+// aliceFrom sends an event of alice's session s1 from where.
+func (h *harness) aliceFrom(kind Kind, where Where, paths ...string) HookResult {
+	h.t.Helper()
+	ev := HookEvent{Kind: kind, Member: "alice", Agent: AgentClaudeCode, SessionID: "s1", Where: where, Paths: refs(paths...)}
+	if kind == KindPreEdit || kind == KindPostEdit {
+		ev.Tool = "Edit"
+	}
+	res, err := h.b.Hook(h.now, ev)
+	if err != nil {
+		h.t.Fatalf("Hook(%s from %s): %v", kind, where.Worktree, err)
+	}
+	return res
+}
+
+// An agent that moves to another worktree under the same session (Claude
+// Code's EnterWorktree) keeps the claim it left live while it is: the
+// reservation it made there still refuses teammates every time, and a
+// teammate cannot reserve the same files. Before, one event from the new
+// worktree left the old claim with no session: teammates were bumped once
+// and their retry went through, and their reservation was accepted.
+func TestAWorktreeMoveKeepsItsReservation(t *testing.T) {
+	h := newHarness(t)
+	h.aliceFrom(KindSessionStart, whereOf("alice"))
+	h.declare("alice", ModeExclusive, "rework payments", "svc/pay/**")
+	h.advance(time.Minute)
+	h.aliceFrom(KindPrompt, worktree("b"))
+	h.hook(KindSessionStart, "bob", "b1")
+	for range 2 {
+		if res := h.hook(KindPreEdit, "bob", "b1", "svc/pay/retry.go"); res.Decision != DecisionRefuse ||
+			len(res.Conflicts) == 0 || res.Conflicts[0].Severity != SeverityBlock {
+			t.Fatalf("bob's edit inside alice's reservation: %s %v, want a refusal for the reservation", res.Decision, res.Conflicts)
+		}
+	}
+	if res, err := h.b.Declare(h.now, DeclareRequest{Member: "carol", Where: whereOf("carol"), Patterns: []string{"svc/pay/**"},
+		Mode: ModeExclusive}); err != nil || len(res.Rejected) != 1 {
+		t.Fatalf("carol's clashing reservation: %+v %v, want it rejected", res, err)
+	}
+	v := h.b.View(h.now, repo)
+	listed := 0
+	for _, c := range v.Claims {
+		if c.Member != "alice" {
+			continue
+		}
+		if !c.Active || len(c.Sessions) != 1 || c.Sessions[0].ID != "s1" {
+			t.Errorf("alice's claim in %s: active %t, sessions %v", c.Worktree, c.Active, c.Sessions)
+		}
+		listed++
+	}
+	if listed != 2 || v.Sessions != 2 {
+		t.Errorf("view lists %d claims of alice's and counts %d live sessions, want 2 and 2 (alice's and bob's)", listed, v.Sessions)
+	}
+	if r := h.b.Repos(h.now)[0]; r.ActiveClaims != 3 || r.LiveSessions != 2 {
+		t.Errorf("repos: %+v, want 3 active claims and 2 live sessions", r)
+	}
+	if got := h.b.agentsOf(h.now, h.b.findClaim("alice", whereOf("alice"))); got != "claude-code working" {
+		t.Errorf("the greeting says alice's first worktree has %q", got)
+	}
+	// Back in her first worktree, alice's agent edits inside her own reservation.
+	if res := h.aliceFrom(KindPreEdit, whereOf("alice"), "svc/pay/retry.go"); res.Decision != DecisionAllow {
+		t.Fatalf("alice's own edit: %s %q", res.Decision, res.Reason)
+	}
+	// Once the session ends, neither claim is live.
+	h.aliceFrom(KindSessionEnd, whereOf("alice"))
+	if res := h.hook(KindPreEdit, "bob", "b1", "svc/pay/retry.go"); res.Decision == DecisionRefuse && res.Conflicts[0].Severity == SeverityBlock {
+		t.Fatalf("bob is refused for a reservation whose session ended")
+	}
+}
+
+// A session whose workers each report from a worktree of their own, under the
+// session's id, keeps every one of those claims live: the parent's
+// reservation refuses every one of a teammate's edits, and no claim is
+// released and opened again as the session's events move between them.
+// Before, with 10 workers, 13 of 600 edits were refused and the claims were
+// released and opened again 360 times in 10 minutes.
+func TestFanOutKeepsEveryWorktreeLive(t *testing.T) {
+	h := newHarness(t)
+	h.aliceFrom(KindSessionStart, whereOf("alice"))
+	h.declare("alice", ModeExclusive, "rework payments", "svc/pay/**")
+	h.hook(KindSessionStart, "bob", "b1")
+	refused := 0
+	for sec := range 600 {
+		h.advance(time.Second)
+		if sec%30 == 0 {
+			h.aliceFrom(KindToolEnd, whereOf("alice"))
+		}
+		for w := range 10 {
+			if sec%(2+w%5) == 0 {
+				h.aliceFrom(KindToolEnd, worktree(string(rune('a'+w))))
+			}
+		}
+		if res := h.hook(KindPreEdit, "bob", "b1", "svc/pay/retry.go"); res.Decision == DecisionRefuse {
+			refused++
+		}
+		if sec%15 == 0 {
+			h.b.Sweep(h.now)
+		}
+	}
+	if refused != 600 {
+		t.Errorf("%d of 600 of bob's edits refused, want all", refused)
+	}
+	if opened, released := len(h.activities(ActivityClaimOpened)), len(h.activities(ActivityClaimReleased)); opened != 12 || released != 0 {
+		t.Errorf("%d claims opened and %d released, want 12 (alice's 11 and bob's) and none", opened, released)
+	}
+	mustIndex(t, h.b, "the fan-out")
+}
+
+// A session keeps the maxAlsoClaims claims it reported from last, letting
+// go of those it reported from longest ago, and of those it reported from at
+// the same moment by ID: what it keeps does not depend on the order of a map.
+func TestASessionKeepsTheClaimsItReportedFromLast(t *testing.T) {
+	h := newHarness(t)
+	var ids []string
+	for i := range maxAlsoClaims + 9 {
+		if i >= 10 {
+			h.advance(time.Second) // the first ten at the same moment
+		}
+		w := worktree(fmt.Sprintf("w%02d", i))
+		h.aliceFrom(KindToolEnd, w)
+		ids = append(ids, h.b.findClaim("alice", w).ID)
+	}
+	// The last claim is the session's own. Of the 40 before it, it lets go
+	// of eight, all among the first ten, those with the least IDs.
+	tied := slices.Sorted(slices.Values(ids[:10]))
+	gone := map[string]bool{}
+	for _, id := range tied[:8] {
+		gone[id] = true
+	}
+	s := h.b.sessions[sessionKey("alice", AgentClaudeCode, "s1")]
+	if len(s.Also) != maxAlsoClaims {
+		t.Fatalf("the session keeps %d claims, want %d", len(s.Also), maxAlsoClaims)
+	}
+	for _, id := range ids[:len(ids)-1] {
+		if _, kept := s.Also[id]; kept == gone[id] {
+			t.Errorf("claim %s: kept %t", id, kept)
+		}
+	}
+	mustIndex(t, h.b, "the moves")
+}
+
+// A claim taken off the board is no longer kept live by the sessions that
+// moved from it.
+func TestAClaimTakenOffTheBoardLeavesAlso(t *testing.T) {
+	h := newHarness(t)
+	h.aliceFrom(KindPostEdit, whereOf("alice"), "svc/pay/retry.go")
+	h.advance(time.Second)
+	h.aliceFrom(KindToolEnd, worktree("b"))
+	s := h.b.sessions[sessionKey("alice", AgentClaudeCode, "s1")]
+	c := h.b.findClaim("alice", whereOf("alice"))
+	if _, ok := s.Also[c.ID]; !ok {
+		t.Fatalf("the session does not keep the claim it moved from: %v", s.Also)
+	}
+	h.b.mu.Lock()
+	h.b.deleteClaim(h.now, c, ActivityClaimForgotten)
+	h.b.mu.Unlock()
+	if s.Also != nil {
+		t.Errorf("the session still keeps %v", s.Also)
+	}
+	mustIndex(t, h.b, "a claim taken off the board")
+}
+
+// A snapshot keeps what each session keeps live, and an older server's,
+// which keeps nothing, restores as it was. What a snapshot's session keeps
+// that is not on the board, or is its own claim, is let go of.
+func TestSnapshotsKeepWhatSessionsKeepLive(t *testing.T) {
+	h := newHarness(t)
+	h.aliceFrom(KindSessionStart, whereOf("alice"))
+	h.declare("alice", ModeExclusive, "rework payments", "svc/pay/**")
+	h.advance(time.Second)
+	h.aliceFrom(KindToolEnd, worktree("b"))
+	data, _, err := h.b.Snapshot(h.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"also":{"c_1":`) {
+		t.Fatalf("the snapshot does not say what the session keeps live:\n%s", data)
+	}
+	b := New(DefaultConfig())
+	if err := b.Restore(strings.NewReader(string(data)), h.now); err != nil {
+		t.Fatal(err)
+	}
+	mustIndex(t, b, "a restore")
+	if again, _, _ := b.Snapshot(h.now); string(again) != string(data) {
+		t.Fatalf("restored and saved again, the snapshot differs:\n%s\n%s", data, again)
+	}
+	if !b.liveAt(h.now).claim("c_1") {
+		t.Error("after a restore the claim moved from is not live")
+	}
+
+	// As an older server wrote it, or one whose claims went since.
+	for _, also := range []string{``, `,"also":{"c_2":"2026-10-02T09:00:00Z","c_9":"2026-10-02T09:00:00Z"}`} {
+		old := strings.Replace(string(data), `,"also":{"c_1":"2026-10-02T09:00:00Z"}`, also, 1)
+		if old == string(data) {
+			t.Fatal("the snapshot's session is not as the test expects")
+		}
+		b := New(DefaultConfig())
+		if err := b.Restore(strings.NewReader(old), h.now); err != nil {
+			t.Fatal(err)
+		}
+		mustIndex(t, b, "an older snapshot's restore")
+		if again, _, _ := b.Snapshot(h.now); string(again) != strings.Replace(old, also, "", 1) {
+			t.Errorf("restored and saved again, the snapshot differs:\n%s\n%s", old, again)
+		}
+		if b.liveAt(h.now).claim("c_1") {
+			t.Error("a claim no session keeps live is live")
+		}
+	}
+}
+
+// A sweep treats the claims a session moved from as it treats the session's
+// own: kept, and not forgotten, while the session is live, however long ago
+// it last reported from them; and not released while a session that may
+// come back, stalled, holds them.
+func TestASweepKeepsWhatAMovedSessionKeepsLive(t *testing.T) {
+	h := newHarness(t)
+	h.aliceFrom(KindSessionStart, whereOf("alice"))
+	h.declare("alice", ModeExclusive, "rework payments", "svc/pay/**")
+	h.aliceFrom(KindPrompt, worktree("b"))
+	for range 8 * 24 { // past ForgetAfter, at work in the other worktree
+		h.advance(time.Hour)
+		h.aliceFrom(KindToolEnd, worktree("b"))
+		h.b.Sweep(h.now)
+	}
+	if h.b.findClaim("alice", whereOf("alice")) == nil {
+		t.Fatal("the sweep forgot the claim a live session moved from")
+	}
+	h.hook(KindSessionStart, "bob", "b1")
+	if res := h.hook(KindPreEdit, "bob", "b1", "svc/pay/retry.go"); res.Decision != DecisionRefuse {
+		t.Fatalf("bob's edit inside alice's reservation, a week on: %s", res.Decision)
+	}
+
+	// A claim with nothing in it, moved from, then the session stalls.
+	h.aliceFrom(KindToolEnd, worktree("c"))
+	h.aliceFrom(KindToolEnd, worktree("d"))
+	h.advance(h.b.cfg.StallAfter + time.Minute)
+	h.b.Sweep(h.now)
+	if h.b.findClaim("alice", worktree("c")) == nil {
+		t.Fatal("the sweep released the claim a stalled session moved from")
+	}
+	mustIndex(t, h.b, "the sweeps")
+}
+
+// When a session ends, every claim it kept live that has nothing left to
+// tell anyone is released at once, as its own claim is, rather than an hour
+// later when a sweep lets go of the session.
+func TestASessionsEndReleasesTheClaimsItMovedFrom(t *testing.T) {
+	h := newHarness(t)
+	h.aliceFrom(KindSessionStart, whereOf("alice"))
+	h.declare("alice", ModeShared, "", "docs/**") // the first keeps an intent
+	h.aliceFrom(KindToolEnd, worktree("b"))
+	h.aliceFrom(KindToolEnd, worktree("c"))
+	h.aliceFrom(KindSessionEnd, worktree("d"))
+	released := map[string]bool{}
+	for _, a := range h.activities(ActivityClaimReleased) {
+		released[a.ClaimID] = true
+	}
+	for _, w := range []Where{whereOf("alice"), worktree("b"), worktree("c"), worktree("d")} {
+		c := h.b.findClaim("alice", w)
+		if keep := w == whereOf("alice"); (c != nil) != keep {
+			t.Errorf("claim in %s: kept %t, want %t (released: %v)", w.Worktree, c != nil, keep, released)
+		}
+	}
+	mustIndex(t, h.b, "the session's end")
 }

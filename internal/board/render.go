@@ -231,10 +231,11 @@ func (b *Board) summarizeClaim(now time.Time, o *claim, active bool) string {
 	return sb.String()
 }
 
-// agentsOf describes the live sessions on a claim, e.g. "claude-code working".
+// agentsOf describes the live sessions on a claim, e.g. "claude-code working",
+// those that moved to another worktree since (Also) included.
 func (b *Board) agentsOf(now time.Time, c *claim) string {
 	var parts []string
-	for _, s := range b.claimSessions[c.ID] {
+	for s := range b.sessionsOf(c.ID) {
 		if st := b.state(now, s); st != StateEnded && st != StateGone {
 			parts = append(parts, string(s.Agent)+" "+string(st))
 		}

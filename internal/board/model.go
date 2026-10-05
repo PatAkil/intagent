@@ -281,6 +281,13 @@ type session struct {
 	// Pending is context from before an edit, held for an agent that only
 	// reads context after a tool has run.
 	Pending string `json:"pending,omitempty"`
+	// Also holds the other claims the session has reported from, each with
+	// when it last did: the worktree an agent moved from, or the worktrees
+	// of workers that report under the session's id. Each stays live while
+	// the session is, as ClaimID does, so a reservation made there keeps
+	// blocking teammates while its agent works elsewhere. At most
+	// maxAlsoClaims; only the functions in index.go change it.
+	Also map[string]time.Time `json:"also,omitempty"`
 	// refused holds the last few calls refused: a post_edit for one means
 	// the agent ran it without hearing the refusal. It is not saved; a
 	// restart forgets it.
@@ -292,6 +299,10 @@ type refusal struct {
 	id    string
 	spent []string
 }
+
+// maxAlsoClaims bounds the other claims a session keeps live (Also): those
+// it reported from last.
+const maxAlsoClaims = 32
 
 func sessionKey(member string, agent Agent, id string) string {
 	b, _ := json.Marshal([]string{member, string(agent), id})

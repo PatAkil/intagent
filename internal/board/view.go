@@ -92,15 +92,17 @@ func (b *Board) View(now time.Time, repo string) View {
 		}
 	}
 	members := map[string]bool{}
+	// A session is listed under each claim it keeps live, and counted once.
+	live := map[string]bool{}
 	for _, c := range claims {
 		members[c.view.Member] = true
 		cv := c.view
-		cv.Sessions = sessionViews(c.sessions)
-		for _, s := range cv.Sessions {
-			if s.State.Live() {
-				v.Sessions++
+		for _, s := range c.sessions {
+			if s.view.State.Live() {
+				live[s.key] = true
 			}
 		}
+		cv.Sessions = sessionViews(c.sessions)
 		// Files are sorted with their touches beside them: a comparison that
 		// looked both up in the footprint cost most of a dashboard's view.
 		files := c.files
@@ -126,12 +128,14 @@ func (b *Board) View(now time.Time, repo string) View {
 		v.Members = append(v.Members, m)
 	}
 	sort.Strings(v.Members)
+	v.Sessions = len(live)
 	return v
 }
 
 // claimCopy is what a view shows of a claim, copied under the lock: its
 // files with their touches, which are never changed once in a footprint,
-// and its sessions with their states.
+// and its sessions with their states, those that moved to another worktree
+// since (Also) included.
 type claimCopy struct {
 	view     ClaimView
 	files    []fileAt
@@ -159,12 +163,12 @@ func (b *Board) viewCopy(now time.Time, repo string) (View, []claimCopy) {
 				CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt, Files: []FileView{},
 			},
 			files:    make([]fileAt, 0, len(c.Footprint)),
-			sessions: make([]sessionCopy, 0, len(b.claimSessions[c.ID])),
+			sessions: make([]sessionCopy, 0, len(b.claimSessions[c.ID])+len(b.alsoSessions[c.ID])),
 		}
 		for p, t := range c.Footprint {
 			cc.files = append(cc.files, fileAt{p, t})
 		}
-		for _, s := range b.claimSessions[c.ID] {
+		for s := range b.sessionsOf(c.ID) {
 			cc.sessions = append(cc.sessions, sessionCopy{key: s.Key, view: SessionView{ID: s.ID, Agent: s.Agent, State: b.state(now, s),
 				Tool: s.Tool, ToolSince: s.ToolSince, StartedAt: s.StartedAt, LastSeen: s.LastSeen}})
 		}
@@ -189,20 +193,21 @@ func (b *Board) Repos(now time.Time) []RepoSummary {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	out := make([]RepoSummary, 0, len(b.byRepo))
+	live := b.liveAt(now)
 	for repo := range b.byRepo {
 		r := RepoSummary{Repo: repo}
 		for c := range b.claimsIn(repo) {
 			r.Claims++
-			live := 0
+			// A session counts once, under the claim it reports from; a
+			// claim it moved from is active while it is live.
 			for _, s := range b.claimSessions[c.ID] {
 				if b.state(now, s).Live() {
-					live++
+					r.LiveSessions++
 				}
 			}
-			if live > 0 {
+			if live.claim(c.ID) {
 				r.ActiveClaims++
 			}
-			r.LiveSessions += live
 			if c.UpdatedAt.After(r.UpdatedAt) {
 				r.UpdatedAt = c.UpdatedAt
 			}

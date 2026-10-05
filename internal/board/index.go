@@ -13,7 +13,9 @@ import (
 // claim, session and file on the server:
 //
 //   - each repository's claims, in ID order (byRepo);
-//   - each claim's sessions (claimSessions);
+//   - each claim's sessions (claimSessions), and the sessions that reported
+//     from it before they moved to another, which keep it live (alsoSessions,
+//     from each session's Also);
 //   - for each claim, the latest change in each area it changed (areaAt) and
 //     its changed paths in order (sortedPaths);
 //   - what each claim's footprint and directories added whole, and each
@@ -22,8 +24,8 @@ import (
 //
 // They are derived state, never saved, and rebuilt by Restore. Only the
 // functions in this file change them, or what they are derived from: the
-// board's claims and sessions, a session's ClaimID and a claim's Footprint
-// and Dirs.
+// board's claims and sessions, a session's ClaimID and Also, and a claim's
+// Footprint and Dirs.
 // A test recomputes them all after every step of the transcript.
 //
 // A snapshot shares each claim's Footprint and reads it after the lock is
@@ -65,11 +67,19 @@ func (b *Board) addClaim(c *claim) {
 }
 
 // removeClaim takes c off the board. Its sessions stay, as sessions of a
-// claim that no longer exists, until Sweep drops them or they move.
+// claim that no longer exists, until Sweep drops them or they move; the
+// sessions that kept it live from elsewhere let go of it.
 func (b *Board) removeClaim(c *claim) {
 	if b.claims[c.ID] != c {
 		return
 	}
+	for _, s := range b.alsoSessions[c.ID] {
+		delete(s.Also, c.ID)
+		if len(s.Also) == 0 {
+			s.Also = nil
+		}
+	}
+	delete(b.alsoSessions, c.ID)
 	delete(b.claims, c.ID)
 	if b.byKey[c.key()] == c.ID {
 		delete(b.byKey, c.key())
@@ -110,15 +120,24 @@ func (b *Board) claimsIn(repo string) iter.Seq[*claim] {
 }
 
 // attachSession puts s on the board, if it is not there yet, as a session of
-// claim id: a session moves when its agent reports from another worktree.
+// claim id: a session moves when its agent reports from another worktree,
+// and the claim it moves from stays live while it is (Also). A session put
+// on the board keeps the claims in its Also that are on the board.
 func (b *Board) attachSession(s *session, id string) {
 	switch old := b.sessions[s.Key]; {
 	case old == s && s.ClaimID == id:
 		return
 	case old == s:
 		b.unlinkSession(s)
+		b.alsoOff(s, id) // the claim it reports from is its own
+		if b.claims[s.ClaimID] != nil {
+			b.alsoOn(s, s.ClaimID, s.LastSeen)
+		}
 	case old != nil:
 		b.detachSession(old)
+		b.linkAlso(s, id)
+	default:
+		b.linkAlso(s, id)
 	}
 	s.ClaimID = id
 	b.sessions[s.Key] = s
@@ -137,13 +156,101 @@ func (b *Board) detachSession(s *session) {
 	}
 	delete(b.sessions, s.Key)
 	b.unlinkSession(s)
+	for id := range s.Also {
+		unlinkFrom(b.alsoSessions, id, s.Key)
+	}
 }
 
-func (b *Board) unlinkSession(s *session) {
-	m := b.claimSessions[s.ClaimID]
-	delete(m, s.Key)
+func (b *Board) unlinkSession(s *session) { unlinkFrom(b.claimSessions, s.ClaimID, s.Key) }
+
+// unlinkFrom takes session k out of index's set for claim id.
+func unlinkFrom(index map[string]map[string]*session, id, k string) {
+	m := index[id]
+	delete(m, k)
 	if len(m) == 0 {
-		delete(b.claimSessions, s.ClaimID)
+		delete(index, id)
+	}
+}
+
+// alsoOn has session s keep claim id live, as last reported from at, and
+// lets go of the claims it reported from longest ago (then by ID) past
+// maxAlsoClaims.
+func (b *Board) alsoOn(s *session, id string, at time.Time) {
+	if s.Also == nil {
+		s.Also = map[string]time.Time{}
+	}
+	s.Also[id] = at
+	m := b.alsoSessions[id]
+	if m == nil {
+		m = map[string]*session{}
+		b.alsoSessions[id] = m
+	}
+	m[s.Key] = s
+	b.boundAlso(s)
+}
+
+// alsoOff has session s no longer keep claim id live from elsewhere.
+func (b *Board) alsoOff(s *session, id string) {
+	if _, ok := s.Also[id]; !ok {
+		return
+	}
+	delete(s.Also, id)
+	if len(s.Also) == 0 {
+		s.Also = nil
+	}
+	unlinkFrom(b.alsoSessions, id, s.Key)
+}
+
+// linkAlso indexes the claims a session put on the board as a session of
+// claim own keeps live, a snapshot's: those still on the board but own, as
+// many as it may keep.
+func (b *Board) linkAlso(s *session, own string) {
+	for id := range s.Also {
+		if b.claims[id] == nil || id == own {
+			delete(s.Also, id)
+			continue
+		}
+		m := b.alsoSessions[id]
+		if m == nil {
+			m = map[string]*session{}
+			b.alsoSessions[id] = m
+		}
+		m[s.Key] = s
+	}
+	if len(s.Also) == 0 {
+		s.Also = nil
+	}
+	b.boundAlso(s)
+}
+
+// boundAlso lets go of the claims session s reported from longest ago, ties
+// going by ID, until it keeps maxAlsoClaims.
+func (b *Board) boundAlso(s *session) {
+	for len(s.Also) > maxAlsoClaims {
+		oldest := ""
+		for id, at := range s.Also {
+			if was, ok := s.Also[oldest]; !ok || at.Before(was) || at.Equal(was) && id < oldest {
+				oldest = id
+			}
+		}
+		b.alsoOff(s, oldest)
+	}
+}
+
+// sessionsOf yields the sessions whose liveness is claim id's: its own, then
+// those that reported from it before they moved (Also).
+func (b *Board) sessionsOf(id string) iter.Seq[*session] {
+	return func(yield func(*session) bool) {
+		for _, s := range b.claimSessions[id] {
+			if !yield(s) {
+				return
+			}
+		}
+		for _, s := range b.alsoSessions[id] {
+			if !yield(s) {
+				return
+			}
+		}
 	}
 }
 
@@ -344,7 +451,7 @@ func (l liveness) claim(id string) bool {
 		return live
 	}
 	live := false
-	for _, s := range l.b.claimSessions[id] {
+	for s := range l.b.sessionsOf(id) {
 		if trace != nil {
 			trace.sessionVisits++
 		}
