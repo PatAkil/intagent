@@ -388,16 +388,16 @@ func TestAWorkerIsNotHeldBackByItsSessionsReservation(t *testing.T) {
 
 // A claim kept live by another agent, at work in it or moved from it to
 // somewhere else, before or after this session moved, still holds back a
-// session that moved from it: the reservation may be that agent's. (Each
-// case is played several times, as which session the board finds first
-// follows the order of a map.)
+// session that moved from it: the reservation may be that agent's. One that
+// moved from it and has ended does not. (Each case is played several times,
+// as which session the board finds first follows the order of a map.)
 func TestAReservationAnotherAgentKeepsStillHoldsBack(t *testing.T) {
 	cases := []struct {
-		name   string
-		to     Where
-		before bool
-	}{{"at work in it", whereOf("alice"), true}, {"moved before", worktree("c"), true},
-		{"moved after", worktree("c"), false}}
+		name        string
+		to          Where
+		before, end bool
+	}{{"at work in it", whereOf("alice"), true, false}, {"moved before", worktree("c"), true, false},
+		{"moved after", worktree("c"), false, false}, {"moved and ended", worktree("c"), false, true}}
 	for i := range 4 * len(cases) {
 		tc := cases[i%len(cases)]
 		h := newHarness(t)
@@ -409,6 +409,9 @@ func TestAReservationAnotherAgentKeepsStillHoldsBack(t *testing.T) {
 				t.Fatal(err)
 			}
 			ev.Kind, ev.Where = KindPrompt, tc.to
+			if tc.end {
+				ev.Kind = KindSessionEnd
+			}
 			if _, err := h.b.Hook(h.now, ev); err != nil {
 				t.Fatal(err)
 			}
@@ -420,10 +423,10 @@ func TestAReservationAnotherAgentKeepsStillHoldsBack(t *testing.T) {
 		if !tc.before {
 			other()
 		}
-		if res := h.aliceFrom(KindPreEdit, worktree("b"), "svc/pay/retry.go"); res.Decision != DecisionRefuse ||
-			res.Conflicts[0].Severity != SeverityBlock {
-			t.Fatalf("with alice's other agent %s, her moved session's edit: %s %v, want a refusal for the reservation",
-				tc.name, res.Decision, res.Conflicts)
+		res := h.aliceFrom(KindPreEdit, worktree("b"), "svc/pay/retry.go")
+		if refused := res.Decision == DecisionRefuse && res.Conflicts[0].Severity == SeverityBlock; refused == tc.end {
+			t.Fatalf("with alice's other agent %s, her moved session's edit: %s %v, want a refusal for the reservation: %t",
+				tc.name, res.Decision, res.Conflicts, !tc.end)
 		}
 	}
 }
