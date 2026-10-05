@@ -292,6 +292,54 @@ func TestDurablePartRestoresEndsAndReservationsSince(t *testing.T) {
 	}
 }
 
+// A restore with a durable part doubts the sessions the snapshot had
+// working, as the snapshot recorded them, not as their silence credited with
+// the downtime reads: alice, silent 8 minutes when the board was saved and
+// 11 when it went down, comes back unsure and working. Bob, whom the
+// snapshot had stalled and announced so, stays stalled; dave, waiting for
+// his member at the save, stays waiting.
+func TestDoubtGoesByWhatTheSnapshotRecorded(t *testing.T) {
+	h := newHarness(t)
+	h.hook(KindPrompt, "bob", "b1")
+	h.hook(KindStop, "dave", "d1")
+	h.advance(11 * time.Minute)
+	h.b.Sweep(h.now) // bob is announced stalled
+	h.hook(KindPrompt, "alice", "a1")
+	h.advance(8 * time.Minute)
+	snap, version, err := h.b.Snapshot(h.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.advance(3 * time.Minute)
+	h.hook(KindPostEdit, "carol", "c1", "web/a.go") // the board changes after the snapshot
+	h.b.SnapshotSaved(version)
+	durable := durableOf(t, h.b, h.now)
+
+	b := New(DefaultConfig())
+	restart := h.now.Add(30 * time.Second) // the server ran until h.now
+	if err := b.RestoreAfter(bytes.NewReader(snap), restart, h.now); err != nil {
+		t.Fatal(err)
+	}
+	if applied, err := b.RestoreDurable(bytes.NewReader(durable), restart, h.now); err != nil || !applied {
+		t.Fatalf("RestoreDurable = %t, %v", applied, err)
+	}
+	for _, tc := range []struct {
+		member, id string
+		unsure     bool
+		state      State
+	}{
+		{"alice", "a1", true, StateWorking},
+		{"bob", "b1", false, StateStalled},
+		{"dave", "d1", false, StateWaiting},
+	} {
+		x := b.sessions[sessionKey(tc.member, AgentClaudeCode, tc.id)]
+		if x.Unsure != tc.unsure || b.state(restart, x) != tc.state {
+			t.Errorf("%s's session restored unsure %t and %s, want unsure %t and %s", tc.member, x.Unsure,
+				b.state(restart, x), tc.unsure, tc.state)
+		}
+	}
+}
+
 // What the durable part says ended or left the board since the last whole
 // save is bounded, should those saves fail for long: the earliest go first.
 func TestNotedEndsAreBounded(t *testing.T) {

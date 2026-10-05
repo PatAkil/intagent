@@ -295,9 +295,9 @@ What an unclean stop (a crash, or a clean stop whose final save failed) loses, t
   had until the next session in that worktree scans it. A teammate's agent may meanwhile be bumped once for a file
   committed since, or not told of one changed since.
 - up to 5 minutes of the other sessions. One started since comes back at its next hook. One the whole save had working
-  comes back unsure: it may be silent as long as one in a tool call may (`tool_stall_after`) until it next reports, so
-  that one that went into a long tool call since is not announced stalled; the price is that one that truly went silent
-  is announced stalled up to 35 minutes later.
+  comes back unsure, however long it had been silent then: it may be silent as long as one in a tool call may
+  (`tool_stall_after`) until it next reports, so that one that went into a long tool call since is not announced
+  stalled; the price is that one that truly went silent is announced stalled up to 35 minutes later.
 - up to 5 minutes of what agents were told and claims were alerted of: an agent may be warned again, or bumped again (a
   refusal its retry gets past), about what it heard; the alerts queued for a claim since are lost, and come again as the
   teammate's files come back at its next scan.

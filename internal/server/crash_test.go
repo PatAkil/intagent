@@ -276,6 +276,40 @@ func TestACrashKeepsALongToolCallFromLookingStalled(t *testing.T) {
 	}
 }
 
+// A session the whole save had working comes back unsure after a crash
+// however long it had been silent when the board was saved: its silence,
+// credited with the downtime, runs to the crash, minutes longer than at the
+// save, and it may have gone into a long tool call meanwhile. Here alice's
+// agent prompts, generates for eight and a half minutes, the board being
+// saved whole 8 minutes into it, then starts a half-hour test run; the
+// server crashes 3 minutes into it. Before, the restart took the credited
+// silence of eleven minutes for a stall, and the first sweep announced the
+// agent stalled, which it never was without the crash.
+func TestACrashKeepsAnAgentSilentAtTheSaveFromLookingStalled(t *testing.T) {
+	for _, crash := range []bool{false, true} {
+		t.Run(map[bool]string{false: "no crash", true: "crash"}[crash], func(t *testing.T) {
+			r := newCrashRun(t)
+			r.run(time.Second)
+			r.busy(2 * time.Minute)
+			r.hook(board.KindPrompt, "alice", "a1", where("alice"))
+			r.busy(8*time.Minute + 30*time.Second) // the whole board saved at 5 and at 10 minutes
+			r.hook(board.KindToolStart, "alice", "a1", where("alice"))
+			r.busy(3 * time.Minute)
+			b := r.ts.Board()
+			if crash {
+				b = r.crash(30 * time.Second)
+			}
+			r.sweep(b, 5*time.Minute)
+			if n := countKind(b.Since(repo, 0), board.ActivitySessionStalled, "alice"); n != 0 {
+				t.Errorf("alice's agent 8 minutes into its tool call was announced stalled %d times", n)
+			}
+			if st, _ := r.sessionState(b, "alice", "a1"); st != board.StateWorking {
+				t.Errorf("alice's agent 8 minutes into its tool call is %s", st)
+			}
+		})
+	}
+}
+
 // A session that ended in the minutes before a crash stays ended, and the
 // claim its end released stays released: the durable part records both
 // until the whole board is saved again. Before, the session came back as

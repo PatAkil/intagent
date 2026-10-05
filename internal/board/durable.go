@@ -336,7 +336,7 @@ func (b *Board) applyDurable(d durableState, now, stopped time.Time) {
 		}
 		b.attachSession(x, x.ClaimID)
 	}
-	b.doubt(now, sessions)
+	b.doubt(sessions)
 	b.restoreFeed(d.Seq, d.Recent, d.Dropped, d.Stats)
 	b.restoreMail(d.Mail)
 	for _, c := range mailed {
@@ -398,12 +398,18 @@ func sortedKeys[V any](m map[string]V) []string {
 	return keys
 }
 
-// doubt marks unsure (session.Unsure) the working sessions the snapshot
-// holds that durable part d does not: what they did after the snapshot was
-// not saved, and may have been to go into a long tool call, which would be
-// taken for silence. The sessions of the claims that hold reservations are
-// as d has them (sessions), or were not live when it was saved.
-func (b *Board) doubt(now time.Time, sessions []*session) {
+// doubt marks unsure (session.Unsure) the sessions the snapshot had working
+// that the durable part does not hold (sessions): what they did after the
+// snapshot was not saved, and may have been to go into a long tool call,
+// which would be taken for silence. It goes by what the snapshot recorded,
+// the session's phase and the state last announced of it, not by its state
+// now: its silence, credited with the downtime, runs from the hook the
+// snapshot holds to the crash, longer by the minutes between that snapshot
+// and the crash than it was at the snapshot, and one silent a while then
+// may have gone into a tool call since. One the snapshot had stalled stays
+// so, announced. The sessions of the claims that hold reservations are as
+// the durable part has them, or were not live when it was saved.
+func (b *Board) doubt(sessions []*session) {
 	durable := make(map[string]bool, len(sessions))
 	for _, x := range sessions {
 		durable[x.Key] = true
@@ -413,7 +419,7 @@ func (b *Board) doubt(now time.Time, sessions []*session) {
 		return c != nil && holdsReservation(c)
 	}
 	for _, x := range b.sessions {
-		if durable[x.Key] || b.state(now, x) != StateWorking || reserved(x.ClaimID) {
+		if durable[x.Key] || x.Phase != phaseWorking || x.Reported != StateWorking || reserved(x.ClaimID) {
 			continue
 		}
 		carries := false
