@@ -155,3 +155,29 @@ func TestHookInFlightAtShutdownIsDecided(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// A scan's age, as its client says, runs to when the client sent it: the
+// server adds the time the request then waited in it, to be read and
+// admitted, so that a change a hook reported meanwhile, which git may not
+// have seen, is kept. Before, the board measured the age back from when it
+// took the request, and dropped a change made 150 ms after a scan began
+// that waited 300 ms.
+func TestScanAgeCountsTheTimeTheRequestWaited(t *testing.T) {
+	ts := newTestServer(t)
+	ts.do(t, "POST", "/v1/hook", "alice", hookEv(board.KindPostEdit, "alice", "a1", "svc/a.go"), nil)
+	ts.mu.Lock()
+	ts.clock = ts.clock.Add(250 * time.Millisecond)
+	ts.mu.Unlock()
+	scan := hookEv(board.KindToolEnd, "alice", "a1")
+	scan.Footprint = &board.Footprint{Files: []board.PathRef{{Path: "svc/b.go"}}, AgeMS: 100}
+	ts.wait(300 * time.Millisecond)
+	if code := ts.do(t, "POST", "/v1/hook", "alice", scan, nil); code != http.StatusOK {
+		t.Fatalf("the scan: %d", code)
+	}
+	ts.wait(0)
+	var res board.CheckResult
+	ts.do(t, "POST", "/v1/check", "bob", board.CheckRequest{Where: where("bob"), Paths: []board.PathRef{{Path: "svc/a.go"}}}, &res)
+	if len(res.Conflicts) != 1 || res.Conflicts[0].Member != "alice" {
+		t.Fatalf("bob's check of the file alice changed as the scan ran: %+v", res.Conflicts)
+	}
+}

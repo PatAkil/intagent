@@ -380,34 +380,44 @@ func TestHookChangesAreKeptPastTheBounds(t *testing.T) {
 
 // A scan keeps the changes hooks reported after it began, which git may not
 // have seen: those reported within its age (Footprint.AgeMS), up to 8
-// seconds, before it arrived. An age of 0 keeps none, as before; an edit a
-// hook reported before the scan began and the scan does not list is gone
-// from the worktree, and is dropped.
+// seconds, before the client sent it, or since, while the request was on
+// its way and waited in the server to be read and admitted
+// (HookEvent.Waited). An age of 0 from a request that did not wait keeps
+// none, as before; an edit a hook reported before the scan began and the
+// scan does not list is gone from the worktree, and is dropped.
 func TestScanKeepsChangesNewerThanItself(t *testing.T) {
+	ms := time.Millisecond
 	for _, tc := range []struct {
-		age      time.Duration // the scan's age when it arrives
-		editedAt time.Duration // before the scan arrives
+		age      time.Duration // the scan's age when the client sends it
+		waited   time.Duration // in the server, before the board takes it
+		editedAt time.Duration // before the board takes the scan
 		kept     bool
 	}{
-		{0, time.Second, false},
-		{5 * time.Second, 3 * time.Second, true},
-		{5 * time.Second, 5 * time.Second, false}, // made as the scan began: git saw it
-		{2 * time.Second, 3 * time.Second, false},
-		{time.Minute, 7 * time.Second, true},
-		{time.Minute, 9 * time.Second, false}, // past the 8 s the board reads
-		{-time.Second, time.Second, false},
+		{0, 0, time.Second, false},
+		{5 * time.Second, 0, 3 * time.Second, true},
+		{5 * time.Second, 0, 5 * time.Second, false}, // made as the scan began: git saw it
+		{2 * time.Second, 0, 3 * time.Second, false},
+		{time.Minute, 0, 7 * time.Second, true},
+		{time.Minute, 0, 9 * time.Second, false}, // past the 8 s the board reads
+		{-time.Second, 0, time.Second, false},
+		{100 * ms, 300 * ms, 250 * ms, true}, // made 150 ms after the scan began
+		{100 * ms, 300 * ms, 400 * ms, false},
+		{0, 300 * ms, 200 * ms, true}, // from a client that does not say: made after it sent the scan
+		{time.Minute, 2 * time.Second, 9 * time.Second, true},
+		{time.Minute, 2 * time.Second, 11 * time.Second, false},
 	} {
 		h := newHarness(t)
 		h.hook(KindPostEdit, "alice", "a1", "svc/a.go")
 		h.advance(tc.editedAt)
 		_, err := h.b.Hook(h.now, HookEvent{Kind: KindToolEnd, Member: "alice", Agent: AgentClaudeCode, SessionID: "a1", Where: whereOf("alice"),
-			Footprint: &Footprint{Files: refs("svc/b.go"), AgeMS: tc.age.Milliseconds()}})
+			Footprint: &Footprint{Files: refs("svc/b.go"), AgeMS: tc.age.Milliseconds()}, Waited: tc.waited})
 		if err != nil {
 			t.Fatal(err)
 		}
 		c := h.b.findClaim("alice", whereOf("alice"))
 		if kept := c.Footprint["svc/a.go"] != nil; kept != tc.kept || c.Footprint["svc/b.go"] == nil {
-			t.Errorf("a scan %s old, an edit %s before it arrived: kept %v, want %v", tc.age, tc.editedAt, kept, tc.kept)
+			t.Errorf("a scan %s old, which waited %s, an edit %s before it was taken: kept %v, want %v",
+				tc.age, tc.waited, tc.editedAt, kept, tc.kept)
 		}
 	}
 }

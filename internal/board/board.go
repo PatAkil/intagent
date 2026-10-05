@@ -666,7 +666,9 @@ func (ev HookEvent) clean(maxFootprint int) (HookEvent, error) {
 			cut.Dirs = cleanFootprint(fp.Dirs, maxFootprintDirs)
 		}
 		cut.Truncated = fp.Truncated || len(fp.Files) > len(cut.Files) || len(fp.Dirs) > len(cut.Dirs)
-		cut.AgeMS = min(max(fp.AgeMS, 0), maxScanAge.Milliseconds())
+		// How long before now the scan began: as the client says, up to
+		// maxScanAge, and the time the request then took to reach the board.
+		cut.AgeMS = min(max(fp.AgeMS, 0), maxScanAge.Milliseconds()) + max(ev.Waited, 0).Milliseconds()
 		ev.Footprint = &cut
 	}
 	ev.Prompt = PromptLine(ev.Prompt)
@@ -883,8 +885,8 @@ func (b *Board) reconciled(now time.Time, c *claim, fp *Footprint) (map[string]*
 		}
 	}
 	// A change a hook reported after the scan began may not be in it. The
-	// scan began AgeMS before the client sent it, and the request took a
-	// moment to come, so a change reported since now less the age is kept.
+	// scan began AgeMS before now (HookEvent.clean), so a change reported
+	// since is kept.
 	since := now.Add(-time.Duration(fp.AgeMS) * time.Millisecond)
 	for _, p := range c.sortedPaths {
 		if t := c.Footprint[p]; !t.FromGit && !listed[p] && (fp.Truncated || t.At.After(since)) {

@@ -582,6 +582,7 @@ func (s *Server) handleHook(w http.ResponseWriter, r *http.Request) {
 		stop := s.watchCall(caller)
 		defer stop()
 	}
+	ev.Waited = caller.waited()
 	res, err := s.board.Hook(s.now(), ev)
 	switch {
 	case errors.Is(err, board.ErrAbandoned):

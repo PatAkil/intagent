@@ -373,6 +373,11 @@ type HookEvent struct {
 	// and any other late event is recorded without delivering anything,
 	// which then waits for the session's next answer.
 	Late func() bool `json:"-"`
+	// Waited, set by the server, is how long the request waited there,
+	// being read and admitted, before the board got the time it is handled
+	// at: a scan's age (Footprint.AgeMS) runs only to when the client sent
+	// it.
+	Waited time.Duration `json:"-"`
 }
 
 // HookResult is the server's answer to a hook event.
