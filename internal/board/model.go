@@ -295,9 +295,9 @@ type session struct {
 	Calls     map[string]bool `json:"calls,omitempty"`
 	InFlight  int             `json:"in_flight,omitempty"`
 	// Acked holds the conflicts this session has already been told about,
-	// while it runs: one that ends lets go of it (forgetLive). Only ack and
-	// unack change it, copying it first while a snapshot shares it
-	// (ackedShared).
+	// while it runs and for forgetEndedAfter once it ends, when it lets go of
+	// it (forgetLive). Only ack and unack change it, copying it first while
+	// a snapshot shares it (ackedShared).
 	Acked map[string]bool `json:"acked,omitempty"`
 	// Prompted is set once a prompt of the session's has named its claim's
 	// task: a later one does not name it again.

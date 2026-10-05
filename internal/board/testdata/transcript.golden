@@ -58,7 +58,7 @@
 #0560 d91fbb5f6845 prompt prompt:told declare:4 post_edit:told post_edit:told pre_edit:deny post_edit:told session_end session_start:told post_edit:told
 #0570 7d8f92a8772d post_edit:told restore:24 session_start:told post_edit:told post_edit:told post_edit:told tool_start tool_start session_end session_start:told
 #0580 b0c5ff7066c0 declare:0 tool_end heartbeat:told tool_start post_edit:told session_start:told stop pre_edit:deny session_end post_edit:told
-#0590 1b434bc743f3 post_edit:told tool_start post_edit:told tool_end tool_start tool_end note:2 note:2 note:2 note:2 pre_edit:deny check:8 sweep
+#0590 972a10ee67df post_edit:told tool_start post_edit:told tool_end tool_start tool_end note:2 note:2 note:2 note:2 pre_edit:deny check:8 sweep
 #0600 5f61787f0136 pre_edit:deny pre_edit:deny tool_end pre_edit:deny subagent_stop! tool_end note:3 tool_start note! stop
 #0610 68507ff81f3e pre_edit:deny heartbeat sweep heartbeat check:2 sweep post_edit:told pre_edit:deny post_edit:told release:6
 #0620 b059cfa725ed post_edit:told pre_edit post_edit:told pre_edit:deny pre_edit:told view session_start:told tool_start pre_edit:deny post_edit:told
@@ -108,14 +108,14 @@
 #1060 037a267dffb9 heartbeat:told note:2 note:2 note:2 note:2 pre_edit:deny pre_edit:deny pre_edit:deny pre_edit:deny tool_end:told pre_edit:deny post_edit:told check:9
 #1070 6b075293eb53 post_edit:told tool_end:told declare:25 pre_edit:deny heartbeat:told declare:1 post_edit:told declare:0 post_edit:told tool_start
 #1080 9cd62be1c3af post_edit:told sweep tool_end:told heartbeat:told post_edit:told sweep check:12 declare:12 pre_edit pre_edit:deny
-#1090 a6f7212b5b18 sweep stop declare:8 restore:24 post_edit:told pre_edit:deny post_edit:told tool_start tool_end:told pre_edit:deny
+#1090 5f6a266a30af sweep stop declare:8 restore:24 post_edit:told pre_edit:deny post_edit:told tool_start tool_end:told pre_edit:deny
 #1100 69e562183229 post_edit:told stop tool_end:told heartbeat:told post_edit:told pre_edit:deny prompt:told note:2 tool_start post_edit:told
-#1110 3ab0a618b3b6 sweep pre_edit:told tool_end:told pre_edit:deny tool_end check:3 prompt tool_start stop pre_edit:deny
+#1110 8a3559de656f sweep pre_edit:told tool_end:told pre_edit:deny tool_end check:3 prompt tool_start stop pre_edit:deny
 #1120 5d5cb6699350 tool_end:told sweep prompt:told subagent_stop! pre_edit:deny post_edit:told sweep heartbeat:told check:10 tool_start
 #1130 d9fa6ab85f72 tool_start post_edit:told pre_edit:deny pre_edit:deny sweep session_start:told tool_start declare:25 prompt:told pre_edit:deny
 #1140 a54389d02f1b release:0 pre_edit check:18 prompt:told session_end declare:3 declare:10 declare:5 session_end pre_edit:deny
 #1150 e9c96592e92a release:15 declare:29 post_edit:told prompt:told heartbeat:told heartbeat prompt pre_edit:deny pre_edit:deny post_edit:told
-#1160 f2b2cf028d87 prompt:told post_edit:told post_edit:told post_edit:told release:0 post_edit:told tool_start pre_edit:deny view stop
+#1160 65fccefc1b32 prompt:told post_edit:told post_edit:told post_edit:told release:0 post_edit:told tool_start pre_edit:deny view stop
 #1170 6c2219a0f3f7 post_edit:told declare:3 tool_end:told pre_edit:deny post_edit:told pre_edit:deny pre_edit:deny pre_edit:deny stop post_edit:told
 #1180 10f3ee02a711 post_edit:told heartbeat post_edit:told declare:14 heartbeat:told pre_edit:deny pre_edit:deny post_edit:told prompt pre_edit:deny
 #1190 1dfe0a05eff1 pre_edit:deny session_end tool_end sweep pre_edit:deny session_start:told session_end post_edit:told post_edit:told post_edit:told
@@ -123,8 +123,8 @@
 #1210 0713e9f01c64 post_edit:told pre_edit:deny release:1 post_edit:told post_edit:told subagent_stop! pre_edit:deny release:0 release:0 sweep
 #1220 e8cff90726e6 session_start:told post_edit:told session_end declare:2 prompt:told post_edit post_edit:told pre_edit:deny pre_edit:deny prompt!
 #1230 4143e77b97ae declare:19 pre_edit:deny pre_edit:deny tool_end:told tool_start stop subagent_stop! pre_edit:deny note! post_edit:told
-#1240 cab56d84cab7 check:19 sweep tool_end:told pre_edit:deny view tool_start tool_end:told pre_edit:deny post_edit:told session_end
-#1250 37e1f4375fc7 prompt:told prompt:told check:24 session_start:told session_end tool_start post_edit:told view post_edit:told pre_edit:deny
+#1240 5880e50d2443 check:19 sweep tool_end:told pre_edit:deny view tool_start tool_end:told pre_edit:deny post_edit:told session_end
+#1250 de039ef5c4fe prompt:told prompt:told check:24 session_start:told session_end tool_start post_edit:told view post_edit:told pre_edit:deny
 #1260 c4d3bb825a41 check:6 post_edit:told tool_end:told tool_start tool_end:told pre_edit release:0 heartbeat:told tool_start check:3
 #1270 09cc09fbddcf session_start:told post_edit prompt:told prompt:told prompt:told sweep declare:7 tool_start post_edit:told prompt:told
 #1280 0f6ce5c1898f post_edit:told stop stop declare:6 session_start:told stop declare:3 tool_start tool_end:told session_start:told
@@ -135,15 +135,15 @@
 #1330 5e56f5d94168 sweep pre_edit:deny tool_start tool_end:told stop declare:1 tool_start prompt:told tool_end:told sweep
 #1340 9ac4e2b8e2e1 prompt:told check:38 check:11 pre_edit:deny post_edit:told pre_edit:deny prompt:told tool_end:told heartbeat:told stop
 #1350 a2b81d12e708 session_end tool_start post_edit:told tool_start post_edit:told pre_edit:deny post_edit:told declare:10 heartbeat:told tool_start
-#1360 d336d696e770 view pre_edit:deny check:11 note:3 note:3 note:3 note:3 pre_edit:deny pre_edit:deny post_edit:told pre_edit:deny pre_edit:deny heartbeat:told
+#1360 8e684af3f5d9 view pre_edit:deny check:11 note:3 note:3 note:3 note:3 pre_edit:deny pre_edit:deny post_edit:told pre_edit:deny pre_edit:deny heartbeat:told
 #1370 4986c27e4cc3 prompt:told tool_start session_end check:5 pre_edit:deny pre_edit:deny session_start:told restore:24 pre_edit:deny tool_start
-#1380 0fea62c448a0 pre_edit:deny tool_end:told check:8 view pre_edit:deny pre_edit:deny check:9 session_end sweep declare!
-#1390 7a30e68a33b7 post_edit:told post_edit:told pre_edit:deny post_edit:told post_edit:told view tool_end:told pre_edit:deny session_start:told tool_end:told
+#1380 3f5bdce68a2f pre_edit:deny tool_end:told check:8 view pre_edit:deny pre_edit:deny check:9 session_end sweep declare!
+#1390 5053c8fb330e post_edit:told post_edit:told pre_edit:deny post_edit:told post_edit:told view tool_end:told pre_edit:deny session_start:told tool_end:told
 #1400 eaa99c11ed66 check:11 prompt:told prompt:told pre_edit:deny heartbeat:told session_start:told prompt:told tool_end:told tool_end:told post_edit:told
 #1410 b7195c50521e view pre_edit:deny post_edit:told post_edit:told stop tool_start restore:24 tool_start stop declare:13
 #1420 22128acb3dd3 subagent_stop! heartbeat:told sweep prompt:told release:2 check:27 post_edit:told post_edit:told pre_edit:deny tool_start
 #1430 eb5bc6aeea0e tool_start prompt:told pre_edit:deny pre_edit:deny stop stop sweep post_edit:told stop session_end
-#1440 ae0318bdd039 declare:2 prompt:told tool_end tool_end:told check:22 sweep pre_edit:deny session_start:told release:3 post_edit:told
+#1440 25d2589fdbf3 declare:2 prompt:told tool_end tool_end:told check:22 sweep pre_edit:deny session_start:told release:3 post_edit:told
 #1450 a63f12f71233 post_edit:told pre_edit:deny pre_edit:deny declare:4 pre_edit:deny pre_edit:deny pre_edit:deny sweep declare:20 pre_edit:deny
 #1460 da24f8571554 session_start:told pre_edit:deny tool_end:told post_edit:told check:26 post_edit:told pre_edit:deny pre_edit:deny tool_end:told note!
 #1470 854e12227c65 check:35 heartbeat:told post_edit:told post_edit:told prompt:told check:12 check:4 sweep session_end pre_edit:deny
@@ -166,14 +166,14 @@
 #1640 35cea1f15783 heartbeat:told post_edit:told pre_edit:deny post_edit:told pre_edit:deny post_edit:told stop post_edit:told heartbeat:told check:30
 #1650 afc219f58078 tool_end heartbeat:told prompt:told session_start:told tool_end:told session_start:told pre_edit:deny check:13 pre_edit:deny prompt
 #1660 6ed795bebe0b pre_edit:deny prompt:told tool_end:told session_start:told check:37 post_edit:told check:7 view session_end post_edit:told
-#1670 42da5d2e96be check:12 pre_edit:told pre_edit:deny sweep pre_edit:deny pre_edit:deny pre_edit:deny declare:3 pre_edit:deny prompt:told
-#1680 face94d1eeff declare:8 post_edit:told prompt:told pre_edit:deny pre_edit:deny release:0 tool_start pre_edit prompt heartbeat
+#1670 aa77dd894e3c check:12 pre_edit:told pre_edit:deny sweep pre_edit:deny pre_edit:deny pre_edit:deny declare:3 pre_edit:deny prompt:told
+#1680 bac93a143df4 declare:8 post_edit:told prompt:told pre_edit:deny pre_edit:deny release:0 tool_start pre_edit prompt heartbeat
 #1690 868f9ea96640 post_edit:told post_edit:told note:1 post_edit:told sweep tool_end:told session_start:told check:39 note:4 tool_start
 #1700 680fc8c87e1e pre_edit:deny pre_edit:deny stop post_edit:told stop declare:0 stop stop pre_edit:deny session_start:told
 #1710 9179013730e4 session_end tool_end:told stop pre_edit:deny check:25 pre_edit:deny declare:8 pre_edit:deny tool_end:told post_edit:told
-#1720 7c58d9aac02b post_edit:told check:24 sweep tool_start pre_edit:deny check:2 post_edit:told declare:36 check:6 session_end
+#1720 9dc4e599b5fa post_edit:told check:24 sweep tool_start pre_edit:deny check:2 post_edit:told declare:36 check:6 session_end
 #1730 86f4094b051c pre_edit:deny release:0 tool_end:told tool_end:told declare:26 session_end pre_edit:deny declare:3 sweep check:24
-#1740 f9968b03f6d5 subagent_stop! stop pre_edit:deny pre_edit:deny pre_edit:deny prompt:told sweep tool_start note:7 tool_start
+#1740 5600a5d2d83e subagent_stop! stop pre_edit:deny pre_edit:deny pre_edit:deny prompt:told sweep tool_start note:7 tool_start
 #1750 7ef2055c6a48 post_edit:told post_edit:told post_edit:told post_edit:told heartbeat pre_edit:deny post_edit:told post_edit:told session_end pre_edit:deny
 #1760 84ec2d19c891 note:1 stop tool_end:told declare:0 pre_edit:deny sweep post_edit:told tool_start pre_edit:deny sweep
 #1770 d9aedff9fdac tool_end:told post_edit:told post_edit:told declare:11 pre_edit:deny declare:29 prompt:told note:1 pre_edit:deny sweep
@@ -199,7 +199,7 @@
 #1970 ad02d1415fa5 note! session_start:told pre_edit:deny session_start:told check:9 prompt:told pre_edit:deny declare! tool_start pre_edit:deny
 #1980 b412ca7dade3 declare:0 check:9 tool_start tool_end:told check:14 pre_edit:deny tool_start post_edit:told post_edit:told pre_edit:deny
 #1990 7e9d7a4125a5 sweep tool_start pre_edit:deny release:0 declare:0 note! stop prompt:told prompt:told check:8
-#2000 402491049862 view
+#2000 57f53ec897ae view
 == warn, ask and bump, small inbox and feed (seed 2, 2000 steps)
 #0000 f9f6dfb13b50 prompt post_edit post_edit release:0 post_edit pre_edit note:1 note:1 note:1 note:1 tool_start declare:0 pre_edit
 #0010 9c861b36bf82 sweep sweep session_start:told session_start:told tool_end prompt tool_end declare:0 tool_end post_edit:told
@@ -294,20 +294,20 @@
 #0900 4f93b68377ea check:25 prompt:told prompt:told pre_edit:deny stop post_edit:told pre_edit:deny post_edit:told check:25 declare:2
 #0910 107e33e25536 prompt:told view heartbeat:told post_edit:told stop declare:0 post_edit:told pre_edit:deny post_edit:told post_edit:told
 #0920 d3dc91708e3a post_edit:told pre_edit:deny post_edit:told release:7 tool_start check:1 pre_edit:deny pre_edit:deny stop declare:0
-#0930 043beb2c565c session_end pre_edit:deny pre_edit:ask check:16 session_end pre_edit:deny pre_edit:deny heartbeat:told tool_end pre_edit:deny
+#0930 41adb7e52e08 session_end pre_edit:deny pre_edit:ask check:16 session_end pre_edit:deny pre_edit:deny heartbeat:told tool_end pre_edit:deny
 #0940 300a99aba717 pre_edit:deny tool_end session_start:told check:8 pre_edit:deny pre_edit:deny tool_end:told pre_edit:deny post_edit:told declare!
 #0950 973cd271cf50 session_start:told pre_edit:ask stop tool_start tool_start pre_edit:deny prompt:told heartbeat:told pre_edit:deny declare:18
 #0960 1e89f2c9c5ba check:4 declare:0 note! prompt:told sweep post_edit:told prompt:told pre_edit:deny stop tool_end!
 #0970 3ce344e4ed7e post_edit:told session_end stop stop stop heartbeat:told prompt:told pre_edit:deny pre_edit:deny prompt:told
-#0980 2ab38f44966f pre_edit:deny tool_start post_edit:told pre_edit:deny session_start:told tool_start post_edit:told declare:29 pre_edit:ask session_start:told
+#0980 f80978b3ed74 pre_edit:deny tool_start post_edit:told pre_edit:deny session_start:told tool_start post_edit:told declare:29 pre_edit:ask session_start:told
 #0990 a73412e2ba86 check:3 pre_edit:ask post_edit:told post_edit:told session_start:told stop pre_edit:ask tool_start tool_end:told check:10
 #1000 33a6b9db7f35 declare:17 pre_edit:ask release:0 post_edit tool_start view declare:7 post_edit:told pre_edit:deny prompt:told
-#1010 460cc42c5f49 post_edit:told subagent_stop! session_start:told prompt tool_end post_edit:told pre_edit:deny session_start:told post_edit:told pre_edit:deny
+#1010 1d94fdd62095 post_edit:told subagent_stop! session_start:told prompt tool_end post_edit:told pre_edit:deny session_start:told post_edit:told pre_edit:deny
 #1020 372343b4006b check:2 tool_start sweep tool_start check:9 post_edit:told pre_edit:deny check:17 pre_edit pre_edit:deny
 #1030 21520db4bdb5 declare:6 session_end declare:3 pre_edit:deny pre_edit:ask session_start:told post_edit:told pre_edit:deny declare:0 declare:3
 #1040 ed30af5ab275 post_edit:told pre_edit:deny tool_end:told release:0 session_start:told tool_start tool_end:told stop declare:3 pre_edit:deny
 #1050 b0a211105a6e heartbeat:told declare:3 heartbeat:told post_edit:told heartbeat:told session_start:told pre_edit:deny stop post_edit:told session_start:told
-#1060 a5e5c9c8f725 pre_edit:deny pre_edit:deny pre_edit:deny tool_start post_edit:told release:0 prompt:told tool_end tool_start release:0
+#1060 44509c0ecd7b pre_edit:deny pre_edit:deny pre_edit:deny tool_start post_edit:told release:0 prompt:told tool_end tool_start release:0
 #1070 e8449e5c1fad check:5 pre_edit:deny prompt tool_end:told pre_edit post_edit:told declare:0 session_start:told pre_edit declare!
 #1080 6e4a15c6eba1 pre_edit:deny session_end pre_edit declare:0 pre_edit:deny tool_end check:8 tool_end release:3 release:0
 #1090 9fdee3d5c480 pre_edit:deny note:2 note:2 note:2 note:2 pre_edit:deny session_start:told check:12 post_edit:told post_edit:told pre_edit:ask post_edit:told tool_start
@@ -317,8 +317,8 @@
 #1130 7d0796e3db83 note! pre_edit:deny prompt:told stop session_end tool_start session_end post_edit:told tool_end:told session_end
 #1140 38fb790eb6ff stop check:4 post_edit:told declare:6 check:10 heartbeat:told session_start:told subagent_stop! post_edit:told note:2
 #1150 b9648054d22a pre_edit:deny session_start:told post_edit:told post_edit:told pre_edit:ask stop session_end! tool_end:told tool_start pre_edit:deny
-#1160 1cf056c56222 pre_edit:ask heartbeat:told prompt:told session_end declare:10 release:2 pre_edit:deny tool_end:told pre_edit:deny pre_edit:deny
-#1170 9e05048a3d8c tool_end:told pre_edit:deny session_end declare:10 view tool_end:told heartbeat:told pre_edit:deny pre_edit:deny check:20
+#1160 622a7eeaaf4f pre_edit:ask heartbeat:told prompt:told session_end declare:10 release:2 pre_edit:deny tool_end:told pre_edit:ask pre_edit:deny
+#1170 a2c3f1a52b3e tool_end:told pre_edit:deny session_end declare:10 view tool_end:told heartbeat:told pre_edit:deny pre_edit:deny check:20
 #1180 de3abe465fe8 post_edit:told pre_edit:deny session_end sweep pre_edit:deny pre_edit:deny session_start:told prompt:told prompt tool_start
 #1190 c3671268c204 prompt:told check:4 pre_edit check:22 pre_edit:deny pre_edit:deny pre_edit:deny prompt:told prompt:told tool_end:told
 #1200 d02249f50881 heartbeat:told post_edit:told pre_edit:deny session_end post_edit:told pre_edit:deny pre_edit:deny pre_edit:deny heartbeat post_edit:told
@@ -326,82 +326,82 @@
 #1220 b98a75ef0057 declare:3 prompt:told post_edit:told pre_edit:deny heartbeat:told pre_edit:deny post_edit:told pre_edit:ask heartbeat:told post_edit:told
 #1230 8a240ac15c8f session_start:told post_edit:told declare:21 stop post_edit:told tool_end:told session_end session_start:told post_edit:told prompt:told
 #1240 f7e7bf1292bd pre_edit:deny release:2 note:2 release:0 check:4 post_edit:told pre_edit:deny tool_end:told session_end pre_edit
-#1250 f7ca48f4aa02 session_start:told prompt:told prompt:told tool_end:told declare:4 check:15 pre_edit:deny view tool_start pre_edit:deny
+#1250 35feffc0f2d9 session_start:told prompt:told prompt:told tool_end:told declare:4 check:15 pre_edit:deny view tool_start pre_edit:deny
 #1260 8eea608f1849 post_edit:told session_end tool_start session_end declare:10 post_edit:told tool_end:told pre_edit:ask heartbeat:told tool_start
-#1270 bb2bdfd4c457 pre_edit:deny pre_edit:deny tool_end:told check:12 declare:9 sweep pre_edit:deny post_edit:told tool_start pre_edit:ask
-#1280 01779140e09c heartbeat:told pre_edit:deny pre_edit:deny post_edit:told post_edit:told prompt:told post_edit:told stop post_edit:told declare:6
-#1290 cc7862b30579 tool_end:told tool_start post_edit:told session_start:told prompt:told tool_end:told pre_edit pre_edit:deny post_edit:told pre_edit:deny
-#1300 92dc2716d57c check:8 pre_edit:deny tool_start declare! pre_edit:deny pre_edit:deny sweep prompt:told restore:24 pre_edit:deny
-#1310 2b05fa8f045c post_edit:told post_edit:told post_edit:told pre_edit:deny stop pre_edit:deny sweep check:25 stop release:0
-#1320 b12130fdf6fd tool_start declare:24 prompt:told declare:8 pre_edit:deny declare:0 sweep sweep pre_edit:deny heartbeat:told
-#1330 39cb3f9b6a7a tool_start prompt:told prompt:told pre_edit:deny sweep post_edit:told post_edit:told view prompt:told pre_edit:deny
-#1340 4cc9b273038a post_edit:told declare:16 pre_edit:ask tool_start pre_edit:deny prompt:told stop post_edit:told pre_edit:deny declare:0
-#1350 adceb572e97b pre_edit:deny note:3 note:3 note:3 note:3 declare:0 tool_start stop prompt:told pre_edit:deny session_end pre_edit:ask post_edit:told
-#1360 5191e3c6a511 declare:6 post_edit:told pre_edit:deny post_edit:told release:0 pre_edit:ask tool_end:told pre_edit:deny post_edit:told post_edit:told
-#1370 cae50ccf87b7 session_end pre_edit:deny pre_edit:ask prompt:told sweep tool_end:told post_edit:told tool_start post_edit:told pre_edit:ask
-#1380 85b2c32dbae7 session_start:told prompt! post_edit:told tool_end:told prompt:told session_start:told prompt:told session_end note:3 tool_end:told
-#1390 a4279c2cc104 post_edit:told post_edit:told tool_end:told pre_edit:deny session_start:told tool_start pre_edit:deny check:14 tool_end:told check:5
-#1400 34df52e84b7a pre_edit:deny post_edit:told stop note:2 note! post_edit:told session_start:told post_edit:told post_edit:told post_edit:told
-#1410 a829e46beaf5 pre_edit:deny stop session_start:told pre_edit:deny post_edit:told post_edit:told tool_start post_edit:told post_edit:told pre_edit:ask
-#1420 fdbe622d4a7c post_edit:told pre_edit:deny post_edit:told heartbeat:told pre_edit:deny prompt:told declare:0 stop post_edit:told pre_edit:ask
-#1430 98eecf9bb8c8 prompt:told prompt:told prompt:told pre_edit:deny stop post_edit:told note! pre_edit declare:2 tool_start
-#1440 f27d43613822 pre_edit note! prompt:told check:27 session_start:told pre_edit:deny tool_end:told check:4 view post_edit:told
-#1450 a9feffd31fcc pre_edit:deny pre_edit:ask session_start:told check:39 restore:24 note:2 check:19 post_edit:told sweep subagent_stop!
-#1460 cab0e62a22a4 post_edit:told heartbeat pre_edit:deny post_edit:told post_edit:told tool_end:told stop prompt:told session_start:told stop
-#1470 1ea720a2c850 prompt:told heartbeat:told pre_edit:deny tool_end heartbeat:told prompt:told post_edit:told tool_end:told pre_edit:ask check:34
-#1480 8055d475f107 session_start:told post_edit:told pre_edit:ask release:1 pre_edit:deny session_end declare:7 session_end pre_edit:ask pre_edit:deny
-#1490 adf74e81fe9d pre_edit:deny pre_edit:deny post_edit:told heartbeat:told note! pre_edit:deny stop session_end session_start:told pre_edit:deny
-#1500 789f740895b0 session_start:told stop pre_edit:deny sweep session_start:told pre_edit:deny post_edit:told heartbeat:told post_edit:told stop
-#1510 e2b842486c4d post_edit:told post_edit:told post_edit:told tool_start post_edit:told pre_edit:deny post_edit:told session_start:told pre_edit:deny post_edit:told
-#1520 369a73a03dd0 session_end stop prompt:told check:13 view pre_edit:deny note! stop session_start:told release:0
-#1530 4bffe8f0fe49 post_edit:told post_edit:told release:0 tool_start tool_end:told check:13 subagent_stop! prompt:told prompt:told session_start:told
-#1540 2ee6f0b836ab pre_edit:deny prompt:told check:11 check:2 post_edit:told pre_edit:ask post_edit post_edit:told release:3 tool_start
-#1550 b1c59032985e pre_edit:deny release:0 view pre_edit check:4 post_edit:told release:1 pre_edit:ask heartbeat tool_start
-#1560 55f0930247cb pre_edit:ask session_end pre_edit:deny pre_edit:ask tool_end:told post_edit:told post_edit:told session_end post_edit:told pre_edit:deny
-#1570 1cfc50b642d0 post_edit:told tool_end:told tool_start check:4 declare:0 view session_end post_edit:told tool_start check:16
-#1580 ad9e4801f57b post_edit:told session_end session_start:told stop tool_start pre_edit:deny pre_edit:deny pre_edit:ask pre_edit:deny stop
-#1590 47689ba7fa2b note! tool_start release:8 stop release:0 pre_edit:deny pre_edit:deny post_edit:told post_edit:told sweep
-#1600 e0e408413563 subagent_stop! session_end pre_edit:ask post_edit:told prompt:told prompt:told declare:15 tool_start prompt declare:9
-#1610 44bc281f3cfd tool_start check:7 pre_edit:deny prompt:told prompt:told post_edit:told sweep stop restore:24 prompt
-#1620 8288fb46c5d8 tool_end:told pre_edit:ask tool_end:told pre_edit:ask sweep pre_edit:deny pre_edit:deny pre_edit:deny pre_edit:ask subagent_stop!
-#1630 1cddc75b63eb session_end post_edit:told stop pre_edit:ask check:11 post_edit:told stop stop tool_start pre_edit:deny
-#1640 ee6a87b6df6c pre_edit:deny restore:24 prompt:told pre_edit:deny declare:3 tool_start tool_start session_start:told tool_end:told post_edit:told
-#1650 255140e713e5 pre_edit:ask declare:24 pre_edit:deny session_start:told tool_end:told heartbeat:told check:25 tool_end:told session_end sweep
-#1660 3029e7e4f450 sweep check:22 restore:24 pre_edit:deny post_edit:told post_edit:told pre_edit:deny tool_start tool_end:told sweep
-#1670 869a953192d0 pre_edit:ask pre_edit:deny heartbeat:told session_end check:25 release:0 post_edit:told sweep tool_end:told tool_start
-#1680 606c0c90fdee pre_edit:ask pre_edit:ask pre_edit:ask declare:1 check:20 stop declare:0 post_edit:told session_start:told pre_edit:deny
-#1690 9c2315b36022 stop pre_edit:ask pre_edit:deny post_edit:told heartbeat:told tool_start prompt:told view pre_edit:deny pre_edit:deny
-#1700 d1c84e1850a9 pre_edit:deny pre_edit:ask pre_edit:ask pre_edit:deny stop declare:2 post_edit:told declare:7 note:1 post_edit:told
-#1710 5af443d6e217 declare! prompt:told session_end post_edit:told prompt session_start:told tool_end:told tool_end:told heartbeat:told sweep
-#1720 40c01edc7ad9 release:4 pre_edit:ask session_start:told session_end check:8 pre_edit:deny session_start:told stop prompt:told subagent_stop!
-#1730 b4f5d0ac8ceb tool_end:told session_end sweep post_edit:told pre_edit:ask session_start:told pre_edit post_edit:told prompt:told post_edit:told
-#1740 2cd4051fb812 pre_edit:deny tool_start heartbeat post_edit:told pre_edit:deny pre_edit:deny pre_edit:ask tool_end:told post_edit:told release:9
-#1750 8424d4aac7f7 session_start:told check:39 post_edit:told pre_edit:deny session_start:told declare:15 pre_edit:deny declare:2 pre_edit:deny pre_edit:deny
-#1760 56bb965b2bdb check:16 tool_start release:3 view note! declare:6 check:9 stop check:7 post_edit:told
-#1770 b529fbe17d27 declare! post_edit:told session_end tool_start post_edit:told note:3 note:3 note:3 note:3 declare:6 pre_edit:deny stop stop
-#1780 29a819bd4ee1 pre_edit:deny session_start:told post_edit:told session_end sweep note:3 note:3 note:3 note:3 tool_start post_edit:told heartbeat tool_end:told
-#1790 5c29d29d922b prompt:told post_edit:told declare:0 post_edit:told post_edit:told stop pre_edit:deny note:2 note:2 note:2 note:2 stop post_edit:told
-#1800 70104dc8a377 pre_edit:told pre_edit:deny pre_edit:ask post_edit:told check:18 check:32 session_end post_edit:told sweep prompt:told
-#1810 1b11a6a6ef04 post_edit:told prompt:told session_end pre_edit:ask declare:0 post_edit:told pre_edit:deny pre_edit:deny post_edit:told pre_edit:deny
-#1820 81ee4c3cbe12 post_edit:told pre_edit:deny post_edit:told note! pre_edit:deny stop pre_edit:deny stop sweep prompt:told
-#1830 eefe005339bf session_start:told declare:3 tool_start tool_start post_edit:told pre_edit:ask post_edit:told post_edit:told note:1 note:1 note:1 note:1 stop
-#1840 469ef3c36e30 heartbeat:told pre_edit:ask tool_end:told stop sweep tool_start note:1 note:1 note:1 note:1 post_edit:told check:7 stop
-#1850 4bdcae3325e9 post_edit:told tool_end:told pre_edit:deny stop note:2 note:2 note:2 note:2 pre_edit:ask view pre_edit:ask tool_end:told declare:0
-#1860 5502dafdd32c pre_edit:deny session_start:told session_end session_start:told tool_start prompt:told tool_end:told prompt:told session_start:told tool_end:told
-#1870 6dfb942f7eaa prompt:told declare:9 tool_end:told pre_edit:deny stop prompt:told session_end post_edit:told view pre_edit:ask
-#1880 f47b4904fd87 post_edit:told declare:3 post_edit:told prompt:told prompt:told pre_edit:deny heartbeat:told prompt:told prompt:told tool_start
-#1890 e9181b2c54e8 tool_end:told post_edit:told post_edit:told pre_edit:deny heartbeat:told check:21 post_edit:told note! stop check:7
-#1900 47890ad20b75 declare:3 stop session_start:told note:4 tool_start declare:20 post_edit:told post_edit:told post_edit:told post_edit:told
-#1910 6463c2243799 session_start:told prompt:told note:2 note:2 note:2 note:2 subagent_stop! view tool_start post_edit:told note! declare:2 pre_edit:ask
-#1920 3f91aefca9b7 prompt:told prompt:told post_edit:told session_end note:3 tool_end:told post_edit:told tool_start sweep post_edit:told
-#1930 c2acbb7925b3 post_edit:told declare:27 check:2 pre_edit:deny stop sweep pre_edit:ask session_start:told pre_edit:deny heartbeat:told
-#1940 cfb951c4e9ba post_edit:told sweep post_edit:told session_end stop tool_start note! heartbeat:told tool_end:told session_start:told
-#1950 9498f33ad5b8 pre_edit:deny post_edit:told session_start:told heartbeat:told note! note! tool_start pre_edit:deny post_edit:told pre_edit:deny
-#1960 7101f089ee46 session_end tool_start pre_edit:ask pre_edit:deny post_edit sweep check:4 heartbeat post_edit:told prompt
-#1970 a17d0f2679eb post_edit:told pre_edit:deny pre_edit:deny session_end post_edit:told tool_start pre_edit:ask session_end restore:24 check:4
-#1980 ab05d045d979 tool_end:told tool_start post_edit:told pre_edit:deny check:29 prompt post_edit:told pre_edit:deny prompt tool_end:told
-#1990 42ba3a5d467f pre_edit:deny tool_start release:0 tool_start session_start:told post_edit:told tool_end tool_start tool_end sweep
-#2000 81bebe087c8f view
+#1270 7926d5d6e67e pre_edit:deny pre_edit:deny tool_end:told check:12 declare:9 sweep pre_edit:deny post_edit:told tool_start pre_edit:ask
+#1280 153325069624 heartbeat:told pre_edit:deny pre_edit:deny post_edit:told post_edit:told prompt:told post_edit:told stop post_edit:told declare:6
+#1290 db60c0367a71 tool_end:told tool_start post_edit:told session_start:told prompt:told tool_end:told pre_edit pre_edit:deny post_edit:told pre_edit:deny
+#1300 e4b1e397a216 check:8 pre_edit:deny tool_start declare! pre_edit:deny pre_edit:deny sweep prompt:told restore:24 pre_edit:deny
+#1310 73767008c350 post_edit:told post_edit:told post_edit:told pre_edit:deny stop pre_edit:deny sweep check:25 stop release:0
+#1320 3c69807f650b tool_start declare:24 prompt:told declare:8 pre_edit:deny declare:0 sweep sweep pre_edit:deny heartbeat:told
+#1330 3d4ee7cae3ff tool_start prompt:told prompt:told pre_edit:deny sweep post_edit:told post_edit:told view prompt:told pre_edit:deny
+#1340 1ce58c9916f1 post_edit:told declare:16 pre_edit:ask tool_start pre_edit:deny prompt:told stop post_edit:told pre_edit:deny declare:0
+#1350 a055c3ee6bc8 pre_edit:deny note:3 note:3 note:3 note:3 declare:0 tool_start stop prompt:told pre_edit:deny session_end pre_edit:ask post_edit:told
+#1360 b17a2c8775fb declare:6 post_edit:told pre_edit:deny post_edit:told release:0 pre_edit:ask tool_end:told pre_edit:deny post_edit:told post_edit:told
+#1370 5145ebc57c60 session_end pre_edit:deny pre_edit:ask prompt:told sweep tool_end:told post_edit:told tool_start post_edit:told pre_edit:ask
+#1380 393dccfd8423 session_start:told prompt! post_edit:told tool_end:told prompt:told session_start:told prompt:told session_end note:3 tool_end:told
+#1390 e3b3d4fca1e5 post_edit:told post_edit:told tool_end:told pre_edit:deny session_start:told tool_start pre_edit:deny check:14 tool_end:told check:5
+#1400 d3dbf9667cb3 pre_edit:deny post_edit:told stop note:2 note! post_edit:told session_start:told post_edit:told post_edit:told post_edit:told
+#1410 a63ded9cc306 pre_edit:deny stop session_start:told pre_edit:deny post_edit:told post_edit:told tool_start post_edit:told post_edit:told pre_edit:ask
+#1420 1740b2ce4106 post_edit:told pre_edit:deny post_edit:told heartbeat:told pre_edit:deny prompt:told declare:0 stop post_edit:told pre_edit:ask
+#1430 bd344bf04c3c prompt:told prompt:told prompt:told pre_edit:deny stop post_edit:told note! pre_edit declare:2 tool_start
+#1440 f5684f1015d9 pre_edit note! prompt:told check:27 session_start:told pre_edit:deny tool_end:told check:4 view post_edit:told
+#1450 cab7929d61ac pre_edit:deny pre_edit:ask session_start:told check:39 restore:24 note:2 check:19 post_edit:told sweep subagent_stop!
+#1460 762d5d4e6fe5 post_edit:told heartbeat pre_edit:deny post_edit:told post_edit:told tool_end:told stop prompt:told session_start:told stop
+#1470 eceaf40aeacb prompt:told heartbeat:told pre_edit:deny tool_end heartbeat:told prompt:told post_edit:told tool_end:told pre_edit:ask check:34
+#1480 2e2732fde7ce session_start:told post_edit:told pre_edit:ask release:1 pre_edit:deny session_end declare:7 session_end pre_edit:ask pre_edit:deny
+#1490 cf8ef7d438dc pre_edit:deny pre_edit:deny post_edit:told heartbeat:told note! pre_edit:deny stop session_end session_start:told pre_edit:deny
+#1500 288b40396dd4 session_start:told stop pre_edit:deny sweep session_start:told pre_edit:deny post_edit:told heartbeat:told post_edit:told stop
+#1510 8a6e19e8b1be post_edit:told post_edit:told post_edit:told tool_start post_edit:told pre_edit:deny post_edit:told session_start:told pre_edit:deny post_edit:told
+#1520 4d267ac59e8e session_end stop prompt:told check:13 view pre_edit:ask note! stop session_start:told release:0
+#1530 a7cb49892ae7 post_edit:told post_edit:told release:0 tool_start tool_end:told check:13 subagent_stop! prompt:told prompt:told session_start:told
+#1540 d9491ef64bf4 pre_edit:deny prompt:told check:11 check:2 post_edit:told pre_edit:ask post_edit post_edit:told release:3 tool_start
+#1550 ae04b0e6824a pre_edit:deny release:0 view pre_edit check:4 post_edit:told release:1 pre_edit:ask heartbeat tool_start
+#1560 d9fcfec95595 pre_edit:ask session_end pre_edit:deny pre_edit:ask tool_end:told post_edit:told post_edit:told session_end post_edit:told pre_edit:deny
+#1570 6b0a7fe69ac7 post_edit:told tool_end:told tool_start check:4 declare:0 view session_end post_edit:told tool_start check:16
+#1580 dc9ea260af72 post_edit:told session_end session_start:told stop tool_start pre_edit:deny pre_edit:deny pre_edit:ask pre_edit:deny stop
+#1590 7133d566c5a0 note! tool_start release:8 stop release:0 pre_edit:deny pre_edit:deny post_edit:told post_edit:told sweep
+#1600 7e69bd9a94f1 subagent_stop! session_end pre_edit:ask post_edit:told prompt:told prompt:told declare:15 tool_start prompt declare:9
+#1610 3e5d617f36b8 tool_start check:7 pre_edit:deny prompt:told prompt:told post_edit:told sweep stop restore:24 prompt
+#1620 73808541ff2e tool_end:told pre_edit:ask tool_end:told pre_edit:ask sweep pre_edit:deny pre_edit:deny pre_edit:deny pre_edit:ask subagent_stop!
+#1630 c8e1d7bdea44 session_end post_edit:told stop pre_edit:ask check:11 post_edit:told stop stop tool_start pre_edit:deny
+#1640 cb3e49d07e71 pre_edit:deny restore:24 prompt:told pre_edit:deny declare:3 tool_start tool_start session_start:told tool_end:told post_edit:told
+#1650 42d6107cbfe7 pre_edit:ask declare:24 pre_edit:deny session_start:told tool_end:told heartbeat:told check:25 tool_end:told session_end sweep
+#1660 b0e899265292 sweep check:22 restore:24 pre_edit:deny post_edit:told post_edit:told pre_edit:deny tool_start tool_end:told sweep
+#1670 92b48b04db87 pre_edit:ask pre_edit:deny heartbeat:told session_end check:25 release:0 post_edit:told sweep tool_end:told tool_start
+#1680 b5615857651b pre_edit:ask pre_edit:ask pre_edit:ask declare:1 check:20 stop declare:0 post_edit:told session_start:told pre_edit:deny
+#1690 14a1b37060b5 stop pre_edit:ask pre_edit:deny post_edit:told heartbeat:told tool_start prompt:told view pre_edit:deny pre_edit:deny
+#1700 d02a58507fd6 pre_edit:deny pre_edit:ask pre_edit:ask pre_edit:deny stop declare:2 post_edit:told declare:7 note:1 post_edit:told
+#1710 dfcb7bd528e8 declare! prompt:told session_end post_edit:told prompt session_start:told tool_end:told tool_end:told heartbeat:told sweep
+#1720 5ff02199ad87 release:4 pre_edit:ask session_start:told session_end check:8 pre_edit:deny session_start:told stop prompt:told subagent_stop!
+#1730 6c70748747ef tool_end:told session_end sweep post_edit:told pre_edit:ask session_start:told pre_edit post_edit:told prompt:told post_edit:told
+#1740 15d1f43a08ff pre_edit:deny tool_start heartbeat post_edit:told pre_edit:deny pre_edit:deny pre_edit:ask tool_end:told post_edit:told release:9
+#1750 90e976838a5a session_start:told check:39 post_edit:told pre_edit:deny session_start:told declare:15 pre_edit:deny declare:2 pre_edit:deny pre_edit:deny
+#1760 f1f88b03df39 check:16 tool_start release:3 view note! declare:6 check:9 stop check:7 post_edit:told
+#1770 efdb140e893d declare! post_edit:told session_end tool_start post_edit:told note:3 note:3 note:3 note:3 declare:6 pre_edit:deny stop stop
+#1780 5ced22240f93 pre_edit:deny session_start:told post_edit:told session_end sweep note:3 note:3 note:3 note:3 tool_start post_edit:told heartbeat tool_end:told
+#1790 ed0b68da1b28 prompt:told post_edit:told declare:0 post_edit:told post_edit:told stop pre_edit:deny note:2 note:2 note:2 note:2 stop post_edit:told
+#1800 f85147cfe897 pre_edit:told pre_edit:deny pre_edit:ask post_edit:told check:18 check:32 session_end post_edit:told sweep prompt:told
+#1810 4d221ffa9d9d post_edit:told prompt:told session_end pre_edit:ask declare:0 post_edit:told pre_edit:deny pre_edit:deny post_edit:told pre_edit:deny
+#1820 0d793634ea01 post_edit:told pre_edit:deny post_edit:told note! pre_edit:deny stop pre_edit:deny stop sweep prompt:told
+#1830 6268f305b7c0 session_start:told declare:3 tool_start tool_start post_edit:told pre_edit:ask post_edit:told post_edit:told note:1 note:1 note:1 note:1 stop
+#1840 535b143611b9 heartbeat:told pre_edit:ask tool_end:told stop sweep tool_start note:1 note:1 note:1 note:1 post_edit:told check:7 stop
+#1850 ad5e2acfe638 post_edit:told tool_end:told pre_edit:deny stop note:2 note:2 note:2 note:2 pre_edit:ask view pre_edit:ask tool_end:told declare:0
+#1860 86d50af0f87f pre_edit:deny session_start:told session_end session_start:told tool_start prompt:told tool_end:told prompt:told session_start:told tool_end:told
+#1870 ac709c5ea56a prompt:told declare:9 tool_end:told pre_edit:deny stop prompt:told session_end post_edit:told view pre_edit:ask
+#1880 25c01c9431ba post_edit:told declare:3 post_edit:told prompt:told prompt:told pre_edit:deny heartbeat:told prompt:told prompt:told tool_start
+#1890 dfd6a0005f39 tool_end:told post_edit:told post_edit:told pre_edit:deny heartbeat:told check:21 post_edit:told note! stop check:7
+#1900 15aa768abd26 declare:3 stop session_start:told note:4 tool_start declare:20 post_edit:told post_edit:told post_edit:told post_edit:told
+#1910 3a2d225c5a40 session_start:told prompt:told note:2 note:2 note:2 note:2 subagent_stop! view tool_start post_edit:told note! declare:2 pre_edit:ask
+#1920 7d4e6b68a7f2 prompt:told prompt:told post_edit:told session_end note:3 tool_end:told post_edit:told tool_start sweep post_edit:told
+#1930 661f213ce890 post_edit:told declare:27 check:2 pre_edit:deny stop sweep pre_edit:ask session_start:told pre_edit:deny heartbeat:told
+#1940 b8ad4628b690 post_edit:told sweep post_edit:told session_end stop tool_start note! heartbeat:told tool_end:told session_start:told
+#1950 5c1fb03113dd pre_edit:deny post_edit:told session_start:told heartbeat:told note! note! tool_start pre_edit:deny post_edit:told pre_edit:ask
+#1960 95cd34cf9f9e session_end tool_start pre_edit:ask pre_edit:deny post_edit sweep check:4 heartbeat post_edit:told prompt
+#1970 1b4f8be1371b post_edit:told pre_edit:deny pre_edit:deny session_end post_edit:told tool_start pre_edit:ask session_end restore:24 check:4
+#1980 6c3db71ab03c tool_end:told tool_start post_edit:told pre_edit:deny check:29 prompt post_edit:told pre_edit:deny prompt tool_end:told
+#1990 95cf6bfb481b pre_edit:deny tool_start release:0 tool_start session_start:told post_edit:told tool_end tool_start tool_end sweep
+#2000 00d7b45bb21c view
 == reservations off, nearby denied, tight limits (seed 3, 2000 steps)
 #0000 d3536e5f4f42 pre_edit sweep heartbeat session_end note:1 note:1 note:1 note! sweep stop post_edit stop pre_edit
 #0010 37072128b611 post_edit post_edit:told prompt pre_edit declare:0 note! declare:0 session_end stop prompt
@@ -439,7 +439,7 @@
 #0330 d4ff4e60a731 pre_edit note:1 tool_start declare:0 tool_end:told check:7 post_edit:told post_edit:told declare! pre_edit:deny
 #0340 42be75d3cfc9 pre_edit:deny post_edit:told check:3 tool_start prompt pre_edit:deny prompt:told declare:2 pre_edit:deny check:11
 #0350 139dd0978f2f release:0 pre_edit:deny note:1 note:1 note:1 note! tool_start declare:7 tool_start prompt pre_edit:deny post_edit:told pre_edit:deny
-#0360 9ffdb27c7886 post_edit:told pre_edit:deny check:1 stop sweep tool_end:told pre_edit:deny post_edit:told post_edit:told declare:0
+#0360 a3e63b018590 post_edit:told pre_edit:deny check:1 stop sweep tool_end:told pre_edit:deny post_edit:told post_edit:told declare:0
 #0370 dd16b17451fe tool_start! tool_start declare:6 heartbeat pre_edit tool_end:told tool_start pre_edit:deny post_edit:told pre_edit:deny
 #0380 56cfc7d69138 pre_edit:deny tool_end prompt:told sweep session_end tool_start session_start:told pre_edit:told view pre_edit:deny
 #0390 f46d07cdfe77 release:0 pre_edit:told session_start:told pre_edit:deny tool_end:told post_edit:told session_end tool_end:told check:2 post_edit
@@ -470,140 +470,140 @@
 #0640 74a8927f9de4 declare:13 stop tool_start check:11 declare:6 pre_edit:told session_start:told pre_edit:deny view sweep
 #0650 6a530614ab8f pre_edit:deny stop post_edit:told post_edit:told check:8 tool_start prompt:told prompt:told post_edit:told post_edit:told
 #0660 a672c1b808a1 session_end tool_end:told check:7 post_edit post_edit:told session_start:told pre_edit:deny session_end post_edit:told session_end
-#0670 e113d0d507e3 pre_edit:deny tool_end:told stop post_edit:told view tool_start session_end release:3 pre_edit:deny pre_edit:deny
-#0680 9d008bc11a22 tool_start tool_start post_edit:told pre_edit:deny check:3 sweep pre_edit:deny prompt session_start:told pre_edit:deny
-#0690 13ba58372694 tool_start stop session_start:told declare:8 post_edit:told session_start:told note! pre_edit:deny session_start:told post_edit:told
-#0700 cd714cc64a71 prompt:told prompt pre_edit:deny stop session_start:told check:4 tool_start pre_edit:deny pre_edit:deny pre_edit:told
-#0710 81882cd2d65a sweep session_end post_edit declare:0 pre_edit:deny declare:7 check:2 prompt:told pre_edit:deny prompt:told
-#0720 308d728c33de post_edit:told post_edit:told restore:24 post_edit:told pre_edit:deny pre_edit:deny pre_edit:deny check:3 note:1 pre_edit:deny
-#0730 1b102b614a70 tool_start pre_edit:told view prompt tool_start pre_edit:deny post_edit:told session_end prompt:told post_edit:told
-#0740 90b251cd86d1 tool_end tool_start check:2 tool_end:told declare:11 prompt pre_edit:deny check:3 session_end pre_edit:deny
-#0750 bc2f02269ee3 pre_edit:deny pre_edit:deny pre_edit:deny tool_start pre_edit:deny pre_edit:deny tool_end sweep post_edit:told check:12
-#0760 d55b100d5d4b tool_end:told post_edit:told sweep pre_edit:deny stop note:1 note:1 note:1 note! post_edit:told sweep declare:15 session_end
-#0770 78b537c972f2 session_start:told tool_start declare:10 check:16 pre_edit:deny session_end release! pre_edit:deny post_edit:told tool_start
-#0780 c1a7239b5958 declare:10 check:0 note:4 pre_edit:deny release:0 pre_edit:deny prompt:told pre_edit:deny pre_edit:deny pre_edit:deny
-#0790 78cb3e00ebd5 tool_start session_end pre_edit:told check:5 pre_edit:deny session_start:told pre_edit:deny post_edit:told post_edit:told pre_edit:told
-#0800 14a985d6d6c7 pre_edit:deny release:0 pre_edit:told heartbeat:told pre_edit:told tool_end:told session_end post_edit:told tool_start note!
-#0810 3edcaaec03b7 stop prompt! declare:0 pre_edit:deny pre_edit:deny pre_edit tool_end:told pre_edit:deny tool_start session_start:told
-#0820 1f18778b8281 post_edit:told post_edit:told declare:5 pre_edit:deny tool_start check:5 declare:8 post_edit:told pre_edit:deny pre_edit:deny
-#0830 94203a5aadbd check:22 session_start:told view session_end post_edit:told post_edit:told prompt:told note! pre_edit:deny pre_edit:told
-#0840 5d07ba99013e tool_end:told post_edit:told post_edit:told declare:6 pre_edit:deny tool_end tool_end post_edit:told pre_edit:deny sweep
-#0850 5b4305cbb5c9 pre_edit:deny pre_edit:deny tool_start pre_edit:deny tool_start pre_edit:deny sweep session_start:told prompt session_end
-#0860 19df2a1d265b pre_edit:deny heartbeat pre_edit:deny post_edit prompt tool_start stop post_edit post_edit:told release:0
-#0870 8176f082d9b1 tool_start post_edit declare:3 post_edit:told pre_edit:deny tool_end check:5 tool_end tool_start pre_edit:deny
-#0880 5928859294bd pre_edit:deny check:13 declare:5 post_edit:told view pre_edit:deny pre_edit:deny session_end prompt stop
-#0890 7aecb27bde98 pre_edit:deny prompt check:2 declare:0 session_end declare:3 tool_start declare:4 prompt heartbeat
-#0900 0911ad634ade sweep pre_edit post_edit tool_start release:0 post_edit tool_end pre_edit:deny session_start:told heartbeat
-#0910 03d15020c455 prompt pre_edit:deny pre_edit:deny declare:2 pre_edit:deny post_edit:told sweep sweep stop post_edit:told
-#0920 b6d984e687c1 tool_start pre_edit pre_edit pre_edit sweep prompt tool_start tool_start session_end check:6
-#0930 d150755cab33 note! post_edit:told check:5 pre_edit:deny check:0 note! session_start:told session_end prompt view
-#0940 34fb48867f58 session_end release:1 post_edit:told sweep prompt pre_edit:deny tool_end pre_edit:deny post_edit:told declare:7
-#0950 fb644ae5c92d post_edit:told session_start:told post_edit:told release:0 tool_end check:2 pre_edit:deny session_start:told tool_start prompt
-#0960 f98077f1fe58 post_edit:told pre_edit:deny declare:4 post_edit:told tool_end pre_edit:deny pre_edit:deny prompt check:1 pre_edit:deny
-#0970 31fc5e178373 pre_edit:deny tool_end tool_start note:2 note:2 note:2 note! tool_start post_edit:told tool_start declare:5 prompt release:0
-#0980 ef774e2ab8b7 pre_edit:deny prompt post_edit:told post_edit:told pre_edit:deny session_end post_edit:told declare:8 post_edit:told tool_end:told
-#0990 f9190e9c471d tool_end stop pre_edit:deny pre_edit:deny prompt release:0 post_edit:told session_start:told declare:3 check:1
-#1000 992c9b35f3cc check:9 post_edit pre_edit:deny post_edit post_edit:told post_edit:told pre_edit:deny release:1 declare:1 pre_edit:told
-#1010 ce141b918954 pre_edit:deny sweep release:0 declare:0 post_edit:told sweep pre_edit:deny declare:9 post_edit:told pre_edit:deny
-#1020 b564eac1baa7 post_edit:told tool_end session_start:told post_edit:told tool_start view prompt post_edit:told restore:22 check:2
-#1030 bbb03a4dd7a7 tool_end:told post_edit:told session_end tool_end session_end release:4 release:16 pre_edit:deny heartbeat:told sweep
-#1040 dbd2758b09ea pre_edit pre_edit:deny stop pre_edit prompt:told sweep session_start:told pre_edit:deny post_edit:told release:0
-#1050 546d78ff8908 stop check:5 tool_start release:0 release:0 post_edit:told tool_start session_start:told check:14 tool_end
-#1060 9ab844b23f99 post_edit:told stop declare:10 release:0 post_edit:told sweep check:3 post_edit:told release! tool_start
-#1070 604e3f992781 post_edit:told prompt tool_start session_start:told pre_edit:deny note! release:0 session_end tool_end post_edit:told
-#1080 3ce5e8e712ca post_edit tool_start stop tool_end:told stop declare:4 pre_edit:deny pre_edit:deny post_edit:told check:8
-#1090 cde267148ef7 pre_edit:deny declare:2 pre_edit tool_end:told pre_edit post_edit:told pre_edit:deny pre_edit:deny pre_edit post_edit:told
-#1100 ca6230eb1779 tool_end:told declare:2 stop pre_edit:deny declare:5 stop! pre_edit:deny heartbeat:told pre_edit:deny post_edit:told
-#1110 4d49b29aef9b pre_edit:told release:0 pre_edit:deny pre_edit:deny pre_edit:deny tool_start post_edit:told session_start:told tool_end:told pre_edit:deny
-#1120 a2fba0ccf323 declare:4 post_edit tool_start! post_edit:told pre_edit:deny stop declare:2 pre_edit:deny pre_edit session_start:told
-#1130 6f57dde1915f declare:5 tool_end:told post_edit:told pre_edit pre_edit:deny heartbeat pre_edit:deny declare:6 view release:0
-#1140 3ce557e6d76c declare:8 session_end stop pre_edit:deny post_edit:told post_edit:told tool_end pre_edit:told declare:4 stop
-#1150 8a7f07bc500a post_edit pre_edit:deny post_edit:told pre_edit check:2 pre_edit:deny release:0 post_edit:told sweep post_edit:told
-#1160 7bebf51185f0 post_edit:told pre_edit:deny check:10 pre_edit note! session_start:told restore:24 sweep pre_edit:deny sweep
-#1170 22d77b7d3aad pre_edit:deny pre_edit tool_end:told heartbeat pre_edit:deny note! post_edit:told post_edit:told post_edit:told pre_edit:told
-#1180 05da672746de tool_end:told tool_end:told pre_edit:deny check:3 declare:4 post_edit:told stop check:11 post_edit check:3
-#1190 5ca9abaabce9 note! post_edit:told post_edit:told pre_edit:deny check:3 declare:2 prompt! sweep stop pre_edit:deny
-#1200 aa47b7e695d1 post_edit:told pre_edit:deny declare:3 note! prompt:told check:4 pre_edit:deny pre_edit:told post_edit:told post_edit:told
-#1210 a58e9290c18f release! tool_end:told post_edit:told tool_end:told post_edit:told pre_edit:deny tool_start tool_end:told prompt:told release:0
-#1220 e973e053aebe tool_start tool_start pre_edit:deny heartbeat:told note:2 note:2 note:2 note! declare:17 session_end prompt:told check:9 post_edit:told
-#1230 bff42475d72c declare:4 restore:24 pre_edit:deny pre_edit:deny stop post_edit:told heartbeat:told stop post_edit:told tool_end:told
-#1240 58d25005879c post_edit:told pre_edit:told tool_start post_edit:told session_end stop prompt:told pre_edit:deny check:21 pre_edit
-#1250 2a44cdc6874e pre_edit:deny release:0 restore:24 prompt:told session_end pre_edit:deny stop tool_start pre_edit:told sweep
-#1260 cadd9a2800f5 declare:7 post_edit tool_end:told prompt:told declare:9 tool_end tool_end:told post_edit:told pre_edit:deny note!
-#1270 1686197ca574 tool_end:told post_edit:told session_end tool_end post_edit:told pre_edit:deny check:2 pre_edit:deny pre_edit:told post_edit:told
-#1280 825f7245d0a4 sweep check:9 tool_end:told pre_edit:deny declare:20 pre_edit:deny tool_start prompt:told pre_edit:deny sweep
-#1290 e1e2b840f010 declare:16 tool_end:told session_start:told session_start:told note:3 tool_end:told pre_edit:told release:0 stop declare:3
-#1300 e4a114304111 prompt:told subagent_stop! post_edit:told declare:7 pre_edit:deny post_edit:told tool_start pre_edit:deny subagent_stop! stop
-#1310 cf64ff30755e heartbeat note! tool_end:told check:3 stop tool_end:told note! prompt:told view tool_end:told
-#1320 0f3e2328a4e3 tool_end:told post_edit:told tool_start pre_edit:deny prompt:told pre_edit:deny pre_edit:deny note! heartbeat:told post_edit:told
-#1330 d682ebc0baa8 check:4 stop tool_end pre_edit:deny session_end release:0 post_edit:told tool_start stop post_edit:told
-#1340 1e43580ada15 pre_edit:told note! sweep check:12 post_edit:told pre_edit:deny tool_start declare:4 prompt:told prompt:told
-#1350 0de18baa9299 note:0 note:0 note:0 note! session_end post_edit:told prompt:told note! stop stop session_end session_start:told note:1 note:1 note:1 note!
-#1360 233253662f0c stop pre_edit:told tool_end:told note:1 tool_start declare:7 stop check:11 declare:0 pre_edit:deny
-#1370 a5252e54b6af post_edit:told prompt:told check:7 session_start:told post_edit:told pre_edit:deny release:0 heartbeat:told post_edit:told stop
-#1380 3aa9b784f75c pre_edit check:17 pre_edit:deny pre_edit:deny release:0 pre_edit:deny prompt:told post_edit:told pre_edit:deny stop
-#1390 e93b93a401da pre_edit:told session_end check:7 tool_end post_edit:told prompt:told tool_start heartbeat:told pre_edit:deny check:6
-#1400 dc0a8d85a89a stop release:5 sweep check:12 post_edit:told pre_edit:deny post_edit:told session_end post_edit:told prompt:told
-#1410 fefcfc357186 post_edit:told pre_edit:deny note:2 note:2 note:2 note! check:7 prompt:told pre_edit note! pre_edit:told post_edit:told tool_end:told
-#1420 2e79ef5493f5 heartbeat session_end tool_end:told post_edit:told post_edit:told post_edit:told post_edit:told pre_edit:deny pre_edit:deny pre_edit:deny
-#1430 80b07d0ebaef pre_edit:deny pre_edit:deny session_start:told tool_start check:7 note:2 note:2 note:2 note! post_edit:told pre_edit:deny note! check:23
-#1440 841c3f430da4 pre_edit:deny tool_end:told post_edit:told check:3 pre_edit:told declare:3 sweep note! post_edit:told pre_edit:deny
-#1450 4a19652370a6 pre_edit:deny session_start:told pre_edit:deny prompt pre_edit:deny pre_edit:deny stop pre_edit:deny post_edit:told tool_start
-#1460 8703fcebe4f8 pre_edit:told post_edit:told check:4 pre_edit tool_end:told declare:0 declare:0 session_start:told session_start:told stop
-#1470 e4b5d46bf74e tool_end:told pre_edit:deny heartbeat:told sweep post_edit:told post_edit:told check:3 check:12 sweep sweep
-#1480 96e306ba11cd post_edit:told pre_edit session_start:told restore:24 tool_end:told declare:0 pre_edit:deny tool_start post_edit:told sweep
-#1490 fb6b270527b7 heartbeat:told post_edit:told tool_end:told prompt:told prompt:told stop pre_edit:deny check:29 post_edit:told subagent_stop!
-#1500 996740228826 tool_start prompt:told tool_start tool_start release:0 session_start:told post_edit:told post_edit pre_edit:deny prompt!
-#1510 843d8b5cd2be post_edit:told check:3 session_start! pre_edit:deny post_edit pre_edit:deny stop heartbeat:told pre_edit:deny declare:6
-#1520 a6c9af4559a8 pre_edit:deny pre_edit:deny pre_edit:deny post_edit:told session_start:told pre_edit:deny pre_edit post_edit:told pre_edit:deny post_edit:told
-#1530 5a85a54541b9 pre_edit:deny stop pre_edit:deny stop note:1 pre_edit:deny post_edit:told tool_start session_start:told post_edit
-#1540 e78edd0080f5 tool_start post_edit:told declare:6 post_edit:told pre_edit:deny prompt:told tool_start prompt:told stop declare:13
-#1550 2a01b70edc0f post_edit:told prompt:told pre_edit:deny tool_start tool_start! post_edit:told post_edit:told pre_edit:deny session_end pre_edit:deny
-#1560 d6156c880bf1 session_end pre_edit:deny pre_edit:told pre_edit:deny post_edit:told declare:4 heartbeat:told declare:3 tool_end:told tool_start
-#1570 53badc7bacf9 tool_start stop pre_edit:told pre_edit:deny tool_start declare:3 session_start:told tool_start view declare:21
-#1580 4c5d79fa0055 session_start:told declare:13 declare:9 tool_start prompt:told pre_edit:deny post_edit:told tool_end:told note:1 pre_edit:deny
-#1590 509b99054972 session_end pre_edit:deny note! heartbeat:told prompt:told post_edit:told tool_end:told declare:21 pre_edit:deny release:6
-#1600 d3e784b3bff3 tool_start pre_edit:deny tool_end:told tool_start tool_start session_start:told post_edit:told stop tool_start prompt:told
-#1610 052885de0c0f subagent_stop! sweep session_start:told check:12 tool_end:told session_end pre_edit session_start! sweep prompt:told
-#1620 b54285c794c6 declare:8 pre_edit:deny tool_end:told tool_start post_edit:told prompt:told heartbeat post_edit:told check:26 post_edit:told
-#1630 8704bef84e3a post_edit:told post_edit:told post_edit:told tool_end:told post_edit:told check:4 post_edit:told declare:5 post_edit:told pre_edit:deny
-#1640 4bebcd3e9cfe pre_edit:deny check:31 post_edit:told check:5 tool_start pre_edit:deny post_edit:told post_edit:told note:2 note:2 note:2 note! tool_start
-#1650 1d499b3b0889 stop pre_edit:deny session_end sweep stop tool_start pre_edit:deny check:19 post_edit:told declare:11
-#1660 1c0993132c0c pre_edit:told post_edit:told session_start:told post_edit:told pre_edit:deny view session_start:told session_start:told tool_end:told pre_edit:deny
-#1670 41f98998136e post_edit:told release:8 pre_edit:deny tool_start pre_edit:deny post_edit:told pre_edit:deny pre_edit:deny pre_edit:deny prompt:told
-#1680 97588d4149dc stop session_start:told release:0 stop session_start:told pre_edit:deny stop check:4 check:31 session_start:told
-#1690 5e17ead9c534 pre_edit:told pre_edit:deny pre_edit check:6 session_end tool_end:told release:0 tool_end:told heartbeat:told release:0
-#1700 41a0a5664771 note:1 note:1 note:1 note! post_edit:told release:0 post_edit:told post_edit:told pre_edit:deny stop pre_edit:told check:5 sweep
-#1710 3254fb2a57b8 session_start:told session_start:told declare:3 prompt post_edit:told post_edit pre_edit:deny release:0 pre_edit:deny tool_end:told
-#1720 f813f631f6da pre_edit:deny pre_edit prompt:told post_edit:told pre_edit:deny note:1 session_end tool_start post_edit:told pre_edit:deny
-#1730 c923185984bc pre_edit:deny prompt:told pre_edit:deny note! post_edit declare:7 pre_edit:deny declare:5 tool_start pre_edit:deny
-#1740 bb2ccb5e3b91 post_edit:told tool_start tool_end:told post_edit:told check:4 pre_edit:deny heartbeat:told session_end! session_start:told check:7
-#1750 a1c7fe89ce39 sweep release:0 post_edit:told declare:6 pre_edit:deny declare:4 view stop post_edit:told pre_edit:deny
-#1760 996547fbb632 session_start:told pre_edit post_edit:told post_edit:told sweep check:1 note! tool_end:told pre_edit:deny post_edit:told
-#1770 742127f81372 pre_edit:deny prompt:told tool_end:told tool_start check:6 stop post_edit:told post_edit:told stop post_edit:told
-#1780 9a2c2f3bcbaf session_start:told stop session_end release:2 check:4 stop pre_edit:deny prompt:told post_edit:told sweep
-#1790 f9521ccb713f heartbeat:told declare:4 post_edit:told declare:8 tool_start pre_edit:deny stop note:1 sweep post_edit:told
-#1800 2d790ec97321 post_edit:told session_start:told pre_edit:deny tool_start tool_start post_edit:told post_edit:told tool_start tool_end:told view
-#1810 37cd7f185488 session_start:told tool_start heartbeat:told heartbeat:told pre_edit:deny stop post_edit:told pre_edit:deny session_start:told check:14
-#1820 14f29824d8dd session_start:told stop prompt:told tool_start pre_edit:deny post_edit:told pre_edit:told check:16 pre_edit:deny pre_edit:deny
-#1830 39082947fea2 pre_edit:told pre_edit:deny pre_edit:deny stop pre_edit:deny declare:3 pre_edit:deny tool_end:told post_edit:told pre_edit:deny
-#1840 97b500b2cf1c post_edit:told post_edit:told pre_edit:deny post_edit:told declare:15 post_edit:told tool_end:told sweep post_edit:told tool_end:told
-#1850 0f590bf3ed91 tool_start check:12 session_start:told pre_edit:deny post_edit:told pre_edit:deny check:0 session_end pre_edit:deny post_edit:told
-#1860 4fc723216185 declare! note:1 sweep pre_edit:deny prompt:told prompt:told prompt:told pre_edit:deny prompt:told post_edit:told
-#1870 26607f67a95f post_edit:told note:3 stop heartbeat:told session_end post_edit:told tool_end:told heartbeat tool_end:told stop
-#1880 da397649c72d session_start:told pre_edit session_start:told check:27 declare:10 declare:4 prompt:told prompt:told pre_edit:deny release:2
-#1890 836e6019ffba pre_edit:deny post_edit:told sweep prompt:told post_edit:told declare:0 post_edit:told pre_edit:deny tool_start post_edit:told
-#1900 8f5170c372d8 tool_start sweep session_end stop tool_end:told check:4 post_edit:told declare:0 stop stop
-#1910 2627231e504c session_end prompt:told tool_end heartbeat:told post_edit:told pre_edit:deny post_edit:told pre_edit:deny pre_edit:deny post_edit:told
-#1920 e5a448234326 pre_edit:deny note:4 prompt:told check:4 stop pre_edit:deny tool_start check:15 prompt:told post_edit:told
-#1930 f5fb2664cd71 pre_edit:deny post_edit:told view pre_edit:deny tool_start pre_edit:deny pre_edit:deny heartbeat:told post_edit declare:16
-#1940 9a29925a505b pre_edit:deny prompt pre_edit:deny declare! pre_edit:deny session_start:told declare:20 check:11 post_edit:told post_edit:told
-#1950 c1e2f358969f post_edit:told check:13 session_start:told tool_start sweep sweep session_end sweep check:11 tool_start
-#1960 2220ed10ac8c sweep stop pre_edit:deny pre_edit session_end tool_end:told post_edit:told subagent_stop! post_edit:told post_edit:told
-#1970 771fe171a1bf post_edit:told pre_edit:deny declare:11 declare:5 declare:32 prompt:told sweep pre_edit:deny session_start:told session_start:told
-#1980 afa27718f4f9 note:2 declare:10 sweep post_edit:told post_edit:told tool_end:told post_edit:told stop post_edit:told post_edit:told
-#1990 26a88755149d pre_edit:deny tool_end:told tool_end:told prompt:told tool_start note! post_edit:told declare:7 post_edit:told release:4
-#2000 fa9e93ed7a91 view
+#0670 e777e3d47b69 pre_edit:deny tool_end:told stop post_edit:told view tool_start session_end release:3 pre_edit:deny pre_edit:deny
+#0680 1a6922755672 tool_start tool_start post_edit:told pre_edit:deny check:3 sweep pre_edit:deny prompt session_start:told pre_edit:deny
+#0690 8a3ee75649bb tool_start stop session_start:told declare:8 post_edit:told session_start:told note! pre_edit:deny session_start:told post_edit:told
+#0700 6c84fe5218db prompt:told prompt pre_edit:deny stop session_start:told check:4 tool_start pre_edit:deny pre_edit:deny pre_edit:told
+#0710 1b8f23c024a6 sweep session_end post_edit declare:0 pre_edit:deny declare:7 check:2 prompt:told pre_edit:deny prompt:told
+#0720 4281294f8aa3 post_edit:told post_edit:told restore:24 post_edit:told pre_edit:deny pre_edit:deny pre_edit:deny check:3 note:1 pre_edit:deny
+#0730 9ef7728e60b5 tool_start pre_edit:told view prompt tool_start pre_edit:deny post_edit:told session_end prompt:told post_edit:told
+#0740 ae915696c45e tool_end tool_start check:2 tool_end:told declare:11 prompt pre_edit:deny check:3 session_end pre_edit:deny
+#0750 9257c022875f pre_edit:deny pre_edit:deny pre_edit:deny tool_start pre_edit:deny pre_edit:deny tool_end sweep post_edit:told check:12
+#0760 54e624fdfd26 tool_end:told post_edit:told sweep pre_edit:deny stop note:1 note:1 note:1 note! post_edit:told sweep declare:15 session_end
+#0770 6d301b8f4111 session_start:told tool_start declare:10 check:16 pre_edit:deny session_end release! pre_edit:deny post_edit:told tool_start
+#0780 90e6c31e13bc declare:10 check:0 note:4 pre_edit:deny release:0 pre_edit:deny prompt:told pre_edit:deny pre_edit:deny pre_edit:deny
+#0790 b2263e8bf7bb tool_start session_end pre_edit:told check:5 pre_edit:deny session_start:told pre_edit:deny post_edit:told post_edit:told pre_edit:told
+#0800 9472244a0cad pre_edit:deny release:0 pre_edit:told heartbeat:told pre_edit:told tool_end:told session_end post_edit:told tool_start note!
+#0810 a6b4884fd12d stop prompt! declare:0 pre_edit:deny pre_edit:deny pre_edit tool_end:told pre_edit:deny tool_start session_start:told
+#0820 dfafc41aab19 post_edit:told post_edit:told declare:5 pre_edit:deny tool_start check:5 declare:8 post_edit:told pre_edit:deny pre_edit:deny
+#0830 0f0e032c125f check:22 session_start:told view session_end post_edit:told post_edit:told prompt:told note! pre_edit:deny pre_edit:told
+#0840 c46a45680fdc tool_end:told post_edit:told post_edit:told declare:6 pre_edit:deny tool_end tool_end post_edit:told pre_edit:deny sweep
+#0850 fd0fbf698458 pre_edit:deny pre_edit:deny tool_start pre_edit:deny tool_start pre_edit:deny sweep session_start:told prompt session_end
+#0860 5d94b1e44e4c pre_edit:deny heartbeat pre_edit:deny post_edit prompt tool_start stop post_edit post_edit:told release:0
+#0870 e9818341d7df tool_start post_edit declare:3 post_edit:told pre_edit:deny tool_end check:5 tool_end tool_start pre_edit:deny
+#0880 1a6b994db1c9 pre_edit:deny check:13 declare:5 post_edit:told view pre_edit:deny pre_edit:deny session_end prompt stop
+#0890 349d06d995ff pre_edit:deny prompt check:2 declare:0 session_end declare:3 tool_start declare:4 prompt heartbeat
+#0900 7d2f692ebfae sweep pre_edit post_edit tool_start release:0 post_edit tool_end pre_edit:deny session_start:told heartbeat
+#0910 3b432eb2edc5 prompt pre_edit:deny pre_edit:deny declare:2 pre_edit:deny post_edit:told sweep sweep stop post_edit:told
+#0920 534c6493e753 tool_start pre_edit pre_edit pre_edit sweep prompt tool_start tool_start session_end check:6
+#0930 756a2b7e8a4b note! post_edit:told check:5 pre_edit:deny check:0 note! session_start:told session_end prompt view
+#0940 eec699d78e56 session_end release:1 post_edit:told sweep prompt pre_edit:deny tool_end pre_edit:deny post_edit:told declare:7
+#0950 b2b8abd68534 post_edit:told session_start:told post_edit:told release:0 tool_end check:2 pre_edit:deny session_start:told tool_start prompt
+#0960 a102f53bd803 post_edit:told pre_edit:deny declare:4 post_edit:told tool_end pre_edit:deny pre_edit:deny prompt check:1 pre_edit:deny
+#0970 97e6f546a298 pre_edit:deny tool_end tool_start note:2 note:2 note:2 note! tool_start post_edit:told tool_start declare:5 prompt release:0
+#0980 6dc34b8f6ea6 pre_edit:deny prompt post_edit:told post_edit:told pre_edit:deny session_end post_edit:told declare:8 post_edit:told tool_end:told
+#0990 d739a16edd27 tool_end stop pre_edit:deny pre_edit:deny prompt release:0 post_edit:told session_start:told declare:3 check:1
+#1000 e5feeb334ecc check:9 post_edit pre_edit:deny post_edit post_edit:told post_edit:told pre_edit:deny release:1 declare:1 pre_edit:told
+#1010 495df23ce5f1 pre_edit:deny sweep release:0 declare:0 post_edit:told sweep pre_edit:deny declare:9 post_edit:told pre_edit:deny
+#1020 a0d30f68fe7c post_edit:told tool_end session_start:told post_edit:told tool_start view prompt post_edit:told restore:22 check:2
+#1030 283ed7e781ee tool_end:told post_edit:told session_end tool_end session_end release:4 release:16 pre_edit:deny heartbeat:told sweep
+#1040 ae9848ae2dc5 pre_edit pre_edit:deny stop pre_edit prompt:told sweep session_start:told pre_edit:deny post_edit:told release:0
+#1050 3811067c5ea7 stop check:5 tool_start release:0 release:0 post_edit:told tool_start session_start:told check:14 tool_end
+#1060 1f5228d4ac07 post_edit:told stop declare:10 release:0 post_edit:told sweep check:3 post_edit:told release! tool_start
+#1070 57734b498801 post_edit:told prompt tool_start session_start:told pre_edit:deny note! release:0 session_end tool_end post_edit:told
+#1080 d48d8bdd0ea5 post_edit tool_start stop tool_end:told stop declare:4 pre_edit:deny pre_edit:deny post_edit:told check:8
+#1090 9a79dc515efc pre_edit:deny declare:2 pre_edit tool_end:told pre_edit post_edit:told pre_edit:deny pre_edit:deny pre_edit post_edit:told
+#1100 824bbf1614bc tool_end:told declare:2 stop pre_edit:deny declare:5 stop! pre_edit:deny heartbeat:told pre_edit:deny post_edit:told
+#1110 7111a278bb6a pre_edit:told release:0 pre_edit:deny pre_edit:deny pre_edit:deny tool_start post_edit:told session_start:told tool_end:told pre_edit:deny
+#1120 e21b5bc27f5d declare:4 post_edit tool_start! post_edit:told pre_edit:deny stop declare:2 pre_edit:deny pre_edit session_start:told
+#1130 d4d0930f493c declare:5 tool_end:told post_edit:told pre_edit pre_edit:deny heartbeat pre_edit:deny declare:6 view release:0
+#1140 e165deb5d46a declare:8 session_end stop pre_edit:deny post_edit:told post_edit:told tool_end pre_edit:told declare:4 stop
+#1150 a0a233e2aadf post_edit pre_edit:deny post_edit:told pre_edit check:2 pre_edit:deny release:0 post_edit:told sweep post_edit:told
+#1160 2480d5188020 post_edit:told pre_edit:deny check:10 pre_edit note! session_start:told restore:24 sweep pre_edit:deny sweep
+#1170 74dec7a44d51 pre_edit:deny pre_edit tool_end:told heartbeat pre_edit:deny note! post_edit:told post_edit:told post_edit:told pre_edit:told
+#1180 607ffc620e43 tool_end:told tool_end:told pre_edit:deny check:3 declare:4 post_edit:told stop check:11 post_edit check:3
+#1190 7ee9c80ef6aa note! post_edit:told post_edit:told pre_edit:deny check:3 declare:2 prompt! sweep stop pre_edit:deny
+#1200 49a1795b6c6c post_edit:told pre_edit:deny declare:3 note! prompt:told check:4 pre_edit:deny pre_edit:told post_edit:told post_edit:told
+#1210 44c873fa5f4a release! tool_end:told post_edit:told tool_end:told post_edit:told pre_edit:deny tool_start tool_end:told prompt:told release:0
+#1220 196239985c53 tool_start tool_start pre_edit:deny heartbeat:told note:2 note:2 note:2 note! declare:17 session_end prompt:told check:9 post_edit:told
+#1230 0f5aff9bf7f0 declare:4 restore:24 pre_edit:deny pre_edit:deny stop post_edit:told heartbeat:told stop post_edit:told tool_end:told
+#1240 fe508a7c4c98 post_edit:told pre_edit:told tool_start post_edit:told session_end stop prompt:told pre_edit:deny check:21 pre_edit
+#1250 a4e7953311c3 pre_edit:deny release:0 restore:24 prompt:told session_end pre_edit:deny stop tool_start pre_edit:told sweep
+#1260 2544d229fc8f declare:7 post_edit tool_end:told prompt:told declare:9 tool_end tool_end:told post_edit:told pre_edit:deny note!
+#1270 c52c62a6071b tool_end:told post_edit:told session_end tool_end post_edit:told pre_edit:deny check:2 pre_edit:deny pre_edit:told post_edit:told
+#1280 8ff55749bf0f sweep check:9 tool_end:told pre_edit:deny declare:20 pre_edit:deny tool_start prompt:told pre_edit:deny sweep
+#1290 1f3687b7d99a declare:16 tool_end:told session_start:told session_start:told note:3 tool_end:told pre_edit:told release:0 stop declare:3
+#1300 fc7e17f80ee1 prompt:told subagent_stop! post_edit:told declare:7 pre_edit:deny post_edit:told tool_start pre_edit:deny subagent_stop! stop
+#1310 bd8f30728b7f heartbeat note! tool_end:told check:3 stop tool_end:told note! prompt:told view tool_end:told
+#1320 23911873cd6b tool_end:told post_edit:told tool_start pre_edit:deny prompt:told pre_edit:deny pre_edit:deny note! heartbeat:told post_edit:told
+#1330 a81b1302f5e5 check:4 stop tool_end pre_edit:deny session_end release:0 post_edit:told tool_start stop post_edit:told
+#1340 4b0881d9f8fc pre_edit:told note! sweep check:12 post_edit:told pre_edit:deny tool_start declare:4 prompt:told prompt:told
+#1350 02adfcf9a60d note:0 note:0 note:0 note! session_end post_edit:told prompt:told note! stop stop session_end session_start:told note:1 note:1 note:1 note!
+#1360 9f64fe489bae stop pre_edit:told tool_end:told note:1 tool_start declare:7 stop check:11 declare:0 pre_edit:deny
+#1370 830b79a52661 post_edit:told prompt:told check:7 session_start:told post_edit:told pre_edit:deny release:0 heartbeat:told post_edit:told stop
+#1380 3b28bbf9bfb5 pre_edit check:17 pre_edit:deny pre_edit:deny release:0 pre_edit:deny prompt:told post_edit:told pre_edit:deny stop
+#1390 97210a692d90 pre_edit:told session_end check:7 tool_end post_edit:told prompt:told tool_start heartbeat:told pre_edit:deny check:6
+#1400 38b642d4b2a6 stop release:5 sweep check:12 post_edit:told pre_edit:deny post_edit:told session_end post_edit:told prompt:told
+#1410 9cb3f8e0463e post_edit:told pre_edit:deny note:2 note:2 note:2 note! check:7 prompt:told pre_edit note! pre_edit:told post_edit:told tool_end:told
+#1420 b95f2d15e127 heartbeat session_end tool_end:told post_edit:told post_edit:told post_edit:told post_edit:told pre_edit:deny pre_edit:deny pre_edit:deny
+#1430 88a6dd35900c pre_edit:deny pre_edit:deny session_start:told tool_start check:7 note:2 note:2 note:2 note! post_edit:told pre_edit:deny note! check:23
+#1440 5f404f9de1d8 pre_edit:deny tool_end:told post_edit:told check:3 pre_edit:told declare:3 sweep note! post_edit:told pre_edit:deny
+#1450 cb7a06621551 pre_edit:deny session_start:told pre_edit:deny prompt pre_edit:deny pre_edit:deny stop pre_edit:deny post_edit:told tool_start
+#1460 c29ff10938cd pre_edit:told post_edit:told check:4 pre_edit tool_end:told declare:0 declare:0 session_start:told session_start:told stop
+#1470 d08b31472fad tool_end:told pre_edit:deny heartbeat:told sweep post_edit:told post_edit:told check:3 check:12 sweep sweep
+#1480 be388a18d779 post_edit:told pre_edit session_start:told restore:24 tool_end:told declare:0 pre_edit:deny tool_start post_edit:told sweep
+#1490 1b91e14e80f2 heartbeat:told post_edit:told tool_end:told prompt:told prompt:told stop pre_edit:deny check:29 post_edit:told subagent_stop!
+#1500 a5cdf4acec53 tool_start prompt:told tool_start tool_start release:0 session_start:told post_edit:told post_edit pre_edit:deny prompt!
+#1510 89b4254e8f75 post_edit:told check:3 session_start! pre_edit:deny post_edit pre_edit:deny stop heartbeat:told pre_edit:deny declare:6
+#1520 6fe05da365ba pre_edit:deny pre_edit:deny pre_edit:deny post_edit:told session_start:told pre_edit:deny pre_edit post_edit:told pre_edit:deny post_edit:told
+#1530 e21304f89ae8 pre_edit:deny stop pre_edit:deny stop note:1 pre_edit:deny post_edit:told tool_start session_start:told post_edit
+#1540 8c8370e5e0c9 tool_start post_edit:told declare:6 post_edit:told pre_edit:deny prompt:told tool_start prompt:told stop declare:13
+#1550 7a6e18864a50 post_edit:told prompt:told pre_edit:deny tool_start tool_start! post_edit:told post_edit:told pre_edit:deny session_end pre_edit:deny
+#1560 a179edeb58c8 session_end pre_edit:deny pre_edit:told pre_edit:deny post_edit:told declare:4 heartbeat:told declare:3 tool_end:told tool_start
+#1570 8e411bf2b9b4 tool_start stop pre_edit:told pre_edit:deny tool_start declare:3 session_start:told tool_start view declare:21
+#1580 d5f68ab3df21 session_start:told declare:13 declare:9 tool_start prompt:told pre_edit:deny post_edit:told tool_end:told note:1 pre_edit:deny
+#1590 412614726ecc session_end pre_edit:deny note! heartbeat:told prompt:told post_edit:told tool_end:told declare:21 pre_edit:deny release:6
+#1600 8cff9a61c722 tool_start pre_edit:deny tool_end:told tool_start tool_start session_start:told post_edit:told stop tool_start prompt:told
+#1610 7303dd43c4ff subagent_stop! sweep session_start:told check:12 tool_end:told session_end pre_edit session_start! sweep prompt:told
+#1620 6c53c6974448 declare:8 pre_edit:deny tool_end:told tool_start post_edit:told prompt:told heartbeat post_edit:told check:26 post_edit:told
+#1630 1ea821065b3a post_edit:told post_edit:told post_edit:told tool_end:told post_edit:told check:4 post_edit:told declare:5 post_edit:told pre_edit:deny
+#1640 4193454912c7 pre_edit:deny check:31 post_edit:told check:5 tool_start pre_edit:deny post_edit:told post_edit:told note:2 note:2 note:2 note! tool_start
+#1650 915e3f39c1f1 stop pre_edit:deny session_end sweep stop tool_start pre_edit:deny check:19 post_edit:told declare:11
+#1660 edac58e1189d pre_edit:told post_edit:told session_start:told post_edit:told pre_edit:deny view session_start:told session_start:told tool_end:told pre_edit:deny
+#1670 13635579706d post_edit:told release:8 pre_edit:deny tool_start pre_edit:deny post_edit:told pre_edit:deny pre_edit:deny pre_edit:deny prompt:told
+#1680 5dac34113369 stop session_start:told release:0 stop session_start:told pre_edit:deny stop check:4 check:31 session_start:told
+#1690 e61f32975711 pre_edit:told pre_edit:deny pre_edit check:6 session_end tool_end:told release:0 tool_end:told heartbeat:told release:0
+#1700 7f3db31bb102 note:1 note:1 note:1 note! post_edit:told release:0 post_edit:told post_edit:told pre_edit:deny stop pre_edit:told check:5 sweep
+#1710 97b9df22ab56 session_start:told session_start:told declare:3 prompt post_edit:told post_edit pre_edit:deny release:0 pre_edit:deny tool_end:told
+#1720 5823fa679086 pre_edit:deny pre_edit prompt:told post_edit:told pre_edit:deny note:1 session_end tool_start post_edit:told pre_edit:deny
+#1730 22a36cf8dca6 pre_edit:deny prompt:told pre_edit:deny note! post_edit declare:7 pre_edit:deny declare:5 tool_start pre_edit:deny
+#1740 835516e0e61b post_edit:told tool_start tool_end:told post_edit:told check:4 pre_edit:deny heartbeat:told session_end! session_start:told check:7
+#1750 ad0aaaba95d1 sweep release:0 post_edit:told declare:6 pre_edit:deny declare:4 view stop post_edit:told pre_edit:deny
+#1760 1af3ff54a0f3 session_start:told pre_edit post_edit:told post_edit:told sweep check:1 note! tool_end:told pre_edit:deny post_edit:told
+#1770 3ef829c11d14 pre_edit:deny prompt:told tool_end:told tool_start check:6 stop post_edit:told post_edit:told stop post_edit:told
+#1780 522ca792f7e1 session_start:told stop session_end release:2 check:4 stop pre_edit:deny prompt:told post_edit:told sweep
+#1790 8de8640f9fe5 heartbeat:told declare:4 post_edit:told declare:8 tool_start pre_edit:deny stop note:1 sweep post_edit:told
+#1800 2860b6a4d2c2 post_edit:told session_start:told pre_edit:deny tool_start tool_start post_edit:told post_edit:told tool_start tool_end:told view
+#1810 b821a1bf8ddd session_start:told tool_start heartbeat:told heartbeat:told pre_edit:deny stop post_edit:told pre_edit:deny session_start:told check:14
+#1820 cb6c2f410df4 session_start:told stop prompt:told tool_start pre_edit:deny post_edit:told pre_edit:told check:16 pre_edit:deny pre_edit:deny
+#1830 13b3e019a9f5 pre_edit:told pre_edit:deny pre_edit:deny stop pre_edit:deny declare:3 pre_edit:deny tool_end:told post_edit:told pre_edit:deny
+#1840 fcb580389455 post_edit:told post_edit:told pre_edit:deny post_edit:told declare:15 post_edit:told tool_end:told sweep post_edit:told tool_end:told
+#1850 035087b8a487 tool_start check:12 session_start:told pre_edit:deny post_edit:told pre_edit:deny check:0 session_end pre_edit:deny post_edit:told
+#1860 a7f65593b59e declare! note:1 sweep pre_edit:deny prompt:told prompt:told prompt:told pre_edit:deny prompt:told post_edit:told
+#1870 f12d171d92d2 post_edit:told note:3 stop heartbeat:told session_end post_edit:told tool_end:told heartbeat tool_end:told stop
+#1880 46502973e9c7 session_start:told pre_edit session_start:told check:27 declare:10 declare:4 prompt:told prompt:told pre_edit:deny release:2
+#1890 a91d010adb26 pre_edit:deny post_edit:told sweep prompt:told post_edit:told declare:0 post_edit:told pre_edit:deny tool_start post_edit:told
+#1900 eec93450a447 tool_start sweep session_end stop tool_end:told check:4 post_edit:told declare:0 stop stop
+#1910 4ae506a19834 session_end prompt:told tool_end heartbeat:told post_edit:told pre_edit:deny post_edit:told pre_edit:deny pre_edit:deny post_edit:told
+#1920 02393d605140 pre_edit:deny note:4 prompt:told check:4 stop pre_edit:deny tool_start check:15 prompt:told post_edit:told
+#1930 5faa42173623 pre_edit:deny post_edit:told view pre_edit:deny tool_start pre_edit:deny pre_edit:deny heartbeat:told post_edit declare:16
+#1940 f1fc8378cfdb pre_edit:deny prompt pre_edit:deny declare! pre_edit:deny session_start:told declare:20 check:11 post_edit:told post_edit:told
+#1950 6bcf2040d987 post_edit:told check:13 session_start:told tool_start sweep sweep session_end sweep check:11 tool_start
+#1960 aa1939c64f9a sweep stop pre_edit:deny pre_edit session_end tool_end:told post_edit:told subagent_stop! post_edit:told post_edit:told
+#1970 a3bb545a338d post_edit:told pre_edit:deny declare:11 declare:5 declare:32 prompt:told sweep pre_edit:deny session_start:told session_start:told
+#1980 15a2b673d0f8 note:2 declare:10 sweep post_edit:told post_edit:told tool_end:told post_edit:told stop post_edit:told post_edit:told
+#1990 326b9bd5b5de pre_edit:deny tool_end:told tool_end:told prompt:told tool_start note! post_edit:told declare:7 post_edit:told release:4
+#2000 b014b49d68ba view
 == default policy, sessions that move between worktrees, subagents (seed 5, 2000 steps)
 #0000 f420fe4baa88 stop pre_edit tool_end note! prompt session_start:told session_end worker_end heartbeat declare:0
 #0010 8525aca39711 post_edit prompt pre_edit pre_edit sweep worker_end check:1 pre_edit stop post_edit
@@ -734,7 +734,7 @@
 #1260 4e2308aa978e tool_end! pre_edit:deny session_end tool_end:told note:1 pre_edit:deny pre_edit:deny post_edit:told session_end declare:20
 #1270 51c68feb9d77 note! tool_end:told pre_edit:deny declare:20 post_edit:told declare! restore:35 pre_edit:deny post_edit:told sweep
 #1280 0ad1a558762c pre_edit:told post_edit stop pre_edit:deny tool_end session_start:told tool_end:told prompt:told tool_end:told pre_edit:deny
-#1290 1bb709cef7f1 pre_edit:told check:15 tool_end:told pre_edit:told pre_edit:told session_end sweep pre_edit:deny post_edit:told pre_edit:deny
+#1290 2f0cb6a3f694 pre_edit:told check:15 tool_end:told pre_edit:told pre_edit:told session_end sweep pre_edit:deny post_edit:told pre_edit:deny
 #1300 82602b02a3ed tool_end pre_edit:deny post_edit:told declare:0 post_edit:told post_edit:told check:25 release:1 pre_edit:deny stop
 #1310 9c68254cf0d1 tool_start declare:5 declare:11 declare:5 check:9 tool_start sweep release:5 worker_end pre_edit:deny
 #1320 3af07bf204d9 post_edit:told heartbeat:told prompt:told declare! tool_start sweep release:2 pre_edit:told prompt:told post_edit:told

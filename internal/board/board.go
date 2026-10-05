@@ -136,8 +136,12 @@ const (
 	maxInbox     = 50
 	inboxTTL     = 24 * time.Hour
 	keepEndedFor = time.Hour
-	noteWindow   = time.Minute
-	idLen        = 8 // characters of an ID after its prefix
+	// forgetEndedAfter is how long a session that ended remembers what it
+	// was told (forgetLive), for an agent that resumes it under the same id,
+	// as headless agents do step by step (claude -p --resume).
+	forgetEndedAfter = 10 * time.Minute
+	noteWindow       = time.Minute
+	idLen            = 8 // characters of an ID after its prefix
 )
 
 // maxFootprintDirs bounds the directories a footprint names in place of the
@@ -619,7 +623,6 @@ func (b *Board) Hook(now time.Time, ev HookEvent) (HookResult, error) {
 	case KindSessionEnd:
 		s.Phase = phaseEnded
 		clearTools(s)
-		forgetLive(s)
 		b.reconcile(now, c, s, ev.Footprint)
 		b.record(Activity{At: now, Kind: ActivitySessionEnded, Repo: c.Repo, Member: c.Member, ClaimID: c.ID, Session: s.ID, Agent: s.Agent})
 	case KindHeartbeat:
@@ -1635,13 +1638,15 @@ func (s *session) unack(forget func(k string) bool) {
 	}
 }
 
-// forgetLive lets go of what only a live session reads, as the session
-// ends: what it was told, and the calls refused to it, whose post_edit would
-// give back what their check spent of it. Sessions are kept for an hour
-// after they end, for the dashboard, and a board that runs thousands of
-// agents a day keeps thousands; one that resumes may be told again what it
-// heard before. The calls its end let go of while they ran (letGo) stay: a
-// post_edit for one is for an edit checked before it ran.
+// forgetLive lets go of what only a live session reads, once the session
+// has stayed ended for forgetEndedAfter (Sweep): what it was told, and the
+// calls refused to it, whose post_edit would give back what their check
+// spent of it. Sessions are kept for an hour after they end, for the
+// dashboard, and a board that runs thousands of agents a day keeps
+// thousands; one resumed within forgetEndedAfter of its end remembers what
+// it heard, and one resumed later may be told it again. The calls its end
+// let go of while they ran (letGo) stay: a post_edit for one is for an edit
+// checked before it ran.
 func forgetLive(s *session) {
 	s.Acked, s.ackedShared, s.refused = nil, false, nil
 }
@@ -2673,6 +2678,10 @@ func (b *Board) Sweep(now time.Time) {
 			b.detachSession(s)
 			changed = true
 			continue
+		}
+		if st == StateEnded && now.Sub(s.LastSeen) > forgetEndedAfter && (s.Acked != nil || s.refused != nil) {
+			forgetLive(s)
+			changed = true
 		}
 		held[s.ClaimID] = true
 		for id, at := range s.Also {

@@ -159,15 +159,17 @@ reservation. A snapshot an older server wrote is trimmed to these bounds as it i
 Every acknowledgement is remembered per session, so an agent hears about a given overlap once, not on every edit; and
 within a session per worker, where the agent names its subagents (Claude Code, Codex, Cursor; see
 [integrations](integrations.md)): subagents run side by side with contexts of their own, so each is bumped, warned and
-asked once itself, rather than the second taking the first's refusal as its own retry. A collision is still counted
-and announced once per session, and when a subagent ends (`SubagentStop`) the board forgets what it told it. When a
-session ends, the board forgets what it told the session: it keeps an ended session for an hour, for the dashboard, and
-a team running thousands of agents a day would otherwise keep a key for every collision each was told of. A session
-that resumes may then be bumped or warned again, and its collision counted and announced again, about what it heard
-before it ended; the task its first prompt named stays. A
-collision is announced (a `conflict` activity, for the dashboard and webhooks) under the teammate whose work decided the
-answer, and names at most four others it newly ran into, a member's many worktrees with the same news in one line,
-then counts the rest.
+asked once itself, rather than the second taking the first's refusal as its own retry. A collision is still counted and
+announced once per session, and when a subagent ends (`SubagentStop`) the board forgets what it told it. Ten minutes
+after a session ends, a sweep forgets what the board told it: it keeps an ended session for an hour, for the dashboard,
+and a team running thousands of agents a day would otherwise keep a key for every collision each was told of. A headless
+agent run step by step under one session id (`claude -p --resume`, `codex exec resume`) ends its session after each
+step: a step resumed within the ten minutes remembers what the session heard, and is neither bumped nor warned again.
+One resumed later may be bumped or warned again, and its collision counted and announced again, about what it heard
+before it ended; the task its first prompt named stays. A restart keeps what sessions that ended within the ten minutes
+before the board's last save were told. A collision is announced (a `conflict` activity, for the dashboard and webhooks)
+under the teammate whose work decided the answer, and names at most four others it newly ran into, a member's many
+worktrees with the same news in one line, then counts the rest.
 
 ## Intents
 

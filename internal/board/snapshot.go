@@ -456,11 +456,13 @@ func (c *claim) numberInbox(heard *map[string]map[string]uint64) {
 	}
 }
 
-// trimRestored drops what a session read from a snapshot keeps that the
-// board no longer would. An older server kept what a session had been told
-// after it ended, and the mark that a prompt named the claim's task among
-// it.
-func (s *session) trimRestored() {
+// trimRestored drops what a session read from a snapshot saved at saved
+// keeps that the board no longer would. An older server kept what a session
+// had been told for an hour after it ended, and the mark that a prompt named
+// the claim's task among it. One that ended within forgetEndedAfter of the
+// save keeps it, as it would have on the board, until Sweep lets go of it;
+// one that ended before, or when the save's time is not yet read, does not.
+func (s *session) trimRestored(saved time.Time) {
 	if s == nil {
 		return
 	}
@@ -468,7 +470,7 @@ func (s *session) trimRestored() {
 		s.Prompted = true
 		delete(s.Acked, ackPrompted)
 	}
-	if s.Phase == phaseEnded || len(s.Acked) == 0 {
+	if s.Phase == phaseEnded && (saved.IsZero() || saved.Sub(s.LastSeen) > forgetEndedAfter) || len(s.Acked) == 0 {
 		s.Acked = nil
 	}
 }
@@ -519,7 +521,8 @@ func readSnapshot(r io.Reader) (snapshot, error) {
 				c.numberInbox(&s.heard)
 			})
 		case strings.EqualFold(key, "sessions"):
-			return readArray(dec, &s.Sessions, (*session).trimRestored)
+			// The time it was saved comes before them, as a snapshot is written.
+			return readArray(dec, &s.Sessions, func(x *session) { x.trimRestored(s.Saved) })
 		case strings.EqualFold(key, "saved"):
 			return dec.Decode(&s.Saved)
 		case strings.EqualFold(key, "seq"):

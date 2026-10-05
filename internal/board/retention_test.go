@@ -744,9 +744,19 @@ func TestEndedSessionsForgetWhatTheyWereTold(t *testing.T) {
 		t.Fatalf("before the end: %d told, %d refused, %d let go; the test needs each", len(s.Acked), len(s.refused), len(s.letGo))
 	}
 	h.bobAt(KindSessionEnd, "", "")
+	if len(s.Acked) == 0 || len(s.refused) == 0 {
+		t.Fatalf("the session forgot what it was told as it ended: %d told, %d refused", len(s.Acked), len(s.refused))
+	}
+	h.advance(forgetEndedAfter)
+	h.b.Sweep(h.now)
+	if len(s.Acked) == 0 || len(s.refused) == 0 {
+		t.Fatalf("the session forgot what it was told %s after it ended", forgetEndedAfter)
+	}
+	h.advance(time.Second)
+	h.b.Sweep(h.now)
 	if s.Acked != nil || s.refused != nil || s.Calls != nil || !slices.Equal(s.letGo, []string{"t2", "t3"}) {
-		t.Errorf("the ended session keeps %d told, %d refused and %d calls, and let go of %v", len(s.Acked), len(s.refused),
-			len(s.Calls), s.letGo)
+		t.Errorf("the session ended for longer keeps %d told, %d refused and %d calls, and let go of %v", len(s.Acked),
+			len(s.refused), len(s.Calls), s.letGo)
 	}
 	data, _, err := h.b.Snapshot(h.now)
 	if err != nil {
@@ -769,15 +779,104 @@ func TestEndedSessionsForgetWhatTheyWereTold(t *testing.T) {
 	}
 }
 
-// A snapshot from a server that kept what ended sessions had been told is
-// restored without it; a live session keeps what it was told, and both the
-// prompt that named the claim's task.
+// A headless agent run step by step under one session id (claude -p
+// --resume, codex exec resume) ends its session after each step and resumes
+// it for the next. A step resumed within forgetEndedAfter remembers what the
+// session was told: the edit it was bumped for and the file it was warned of
+// are let through quietly, and the collision is not announced again. One
+// resumed later is told again.
+func TestResumedSessionRemembersWhatItWasTold(t *testing.T) {
+	h := newHarness(t)
+	h.edit("alice", "a1", "go.mod", "svc/pay/a.go")
+	if res := h.hook(KindPreEdit, "bob", "s1", "go.mod"); res.Decision != DecisionRefuse {
+		t.Fatalf("bob's first edit of go.mod: %s, want a bump", res.Decision)
+	}
+	h.edit("bob", "s1", "go.mod")
+	if res := h.hook(KindPreEdit, "bob", "s1", "svc/pay/b.go"); res.Decision != DecisionAllow || res.Context == "" {
+		t.Fatalf("bob's edit near alice's: %s with context %q, want a warning", res.Decision, res.Context)
+	}
+	h.hook(KindPostEdit, "bob", "s1", "go.mod", "svc/pay/b.go")
+	conflicts := len(h.activities(ActivityConflict))
+	step := func(gap time.Duration) (mod, near HookResult) {
+		h.hook(KindSessionEnd, "bob", "s1")
+		for range int(gap / time.Minute) {
+			h.advance(time.Minute)
+			h.hook(KindPrompt, "alice", "a1") // her claim stays live
+			h.b.Sweep(h.now)                  // as the server sweeps
+		}
+		h.hook(KindSessionStart, "bob", "s1")
+		h.hook(KindPrompt, "bob", "s1")
+		mod, near = h.hook(KindPreEdit, "bob", "s1", "go.mod"), h.hook(KindPreEdit, "bob", "s1", "svc/pay/b.go")
+		h.hook(KindPostEdit, "bob", "s1", "go.mod", "svc/pay/b.go")
+		return mod, near
+	}
+	for i, gap := range []time.Duration{0, time.Minute, forgetEndedAfter - time.Minute} {
+		if m, n := step(gap); m.Decision != DecisionAllow || n.Decision != DecisionAllow || n.Context != "" {
+			t.Errorf("step %d, resumed %s after it ended: go.mod %s, svc/pay/b.go %s with context %q; want both allowed quietly",
+				i, gap, m.Decision, n.Decision, n.Context)
+		}
+	}
+	if n := len(h.activities(ActivityConflict)) - conflicts; n != 0 {
+		t.Errorf("the resumed steps announced the collisions %d more times", n)
+	}
+	if m, n := step(forgetEndedAfter + 2*time.Minute); m.Decision != DecisionRefuse || n.Context == "" {
+		t.Errorf("resumed %s after it ended: go.mod %s, svc/pay/b.go with context %q; want a bump and a warning again",
+			forgetEndedAfter+2*time.Minute, m.Decision, n.Context)
+	}
+}
+
+// A session that ended within forgetEndedAfter of a snapshot remembers
+// what it was told across a restart from it, and lets go of it in the sweep
+// after the rest of its grace; one that ended before does not.
+func TestRestoreKeepsWhatSessionsThatJustEndedWereTold(t *testing.T) {
+	h := newHarness(t)
+	h.edit("alice", "a1", "go.mod")
+	for _, id := range []string{"early", "late"} {
+		if res := h.hook(KindPreEdit, "bob", id, "go.mod"); res.Decision != DecisionRefuse {
+			t.Fatalf("%s's first edit of go.mod: %s, want a bump", id, res.Decision)
+		}
+		h.edit("bob", id, "go.mod")
+		h.hook(KindPostEdit, "bob", id, "go.mod")
+		h.hook(KindSessionEnd, "bob", id)
+		h.advance(forgetEndedAfter / 2)
+		h.hook(KindPrompt, "alice", "a1")
+	}
+	h.advance(forgetEndedAfter / 2) // early ended 15 minutes before the save, late 10 minutes
+	data, _, err := h.b.Snapshot(h.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := New(DefaultConfig())
+	if err := b.Restore(bytes.NewReader(data), h.now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	early, late := b.sessions[sessionKey("bob", AgentClaudeCode, "early")], b.sessions[sessionKey("bob", AgentClaudeCode, "late")]
+	if early.Acked != nil || len(late.Acked) == 0 {
+		t.Fatalf("restored, the session that ended 15 minutes before keeps %d told, the one 10 minutes before %d; want 0 and some",
+			len(early.Acked), len(late.Acked))
+	}
+	h.advance(time.Minute) // the minute the server was down is not counted
+	b.Sweep(h.now)
+	if len(late.Acked) == 0 {
+		t.Fatal("the session that ended 10 minutes before the save forgot what it was told at the first sweep after the restart")
+	}
+	h.advance(time.Second)
+	b.Sweep(h.now)
+	if late.Acked != nil {
+		t.Errorf("the session ended for longer than %s keeps %d told", forgetEndedAfter, len(late.Acked))
+	}
+}
+
+// A snapshot from a server that kept what ended sessions had been told for
+// an hour is restored without what one that ended 20 minutes before the save
+// was told; a live session keeps what it was told, and both the prompt that
+// named the claim's task.
 func TestRestoreForgetsWhatEndedSessionsWereTold(t *testing.T) {
 	ended, live := sessionKey("bob", AgentCodex, "b1"), sessionKey("carol", AgentCodex, "c1")
 	old := fmt.Sprintf(`{"format":1,"saved":"2026-10-02T09:00:00Z","claims":[`+
 		`{"id":"c1","repo":%[1]q,"member":"bob","host":"h","worktree":"/b","task":"Fix the retries","created_at":"2026-10-02T09:00:00Z","updated_at":"2026-10-02T09:00:00Z"},`+
 		`{"id":"c2","repo":%[1]q,"member":"carol","host":"h","worktree":"/c","created_at":"2026-10-02T09:00:00Z","updated_at":"2026-10-02T09:00:00Z"}],`+
-		`"sessions":[{"key":%[2]q,"id":"b1","member":"bob","agent":"codex","claim_id":"c1","last_seen":"2026-10-02T09:00:00Z","phase":"ended",`+
+		`"sessions":[{"key":%[2]q,"id":"b1","member":"bob","agent":"codex","claim_id":"c1","last_seen":"2026-10-02T08:40:00Z","phase":"ended",`+
 		`"acked":{"task:prompted":true,"told|overlap|c2|a.go":true,"overlap|c2|a.go":true}},`+
 		`{"key":%[3]q,"id":"c1","member":"carol","agent":"codex","claim_id":"c2","last_seen":"2026-10-02T09:00:00Z","phase":"working",`+
 		`"acked":{"task:prompted":true,"told|overlap|c1|b.go":true}}]}`, repo, ended, live)
