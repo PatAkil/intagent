@@ -310,6 +310,7 @@ func (b *Board) RestoreAfter(r io.Reader, now, stopped time.Time) error {
 			b.mail[mailKey(m.Repo, m.Member)] = m
 		}
 	}
+	b.fitAllMail() // an older server kept 1024 mailboxes of 20 notes, whoever sent them
 	// What happened before the snapshot is in it, or gone with the process.
 	b.notes = map[string][]time.Time{}
 	b.pending = nil

@@ -94,7 +94,7 @@ func (b *Board) sessionRoom() int { return b.cfg.MaxSessions - max(1, b.cfg.MaxS
 // gone, then those that stalled, which the dashboard shows and whose agents
 // may yet come back, and only then live ones; and of each, those of the
 // member holding the most first, each member's silent longest first
-// (fairOrder). A flood of fresh session ids fills the board with live
+// (fairShare). A flood of fresh session ids fills the board with live
 // sessions, each heard from once; were they kept, no new session would find
 // room until they went gone, two hours on. Were live ones dropped silent
 // longest first whoever held them, the flood would cost each teammate whose
@@ -122,7 +122,7 @@ func (b *Board) evictSessions(now time.Time) bool {
 		}
 	}
 	for i, tier := range tiers {
-		for _, s := range fairOrder(tier) {
+		for _, s := range fairShare(tier, memberOf, bySilence) {
 			if len(b.sessions) <= keep {
 				return true
 			}
@@ -135,46 +135,51 @@ func (b *Board) evictSessions(now time.Time) bool {
 	return true
 }
 
-// fairOrder orders sessions to be let go of in fair share: each next from
-// the member holding the most of those not let go of yet, that member's
-// silent longest (by when each was last heard from, then key), and between
-// members holding as many, the session silent longest. Let go of in this
-// order, a member never loses a session while another holds more of them,
-// so a flood of one member's sessions costs that member's own down to as
-// many as the next member holds before it costs anyone else one. It
-// reorders sessions in place and returns them.
-func fairOrder(sessions []*session) []*session {
-	slices.SortFunc(sessions, func(x, y *session) int {
-		if c := x.LastSeen.Compare(y.LastSeen); c != 0 {
-			return c
-		}
-		return strings.Compare(x.Key, y.Key)
-	})
-	// A session's height is how many of its member's sessions are left when
-	// its turn comes, itself included. Highest first, and in the order of
-	// silence among sessions of one height, is fair share; a counting sort
-	// keeps that order in one pass.
-	height := make([]int, len(sessions))
+// bySilence orders sessions by when each was last heard from, then key.
+func bySilence(x, y *session) int {
+	if c := x.LastSeen.Compare(y.LastSeen); c != 0 {
+		return c
+	}
+	return strings.Compare(x.Key, y.Key)
+}
+
+func memberOf(s *session) string { return s.Member }
+
+// fairShare orders items to be let go of in fair share: each next from the
+// owner holding the most of those not let go of yet, that owner's first in
+// the order of before (the oldest, say), and between owners holding as
+// many, the first in that order. Let go of in this order, an owner never
+// loses one while another holds more of them, so a flood of one owner's
+// costs that owner's own down to as many as the next owner holds before it
+// costs anyone else one. It reorders items in place and returns them.
+func fairShare[T any](items []T, owner func(T) string, before func(x, y T) int) []T {
+	slices.SortFunc(items, before)
+	// An item's height is how many of its owner's are left when its turn
+	// comes, itself included. Highest first, and in the order of before
+	// among items of one height, is fair share; a counting sort keeps that
+	// order in one pass.
+	height := make([]int, len(items))
 	left, most := map[string]int{}, 0
-	for i, s := range slices.Backward(sessions) {
-		left[s.Member]++
-		height[i] = left[s.Member]
+	for i, it := range slices.Backward(items) {
+		o := owner(it)
+		left[o]++
+		height[i] = left[o]
 		most = max(most, height[i])
 	}
-	next := make([]int, most+1) // where the next session of each height goes
+	next := make([]int, most+1) // where the next item of each height goes
 	for _, h := range height {
 		next[h]++
 	}
 	for h, at := most, 0; h > 0; h-- {
 		next[h], at = at, at+next[h]
 	}
-	order := make([]*session, len(sessions))
-	for i, s := range sessions {
-		order[next[height[i]]] = s
+	order := make([]T, len(items))
+	for i, it := range items {
+		order[next[height[i]]] = it
 		next[height[i]]++
 	}
-	copy(sessions, order)
-	return sessions
+	copy(items, order)
+	return items
 }
 
 // full reports whether ev comes from a session the board does not have and

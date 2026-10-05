@@ -1,7 +1,6 @@
 package board
 
 import (
-	"cmp"
 	"slices"
 	"strings"
 	"time"
@@ -19,26 +18,26 @@ type mailbox struct {
 	Items  []InboxItem `json:"items"`
 }
 
-// Bounds on mailboxes: the notes one keeps, and the mailboxes the board
-// does, as a member can name any repository.
+// Bounds on the notes waiting in mailboxes, as a member can name any
+// repository: those one mailbox keeps, those of one sender the board keeps,
+// and those it keeps in all. A mailbox left empty goes, so the board keeps
+// at most maxMail mailboxes.
 const (
 	maxMailItems  = 20
-	maxMailboxes  = 1024
+	maxSenderMail = 64
+	maxMail       = 4096
 	mailKeyJoiner = "\n" // in neither a repository ID nor a member's name
 )
 
 func mailKey(repo, member string) string { return repo + mailKeyJoiner + member }
 
 // hold puts a note for member in their mailbox for repo, letting go of what
-// a full one, or a full board of them, holds as enqueue lets go of a full
-// inbox's items.
+// a full one holds as enqueue lets go of a full inbox's items, and then of
+// what the board holds past its bounds (fitMail).
 func (b *Board) hold(now time.Time, repo, member string, it InboxItem) {
 	k := mailKey(repo, member)
 	m := b.mail[k]
 	if m == nil {
-		if len(b.mail) >= maxMailboxes {
-			b.dropOldestMailbox()
-		}
 		m = &mailbox{Repo: repo, Member: member}
 		b.mail[k] = m
 	}
@@ -48,30 +47,98 @@ func (b *Board) hold(now time.Time, repo, member string, it InboxItem) {
 		i := evictIndex(m.Items)
 		m.Items = slices.Delete(m.Items, i, i+1)
 	}
+	b.fitMail(it.From)
 }
 
-// dropOldestMailbox lets go of the mailbox whose newest note is oldest,
-// ties going by member and repository.
-func (b *Board) dropOldestMailbox() {
-	oldest := ""
-	for k, m := range b.mail {
-		if oldest == "" {
-			oldest = k
-			continue
-		}
-		o := b.mail[oldest]
-		if c := cmp.Or(m.newest().Compare(o.newest()), strings.Compare(k, oldest)); c < 0 {
-			oldest = k
+// fitMail lets go of the notes waiting past their bounds once sender has
+// had one held: the sender's oldest past maxSenderMail of theirs, and past
+// maxMail on the board, the oldest of whoever has the most waiting
+// (fitAllMail). A sender's notes to people away, in repositories they may
+// make up, push out their own, not a note a teammate left, as letting go of
+// the mailbox whose newest note was oldest did: one member's notes at the
+// rate limit pushed out a teammate's within the hour.
+func (b *Board) fitMail(sender string) {
+	var mine []heldNote
+	waiting := 0
+	for _, m := range b.mail {
+		waiting += len(m.Items)
+		for i := range m.Items {
+			if m.Items[i].From == sender {
+				mine = append(mine, heldNote{m, i})
+			}
 		}
 	}
-	delete(b.mail, oldest)
+	if over := len(mine) - maxSenderMail; over > 0 {
+		slices.SortFunc(mine, oldestNote)
+		b.dropNotes(mine[:over])
+		waiting -= over
+	}
+	if waiting > maxMail {
+		b.fitAllMail()
+	}
 }
 
-func (m *mailbox) newest() time.Time {
-	if len(m.Items) == 0 {
-		return time.Time{}
+// fitAllMail lets go of the notes waiting past their bounds, whoever sent
+// them: each sender's oldest past maxSenderMail of theirs, and then, past
+// maxMail on the board, notes in fair share (fairShare): the oldest of
+// whoever has the most waiting, never one of a sender who has fewer while
+// another has more. Restore fits a snapshot from an older server with it.
+func (b *Board) fitAllMail() {
+	var notes []heldNote
+	from := map[string]int{}
+	for _, m := range b.mail {
+		for i, it := range m.Items {
+			notes = append(notes, heldNote{m, i})
+			from[it.From]++
+		}
 	}
-	return m.Items[len(m.Items)-1].At
+	slices.SortFunc(notes, oldestNote)
+	var drop []heldNote
+	notes = slices.DeleteFunc(notes, func(n heldNote) bool {
+		if f := n.item().From; from[f] > maxSenderMail {
+			from[f]--
+			drop = append(drop, n)
+			return true
+		}
+		return false
+	})
+	if over := len(notes) - maxMail; over > 0 {
+		drop = append(drop, fairShare(notes, func(n heldNote) string { return n.item().From }, oldestNote)[:over]...)
+	}
+	b.dropNotes(drop)
+}
+
+// heldNote is a note waiting in a mailbox: the mailbox's i'th.
+type heldNote struct {
+	m *mailbox
+	i int
+}
+
+func (n heldNote) item() *InboxItem { return &n.m.Items[n.i] }
+
+// oldestNote orders notes by when each was held, then ID.
+func oldestNote(x, y heldNote) int {
+	if c := x.item().At.Compare(y.item().At); c != 0 {
+		return c
+	}
+	return strings.Compare(x.item().ID, y.item().ID)
+}
+
+// dropNotes lets go of notes, and of the mailboxes it leaves empty.
+func (b *Board) dropNotes(notes []heldNote) {
+	at := map[*mailbox][]int{}
+	for _, n := range notes {
+		at[n.m] = append(at[n.m], n.i)
+	}
+	for m, is := range at {
+		slices.Sort(is)
+		for _, i := range slices.Backward(is) {
+			m.Items = slices.Delete(m.Items, i, i+1)
+		}
+		if len(m.Items) == 0 {
+			delete(b.mail, mailKey(m.Repo, m.Member))
+		}
+	}
 }
 
 // collectMail moves the notes waiting for claim c's member in its

@@ -139,7 +139,10 @@ large footprint remember grows with the pairs of them, not with the files. A not
 agent is at work in, not those an agent that moved on keeps live; to a member with none, or a teammate with no claim in
 the repository yet, it waits in a mailbox for their next session there, in whichever worktree, which hears it (the
 answer's `held_for` names them): a fresh worktree, which a note queued in a worktree they left would never reach, or one
-of those. A mailbox holds 20 notes, the board 1024 mailboxes, and a note waits a day, as an inbox item does. A note to
+of those. A mailbox holds 20 notes, and a note waits a day, as an inbox item does. One member's notes waiting in
+mailboxes are at most 64, their own oldest let go of first, so that their notes to people away in repositories they
+name, however many, cannot push out a note a teammate left; the board's are at most 4096, and so are its mailboxes, and
+past that the oldest note of whoever has the most waiting goes, so none goes while another member has more. A note to
 whoever changed a path goes to the claims still listening, and for each member none of whose claims there listens, to
 the one they were last active in. An inbox holds 50 items; a full one lets go first of an item a session was already
 shown, then of the oldest item of the sender holding the most, an alert before a note when senders tie, so a flood of
