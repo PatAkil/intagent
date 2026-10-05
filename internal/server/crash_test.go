@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -362,6 +363,29 @@ func durableIn(t *testing.T, ts *testServer) savedDurable {
 		t.Fatal(err)
 	}
 	return d
+}
+
+// A note queued for a claim made since the whole board was last saved, with
+// no reservation to keep it on the board, waits after a crash in its
+// member's mailbox for the repository, and their next session there hears
+// it. Before, the claim came back with the note and nothing else, and the
+// first sweep released it, and the note with it.
+func TestACrashKeepsANoteForAClaimMadeSince(t *testing.T) {
+	r := newCrashRun(t)
+	r.run(time.Second)
+	r.busy(time.Minute)
+	r.hook(board.KindPostEdit, "bob", "b1", where("bob"), "api/x.go") // a claim of bob's made since
+	res, err := r.ts.Board().Note(r.ts.now(), board.NoteRequest{Member: "alice", Where: where("alice"), To: "bob",
+		Text: "do not touch api/ until I merge", ToMember: true})
+	if err != nil || len(res.Delivered) != 1 {
+		t.Fatalf("note: %+v %v", res, err)
+	}
+	r.busy(3 * time.Second)
+	b := r.crash(20 * time.Second)
+	r.sweep(b, 30*time.Second) // which released the claim the note came back in
+	if got := r.hookOn(b, board.KindPrompt, "bob", "b1", where("bob")); !strings.Contains(got.Context, "do not touch api/") {
+		t.Errorf("bob's agent, after the crash, was not told alice's note: %q", got.Context)
+	}
 }
 
 // A durable part saved before an older server's snapshot, which records no

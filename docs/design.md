@@ -273,12 +273,13 @@ too, nine times its duration after it started, the durable part at most 30 secon
 which goes on from the snapshot's): each claim's intents and notes are the durable part's, and a claim made since comes
 back with them; the sessions it holds take the place of the snapshot's, their silence credited with the downtime as the
 snapshot's are (below); the sessions it says ended are ended, and the claims it says were released or forgotten are
-gone; and the mail, feed and stats are its. Until the whole board is saved again, which a server that restored a durable
-part does within a second, its own durable part says what ended since the older snapshot too. On the acceptance churn
-(1000 agents, 200 hooks a second) the durable part is about 600 KB, 80 KB compressed, of which the 33 sessions keeping
-reservations live take 11 KB and the 1,500 sessions that ended in the 5 minutes between whole saves 67 KB; it is saved
-about once a second, and the server writes about 0.4 GB an hour, where saving the whole board every few seconds wrote 20
-to 37 GB.
+gone; and the mail, feed and stats are its. A claim made since that held notes and nothing else is not kept, as nothing
+would keep it on the board until its agent reports again: its notes wait in its member's mailbox for their next session
+in its repository. Until the whole board is saved again, which a server that restored a durable part does within a
+second, its own durable part says what ended since the older snapshot too. On the acceptance churn (1000 agents, 200
+hooks a second) the durable part is about 600 KB, 80 KB compressed, of which the 33 sessions keeping reservations live
+take 11 KB and the 1,500 sessions that ended in the 5 minutes between whole saves 67 KB; it is saved about once a
+second, and the server writes about 0.4 GB an hour, where saving the whole board every few seconds wrote 20 to 37 GB.
 
 What an unclean stop (a crash, or a clean stop whose final save failed) loses, then:
 

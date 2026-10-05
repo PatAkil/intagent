@@ -262,7 +262,9 @@ func readDurable(r io.Reader) (durableState, error) {
 // board, and ends the sessions, that d says were since; puts the sessions d
 // holds in place of the snapshot's, crediting their silence with the time
 // from d's save or stopped, if later, to now; and takes d's mail, feed and
-// stats.
+// stats. A claim made since that d holds only notes of goes, as nothing
+// would keep it on the board until its agent reports again: its notes wait
+// in its member's mailbox for their next session in its repository.
 func (b *Board) applyDurable(d durableState, now, stopped time.Time) {
 	held := make(map[string]*claim, len(d.Claims))
 	for _, k := range d.Claims {
@@ -271,9 +273,14 @@ func (b *Board) applyDurable(d durableState, now, stopped time.Time) {
 		}
 	}
 	var sessions []*session
+	from := map[string]bool{} // the claims d's sessions report from, or keep live
 	for _, x := range d.Sessions {
 		if x != nil && x.Key != "" && x.ClaimID != "" {
 			sessions = append(sessions, x)
+			from[x.ClaimID] = true
+			for id := range x.Also {
+				from[id] = true
+			}
 		}
 	}
 	for _, id := range sortedKeys(b.claims) {
@@ -281,6 +288,7 @@ func (b *Board) applyDurable(d durableState, now, stopped time.Time) {
 		b.setDurable(c, held[id]) // none held: none then
 		delete(held, id)
 	}
+	var mailed []*claim
 	for _, id := range sortedKeys(held) {
 		k := held[id]
 		if old := b.findClaim(k.Member, Where{Repo: k.Repo, Host: k.Host, Worktree: k.Worktree}); old != nil {
@@ -290,6 +298,10 @@ func (b *Board) applyDurable(d durableState, now, stopped time.Time) {
 		c := &claim{ID: k.ID, Repo: k.Repo, Member: k.Member, Host: k.Host, Worktree: k.Worktree, Branch: k.Branch,
 			CreatedAt: k.CreatedAt, UpdatedAt: k.CreatedAt}
 		b.setDurable(c, k)
+		if len(c.Intents) == 0 && !from[c.ID] {
+			mailed = append(mailed, c)
+			continue
+		}
 		for _, in := range c.Intents {
 			c.UpdatedAt = laterOf(c.UpdatedAt, in.DeclaredAt)
 			if in.Summary != "" {
@@ -327,6 +339,12 @@ func (b *Board) applyDurable(d durableState, now, stopped time.Time) {
 	b.doubt(now, sessions)
 	b.restoreFeed(d.Seq, d.Recent, d.Dropped, d.Stats)
 	b.restoreMail(d.Mail)
+	for _, c := range mailed {
+		b.mailNotes(c)
+	}
+	if len(mailed) > 0 {
+		b.fitAllMail()
+	}
 	b.version = d.Version
 }
 

@@ -199,3 +199,29 @@ func (b *Board) mailCopy() []*mailbox {
 	}
 	return out
 }
+
+// mailNotes puts the notes of claim c, which is not on the board, in its
+// member's mailbox for its repository, for their next session there to hear,
+// in time order, letting go of what a full one holds as hold does. The
+// caller then fits the mail to its bounds (fitAllMail).
+func (b *Board) mailNotes(c *claim) {
+	k := mailKey(c.Repo, c.Member)
+	m := b.mail[k]
+	if m == nil {
+		m = &mailbox{Repo: c.Repo, Member: c.Member}
+	}
+	for _, it := range c.Inbox {
+		if it.Kind == "note" {
+			it.Seq, it.Shown = 0, false
+			m.Items = append(m.Items, it)
+		}
+	}
+	slices.SortStableFunc(m.Items, func(x, y InboxItem) int { return x.At.Compare(y.At) })
+	for len(m.Items) > maxMailItems {
+		i := evictIndex(m.Items)
+		m.Items = slices.Delete(m.Items, i, i+1)
+	}
+	if len(m.Items) > 0 {
+		b.mail[k] = m
+	}
+}
