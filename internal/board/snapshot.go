@@ -30,6 +30,10 @@ type snapshot struct {
 	// Mail is the notes waiting for members (mail.go), by repository and
 	// member.
 	Mail []*mailbox `json:"mail,omitempty"`
+
+	// heard is what sessions heard of inboxes as an older snapshot told it,
+	// by session key and claim (claim.numberInbox), for Restore to give them.
+	heard map[string]map[string]uint64
 }
 
 // droppedMarks are what the board's feed has let go of, as Board keeps them,
@@ -188,12 +192,9 @@ func (c *claim) shareFootprint() *claim {
 	c.fpShared, c.alertedShared = true, true
 	d := *c
 	d.Intents = slices.Clone(c.Intents)
-	d.Told = maps.Clone(c.Told) // alertOthers counts in it
-	d.Dirs = maps.Clone(c.Dirs) // a few hundred at most
-	d.Inbox = slices.Clone(c.Inbox)
-	for i := range d.Inbox {
-		d.Inbox[i].DeliveredTo = maps.Clone(d.Inbox[i].DeliveredTo) // deliverInbox adds to it
-	}
+	d.Told = maps.Clone(c.Told)     // alertOthers counts in it
+	d.Dirs = maps.Clone(c.Dirs)     // a few hundred at most
+	d.Inbox = slices.Clone(c.Inbox) // deliverInbox marks items shown
 	// The copy is not on the board: it has no indexes.
 	d.areaAt, d.sortedPaths, d.removed = nil, nil, false
 	return &d
@@ -219,7 +220,8 @@ func (c *claim) alert(k string) bool {
 
 // clone copies a session deeply enough to be read while the original
 // changes, but for what it was told, which it shares: the session copies it
-// before it next changes it (ack).
+// before it next changes it (ack). It shares what the session heard of
+// inboxes too, which hear replaces rather than changes.
 func (s *session) clone() *session {
 	s.ackedShared = true
 	d := *s
@@ -257,6 +259,11 @@ func (b *Board) RestoreAfter(r io.Reader, now, stopped time.Time) error {
 	}
 	s.shareSessionKeys()
 	s.creditDowntime(now, stopped)
+	for _, x := range s.Sessions {
+		if x != nil && x.Heard == nil {
+			x.Heard = s.heard[x.Key]
+		}
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.claims = map[string]*claim{}
@@ -360,6 +367,37 @@ func (c *claim) trimRestored() {
 	}
 }
 
+// numberInbox numbers the items of an inbox an older server saved, which
+// named the sessions shown each (DeliveredTo) instead, in their order, and
+// notes in heard, by session key and claim, the newest item each session was
+// shown every item up to. A session shown an item after one it was not
+// shown hears that one again, rather than miss the one it was not.
+func (c *claim) numberInbox(heard *map[string]map[string]uint64) {
+	if c == nil || !slices.ContainsFunc(c.Inbox, func(it InboxItem) bool { return it.Seq == 0 }) {
+		return
+	}
+	if *heard == nil {
+		*heard = map[string]map[string]uint64{}
+	}
+	var all map[string]bool // the sessions shown every item so far
+	for i := range c.Inbox {
+		it := &c.Inbox[i]
+		c.InboxSeq++
+		it.Seq, it.Shown = c.InboxSeq, len(it.DeliveredTo) > 0
+		if i == 0 {
+			all = maps.Clone(it.DeliveredTo)
+		}
+		maps.DeleteFunc(all, func(k string, _ bool) bool { return !it.DeliveredTo[k] })
+		for k := range all {
+			if (*heard)[k] == nil {
+				(*heard)[k] = map[string]uint64{}
+			}
+			(*heard)[k][c.ID] = it.Seq
+		}
+		it.DeliveredTo = nil
+	}
+}
+
 // trimRestored drops what a session read from a snapshot keeps that the
 // board no longer would. An older server kept what a session had been told
 // after it ended, and the mark that a prompt named the claim's task among
@@ -414,7 +452,10 @@ func readSnapshot(r io.Reader) (snapshot, error) {
 		case strings.EqualFold(key, "claims"):
 			// Each trimmed as it is read, so that what an older server
 			// kept is not all held at once.
-			return readArray(dec, &s.Claims, (*claim).trimRestored)
+			return readArray(dec, &s.Claims, func(c *claim) {
+				c.trimRestored()
+				c.numberInbox(&s.heard)
+			})
 		case strings.EqualFold(key, "sessions"):
 			return readArray(dec, &s.Sessions, (*session).trimRestored)
 		case strings.EqualFold(key, "saved"):

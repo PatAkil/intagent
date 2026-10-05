@@ -126,24 +126,28 @@ Actions are configurable per severity on the server: `deny`, `ask` (the person d
 
 Awareness is symmetric. When an agent touches a file another claim has also touched, the other claim gets an inbox item,
 delivered at its agent's next hook. Inbox items (notes and alerts) are delivered once per session through
-`additionalContext` on `SessionStart`, `UserPromptSubmit` and `PostToolUse`. Only claims still listening are queued
-anything: those with a live session, or active within `dormant_for` (a day). A claim quiet for longer counts only as
-nearby work, so nothing is queued for it, nor remembered of what it would have been told; an agent that comes back to it
-hears of teammates' work from its greeting and its checks, and may hear again of a change it heard of before it left. An
-alert names at most five files and counts the rest, and a claim remembers being told of at most five files of each
-teammate's claim: past those, a file that comes back into the teammate's changes is told again, so what claims sharing a
-large footprint remember grows with the pairs of them, not with the files. A note to a member goes to their claims an
-agent is at work in, not those an agent that moved on keeps live; to a member with none, or a teammate with no claim in
-the repository yet, it waits in a mailbox for their next session there, in whichever worktree, which hears it (the
-answer's `held_for` names them): a fresh worktree, which a note queued in a worktree they left would never reach, or one
-of those. A mailbox holds 20 notes, the board 1024 mailboxes, and a note waits a day, as an inbox item does. A note to
-whoever changed a path goes to the claims still listening, and for each member none of whose claims there listens, to
-the one they were last active in. An inbox holds 50 items; a full one lets go first of an item a session was already
-shown, then of the oldest item of the sender holding the most, an alert before a note when senders tie, so a flood of
-one teammate's alerts or notes pushes out their own items rather than another's note the agent has not heard yet. The
-sweeper drops inbox items a day old, which no session is shown any more, and the alerts a claim that no longer listens
-remembers having heard; and once a claim is removed, the alerts other claims remember of it, which nothing can match
-again since a claim's ID is never reused. A snapshot an older server wrote is trimmed to these bounds as it is read.
+`additionalContext` on `SessionStart`, `UserPromptSubmit` and `PostToolUse`, five at a time, in the order they were
+queued. A session remembers, of each worktree it reports from, the newest item it heard there, not each item the
+sessions that heard it, which sessions coming and going for the day an item lives made hundreds; so a session the board
+let go of (an hour after it ended, or to make room) that reports again may hear an item again. Only claims still
+listening are queued anything: those with a live session, or active within `dormant_for` (a day). A claim quiet for
+longer counts only as nearby work, so nothing is queued for it, nor remembered of what it would have been told; an agent
+that comes back to it hears of teammates' work from its greeting and its checks, and may hear again of a change it heard
+of before it left. An alert names at most five files and counts the rest, and a claim remembers being told of at most
+five files of each teammate's claim: past those, a file that comes back into the teammate's changes is told again, so
+what claims sharing a large footprint remember grows with the pairs of them, not with the files. A note to a member goes
+to their claims an agent is at work in, not those an agent that moved on keeps live; to a member with none, or a
+teammate with no claim in the repository yet, it waits in a mailbox for their next session there, in whichever worktree,
+which hears it (the answer's `held_for` names them): a fresh worktree, which a note queued in a worktree they left would
+never reach, or one of those. A mailbox holds 20 notes, the board 1024 mailboxes, and a note waits a day, as an inbox
+item does. A note to whoever changed a path goes to the claims still listening, and for each member none of whose claims
+there listens, to the one they were last active in. An inbox holds 50 items; a full one lets go first of an item a
+session was already shown, then of the oldest item of the sender holding the most, an alert before a note when senders
+tie, so a flood of one teammate's alerts or notes pushes out their own items rather than another's note the agent has
+not heard yet. The sweeper drops inbox items a day old, which no session is shown any more, and the alerts a claim that
+no longer listens remembers having heard; and once a claim is removed, the alerts other claims remember of it, which
+nothing can match again since a claim's ID is never reused. A snapshot an older server wrote is trimmed to these bounds
+as it is read.
 
 Every acknowledgement is remembered per session, so an agent hears about a given overlap once, not on every edit; and
 within a session per worker, where the agent names its subagents (Claude Code, Codex, Cursor; see

@@ -1175,9 +1175,10 @@ func TestParseHelpers(t *testing.T) {
 // claim or session copies each before it next changes it.
 func TestClonesShareNothingMutable(t *testing.T) {
 	c := &claim{Intents: []Intent{{Pattern: "a/**"}}, Footprint: map[string]*touch{"a.go": {}},
-		Inbox: []InboxItem{{Paths: []string{"a"}, DeliveredTo: map[string]bool{"s": true}}}, Alerted: map[string]bool{"k": true},
+		Inbox: []InboxItem{{Paths: []string{"a"}}}, Alerted: map[string]bool{"k": true},
 		Told: map[string]int{"c": 1}, Dirs: map[string]*touch{"d": {}}, areaAt: map[string]time.Time{"a": t0}, sortedPaths: []string{"a.go"}}
 	s := &session{Acked: map[string]bool{"k": true}, Calls: map[string]bool{"t": true}, Also: map[string]time.Time{"c": t0},
+		Heard:   map[string]uint64{"c": 1},
 		refused: []refusal{{id: "t", spent: []string{"k"}}}, letGo: []string{"u"}}
 	cc, sc := c.shareFootprint(), s.clone()
 	for _, pair := range [][2]any{{c, cc}, {s, sc}} {
@@ -1193,14 +1194,20 @@ func TestClonesShareNothingMutable(t *testing.T) {
 					if fa.Pointer() != fb.Pointer() || !c.fpShared || !c.alertedShared || !s.ackedShared {
 						t.Errorf("%s is copied, or not marked shared", name)
 					}
+				case name == "Heard": // replaced, never changed (hear)
+					if fa.Pointer() != fb.Pointer() {
+						t.Errorf("%s is copied", name)
+					}
 				case fa.Pointer() == fb.Pointer():
 					t.Errorf("%s.%s is shared by the clone", a.Type().Name(), name)
 				}
 			}
 		}
 	}
-	if reflect.ValueOf(cc.Inbox[0].DeliveredTo).Pointer() == reflect.ValueOf(c.Inbox[0].DeliveredTo).Pointer() {
-		t.Error("an inbox item's deliveries are shared")
+	heard := s.Heard
+	s.hear("c", 2)
+	if heard["c"] != 1 || sc.Heard["c"] != 1 || s.Heard["c"] != 2 {
+		t.Errorf("hearing changed the map a snapshot shares: %v there, %v in the session", sc.Heard, s.Heard)
 	}
 	c.putTouch("b.go", &touch{At: t0})
 	if !c.alert("k2") || c.alert("k2") {

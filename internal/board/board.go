@@ -6,6 +6,7 @@
 package board
 
 import (
+	"cmp"
 	"crypto/rand"
 	"encoding/base32"
 	"errors"
@@ -1883,6 +1884,8 @@ func mostSevere(list []Conflict) Conflict {
 
 func (b *Board) enqueue(now time.Time, c *claim, it InboxItem) {
 	it.ID = b.newID("i_")
+	c.InboxSeq++
+	it.Seq = c.InboxSeq
 	it.At = now
 	it.Text = Clean(it.Text, maxNoteLen)
 	keep := c.Inbox[:0:0]
@@ -1906,7 +1909,7 @@ func (b *Board) enqueue(now time.Time, c *claim, it InboxItem) {
 // not a note from someone else the agent has not heard yet.
 func evictIndex(in []InboxItem) int {
 	for i := range in {
-		if len(in[i].DeliveredTo) > 0 {
+		if in[i].Shown {
 			return i
 		}
 	}
@@ -1937,30 +1940,61 @@ func (b *Board) deliver(now time.Time, c *claim, s *session) string {
 	return joinBlocks(pending, b.deliverInbox(now, c, s))
 }
 
-// Each session hears an item once. One that another session of this claim
-// already showed its agent is still told (that session may have stopped
-// without acting on it), but as earlier news, not new.
+// Each session hears an item once: it remembers, of each claim it reports
+// from, the newest item it heard there (Session.Heard), and hears next the
+// items put in the inbox after it, in the order they were put there, as many
+// as InboxPerHook. A note collected from a mailbox joins the inbox in time order
+// (collectMail), and is heard though it is older than what was heard before.
+// One that another session of this claim already showed its agent is still
+// told (that session may have stopped without acting on it), but as earlier
+// news, not new. What a session remembers is one number for each claim, not a
+// key for each item: items live a day, and sessions come and go.
 func (b *Board) deliverInbox(now time.Time, c *claim, s *session) string {
-	var fresh, earlier []InboxItem
+	heard := s.Heard[c.ID]
+	var next []int // positions of the items to tell
 	for i := range c.Inbox {
+		if it := &c.Inbox[i]; it.Seq > heard && now.Sub(it.At) < inboxTTL {
+			next = append(next, i)
+		}
+	}
+	if len(next) == 0 {
+		return ""
+	}
+	if len(next) > b.cfg.InboxPerHook {
+		slices.SortFunc(next, func(x, y int) int { return cmp.Compare(c.Inbox[x].Seq, c.Inbox[y].Seq) })
+		next = next[:b.cfg.InboxPerHook]
+		slices.Sort(next) // told in the inbox's order
+	}
+	var fresh, earlier []InboxItem
+	for _, i := range next {
 		it := &c.Inbox[i]
-		if now.Sub(it.At) >= inboxTTL || it.DeliveredTo[s.Key] {
-			continue
-		}
-		if len(fresh)+len(earlier) == b.cfg.InboxPerHook {
-			break
-		}
-		if len(it.DeliveredTo) > 0 {
+		if it.Shown {
 			earlier = append(earlier, *it)
 		} else {
 			fresh = append(fresh, *it)
 		}
-		if it.DeliveredTo == nil {
-			it.DeliveredTo = map[string]bool{}
-		}
-		it.DeliveredTo[s.Key] = true
+		it.Shown = true
+		heard = max(heard, it.Seq)
 	}
+	s.hear(c.ID, heard)
 	return b.renderInbox(now, fresh, earlier)
+}
+
+// hear notes that the session heard claim id's inbox up to the item seq. It
+// puts a new map in Heard, which a snapshot may share, holding only the claims
+// the session reports from: its own and those it keeps live (Also).
+func (s *session) hear(id string, seq uint64) {
+	if s.Heard[id] == seq {
+		return
+	}
+	m := make(map[string]uint64, len(s.Heard)+1)
+	for k, v := range s.Heard {
+		if _, also := s.Also[k]; also || k == s.ClaimID {
+			m[k] = v
+		}
+	}
+	m[id] = seq
+	s.Heard = m
 }
 
 // --- intents -------------------------------------------------------------

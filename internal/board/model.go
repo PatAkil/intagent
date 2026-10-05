@@ -190,14 +190,22 @@ type touch struct {
 
 // InboxItem is something a claim's agents should hear at their next hook.
 type InboxItem struct {
-	ID        string    `json:"id"`
+	ID string `json:"id"`
+	// Seq numbers the item among those put in its claim's inbox, in the order
+	// they were (claim.InboxSeq), which is how sessions remember what they
+	// heard (session.Heard). An item waiting in a mailbox has none yet.
+	Seq       uint64    `json:"seq,omitempty"`
 	At        time.Time `json:"at"`
 	Kind      string    `json:"kind"`
 	FromClaim string    `json:"from_claim,omitempty"`
 	From      string    `json:"from,omitempty"`
 	Text      string    `json:"text"`
 	Paths     []string  `json:"paths,omitempty"`
-	// DeliveredTo holds the keys of sessions that have seen the item.
+	// Shown is set once a session has been shown the item.
+	Shown bool `json:"shown,omitempty"`
+	// DeliveredTo held the keys of the sessions that had been shown the
+	// item, in snapshots of older servers: Restore reads it into Shown and
+	// the sessions' Heard, and nothing sets it.
 	DeliveredTo map[string]bool `json:"delivered_to,omitempty"`
 }
 
@@ -220,6 +228,8 @@ type claim struct {
 	// once its files are kept. A reconcile replaces the map.
 	Dirs  map[string]*touch `json:"dirs,omitempty"`
 	Inbox []InboxItem       `json:"inbox,omitempty"`
+	// InboxSeq is the Seq of the last item put in the inbox.
+	InboxSeq uint64 `json:"inbox_seq,omitempty"`
 	// Alerted remembers which symmetric alerts this claim already received.
 	// Only alert adds to it.
 	Alerted map[string]bool `json:"alerted,omitempty"`
@@ -282,6 +292,10 @@ type session struct {
 	// Prompted is set once a prompt of the session's has named its claim's
 	// task: a later one does not name it again.
 	Prompted bool `json:"prompted,omitempty"`
+	// Heard holds, for each claim the session reports from, the Seq of the
+	// newest item of its inbox the session heard (deliverInbox). Only hear
+	// sets it, and replaces it rather than change it: a snapshot shares it.
+	Heard map[string]uint64 `json:"heard,omitempty"`
 	// Reported is the last derived state announced as an activity.
 	Reported State `json:"reported,omitempty"`
 	// Pending is context from before an edit, held for an agent that only

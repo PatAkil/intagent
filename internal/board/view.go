@@ -174,7 +174,7 @@ func (b *Board) viewCopy(now time.Time, repo string) (View, []claimCopy) {
 				Tool: s.Tool, ToolSince: s.ToolSince, StartedAt: s.StartedAt, LastSeen: s.LastSeen}, here: s.ClaimID == c.ID})
 		}
 		for _, it := range c.Inbox {
-			if now.Sub(it.At) < inboxTTL && len(it.DeliveredTo) == 0 {
+			if now.Sub(it.At) < inboxTTL && !it.Shown {
 				cc.view.Pending++
 			}
 		}

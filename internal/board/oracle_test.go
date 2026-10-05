@@ -714,7 +714,7 @@ func (b *Board) oldView(now time.Time, repo string) View {
 			cv.Files = append(cv.Files, FileView{Path: p, Area: t.Area, At: t.At, FromGit: t.FromGit})
 		}
 		for _, it := range c.Inbox {
-			if now.Sub(it.At) < inboxTTL && len(it.DeliveredTo) == 0 {
+			if now.Sub(it.At) < inboxTTL && !it.Shown {
 				cv.Pending++
 			}
 		}
@@ -1001,7 +1001,6 @@ func (c *claim) oldClone() *claim {
 	d.Inbox = make([]InboxItem, len(c.Inbox))
 	for i, it := range c.Inbox {
 		it.Paths = slices.Clone(it.Paths)
-		it.DeliveredTo = maps.Clone(it.DeliveredTo)
 		d.Inbox[i] = it
 	}
 	d.Alerted = maps.Clone(c.Alerted)

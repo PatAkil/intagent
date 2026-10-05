@@ -87,6 +87,8 @@ func (b *Board) collectMail(now time.Time, c *claim) {
 	delete(b.mail, k)
 	for _, it := range m.Items {
 		if now.Sub(it.At) < inboxTTL {
+			c.InboxSeq++
+			it.Seq = c.InboxSeq // put in the inbox now, after what it holds
 			c.Inbox = append(c.Inbox, it)
 		}
 	}

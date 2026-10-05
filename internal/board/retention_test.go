@@ -525,11 +525,7 @@ func TestNoteSurvivesAFullInbox(t *testing.T) {
 // senders tie.
 func TestInboxEvictionOrder(t *testing.T) {
 	item := func(from, kind string, shown bool) InboxItem {
-		it := InboxItem{From: from, Kind: kind}
-		if shown {
-			it.DeliveredTo = map[string]bool{"s": true}
-		}
-		return it
+		return InboxItem{From: from, Kind: kind, Shown: shown}
 	}
 	for _, tc := range []struct {
 		in   []InboxItem
@@ -853,4 +849,183 @@ func allocatedBy(fn func()) uint64 {
 		}
 	}
 	return least
+}
+
+// An inbox item does not remember every session that heard it: a session
+// remembers, for each claim it reports from, the newest item it heard there.
+// An item used to keep the key of each session that heard it for the day it
+// lives, and claims whose worktrees run a new session every few minutes
+// kept hundreds on each: on a day-4 board of the persist lane's soak, 514k
+// keys, 74% of the snapshot, 99% of them naming sessions that had ended or
+// were gone.
+func TestInboxItemsDoNotGrowWithTheSessionsThatHeardThem(t *testing.T) {
+	claims := func(sessions int) []byte {
+		h := newHarness(t)
+		h.hook(KindPostEdit, "bob", "b0", "go.mod")
+		if _, err := h.b.Note(h.now, NoteRequest{Member: "alice", Where: whereOf("alice"), To: "bob", Text: "go.mod is mine"}); err != nil {
+			t.Fatal(err)
+		}
+		for i := range sessions {
+			id := fmt.Sprint("b", i+1)
+			if ctx := h.hook(KindSessionStart, "bob", id).Context; !strings.Contains(ctx, "go.mod is mine") {
+				t.Fatalf("session %s was not told of the note:\n%s", id, ctx)
+			}
+			h.hook(KindSessionEnd, "bob", id)
+		}
+		data, _, err := h.b.Snapshot(h.now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bytes.Contains(data, []byte(`"delivered_to"`)) {
+			t.Errorf("the snapshot names the sessions that heard an item:\n%.2000s", data)
+		}
+		_, after, _ := bytes.Cut(data, []byte(`"claims":`))
+		before, _, _ := bytes.Cut(after, []byte(`"sessions":`))
+		return before
+	}
+	if one, many := claims(1), claims(100); len(many) != len(one) {
+		t.Fatalf("the claims take %d bytes once 100 sessions heard the note, %d once one did:\n%s", len(many), len(one), many)
+	}
+}
+
+// Each session hears an item once, a few at a time, oldest first; another
+// session of the claim hears it as earlier news. A session that reports from
+// another worktree and comes back does not hear again what it heard there,
+// and one a note collected from a member's mailbox joins hears it, though it
+// is older than what the session heard before.
+func TestEachSessionHearsAnItemOnce(t *testing.T) {
+	h := newHarness(t, func(c *Config) { c.InboxPerHook = 2 })
+	h.hook(KindPostEdit, "bob", "b1", "go.mod")
+	note := func(text string) {
+		t.Helper()
+		h.advance(time.Second)
+		if _, err := h.b.Note(h.now, NoteRequest{Member: "alice", Where: whereOf("alice"), To: "bob", Text: text}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := range 5 {
+		note(fmt.Sprint("n", i))
+	}
+	heard := func(session string, kind Kind, wt string) string {
+		t.Helper()
+		h.advance(time.Second)
+		w := whereOf("bob")
+		w.Worktree += wt
+		res, err := h.b.Hook(h.now, HookEvent{Kind: kind, Member: "bob", Agent: AgentClaudeCode, SessionID: session, Where: w})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		for _, line := range strings.Split(res.Context, "\n") {
+			switch {
+			case strings.Contains(line, "News from your team"):
+				got = append(got, "new:")
+			case strings.Contains(line, "Earlier news"):
+				got = append(got, "earlier:")
+			case strings.Contains(line, "Note from"):
+				got = append(got, line[strings.Index(line, `"`)+1:len(line)-1])
+			}
+		}
+		return strings.Join(got, " ")
+	}
+	for _, step := range []struct{ session, wt, want string }{
+		{"b1", "", "new: n0 n1"},
+		{"b1", "", "new: n2 n3"},
+		{"b2", "", "earlier: n0 n1"},
+		{"b1", "", "new: n4"},
+		{"b1", "", ""},
+		{"b1", "-other", ""}, // another worktree, whose inbox is empty
+		{"b1", "", ""},       // and back
+		{"b2", "", "earlier: n2 n3"},
+		{"b2", "", "earlier: n4"},
+		{"b2", "", ""},
+	} {
+		if got := heard(step.session, KindPrompt, step.wt); got != step.want {
+			t.Fatalf("%s's prompt in %q heard %q, want %q", step.session, step.wt, got, step.want)
+		}
+	}
+	// A note held for bob while no agent of his works in the repository
+	// joins the inbox in time order with what it holds, older than an alert
+	// b2 heard; b2 hears it all the same.
+	h.hook(KindSessionEnd, "bob", "b1")
+	h.hook(KindSessionEnd, "bob", "b2")
+	h.advance(time.Second)
+	if res, err := h.b.Note(h.now, NoteRequest{Member: "alice", Where: whereOf("alice"), To: "bob", Text: "held",
+		ToMember: true}); err != nil || res.HeldFor != "bob" {
+		t.Fatalf("note to bob, away: %+v %v", res, err)
+	}
+	h.advance(time.Second)
+	h.hook(KindPostEdit, "carol", "c1", "go.mod") // an alert for bob's claim, newer than the note
+	if got := heard("b2", KindPrompt, ""); got != "new: held" {
+		t.Fatalf("b2 back heard %q, want the held note", got)
+	}
+	if got := heard("b2", KindPrompt, ""); got != "" {
+		t.Fatalf("b2 then heard %q", got)
+	}
+}
+
+// A snapshot from an older server, whose inbox items name the sessions that
+// heard them, is restored with each session hearing next what it had not
+// heard, as it would have, and saved again without the names.
+func TestRestoreReadsWhoHeardItemsFromOlderSnapshots(t *testing.T) {
+	key := func(id string) string { return sessionKey("bob", AgentCodex, id) }
+	item := func(text string, heard ...string) string {
+		to := map[string]bool{}
+		for _, id := range heard {
+			to[key(id)] = true
+		}
+		return fmt.Sprintf(`{"id":"i_%s","at":"2026-10-02T09:00:00Z","kind":"note","from":"alice","text":%q,"delivered_to":%s}`,
+			text, "Note from alice: "+text, jsonOf(to))
+	}
+	session := func(id string) string {
+		return fmt.Sprintf(`{"key":%q,"id":%q,"member":"bob","agent":"codex","claim_id":"c1","last_seen":"2026-10-02T09:00:00Z","phase":"waiting"}`,
+			key(id), id)
+	}
+	old := fmt.Sprintf(`{"format":1,"saved":"2026-10-02T09:00:00Z","claims":[{"id":"c1","repo":%q,"member":"bob","host":"h","worktree":"/b",`+
+		`"footprint":{"go.mod":{"at":"2026-10-02T09:00:00Z"}},"inbox":[%s,%s,%s,%s],"created_at":"2026-10-02T09:00:00Z","updated_at":"2026-10-02T09:00:00Z"}],`+
+		`"sessions":[%s,%s,%s]}`, repo, item("one", "b1", "b2"), item("two", "b1"), item("three", "b2"), item("four"),
+		session("b1"), session("b2"), session("b3"))
+	b := New(DefaultConfig())
+	if err := b.Restore(strings.NewReader(old), t0); err != nil {
+		t.Fatal(err)
+	}
+	heard := func(id string) string {
+		t.Helper()
+		res, err := b.Hook(t0, HookEvent{Kind: KindPrompt, Member: "bob", Agent: AgentCodex, SessionID: id, Where: Where{Repo: repo, Host: "h", Worktree: "/b"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res.Context
+	}
+	// b2 heard one and three, but not two: it hears two again, and three
+	// after it, rather than miss two.
+	for _, c := range []struct {
+		id      string
+		want    []string
+		earlier bool
+	}{
+		{"b1", []string{"three", "four"}, true}, // three as earlier news: b2 heard it
+		{"b2", []string{"two", "three", "four"}, true},
+		{"b3", []string{"one", "two", "three", "four"}, true},
+	} {
+		ctx := heard(c.id)
+		for _, w := range c.want {
+			if !strings.Contains(ctx, "Note from alice: "+w) {
+				t.Errorf("%s did not hear %q:\n%s", c.id, w, ctx)
+			}
+		}
+		if n := strings.Count(ctx, "Note from alice"); n != len(c.want) || strings.Contains(ctx, "Earlier news") != c.earlier {
+			t.Errorf("%s heard %d items, earlier news %t; want %v:\n%s", c.id, n, strings.Contains(ctx, "Earlier news"), c.want, ctx)
+		}
+		if again := heard(c.id); again != "" {
+			t.Errorf("%s heard again:\n%s", c.id, again)
+		}
+	}
+	data, _, err := b.Snapshot(t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(data, []byte(`"delivered_to"`)) {
+		t.Errorf("saved again, the snapshot names the sessions that heard items:\n%s", data)
+	}
 }
