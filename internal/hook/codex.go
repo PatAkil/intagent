@@ -27,6 +27,10 @@ type codexInput struct {
 	ToolResponse  json.RawMessage `json:"tool_response"`
 	ToolUseID     string          `json:"tool_use_id"`
 	Prompt        string          `json:"prompt"`
+	// AgentID is present when the hook fires in a thread a subagent runs
+	// in, whose hooks carry the session's id; on SubagentStop it names the
+	// subagent that stopped.
+	AgentID string `json:"agent_id"`
 }
 
 // Parse reads a Codex hook payload.
@@ -35,7 +39,7 @@ func (Codex) Parse(stdin []byte) (Event, error) {
 	if err := json.Unmarshal(stdin, &in); err != nil {
 		return Event{}, fmt.Errorf("codex hook payload: %w", err)
 	}
-	ev := Event{Name: in.HookEventName, SessionID: in.SessionID, Cwd: in.Cwd, Tool: in.ToolName, ToolUseID: in.ToolUseID}
+	ev := Event{Name: in.HookEventName, SessionID: in.SessionID, Cwd: in.Cwd, Tool: in.ToolName, ToolUseID: in.ToolUseID, Worker: in.AgentID}
 	command := stringField(in.ToolInput, "command")
 	switch in.HookEventName {
 	case "SessionStart":
@@ -55,7 +59,7 @@ func (Codex) Parse(stdin []byte) (Event, error) {
 			ev.Footprint = true
 		}
 	case "SubagentStop":
-		ev.Kind = board.KindToolEnd
+		ev.Kind, ev.Skip = board.KindWorkerEnd, in.AgentID == ""
 	case "Stop":
 		ev.Kind, ev.Footprint = board.KindStop, true
 	case "SessionEnd":

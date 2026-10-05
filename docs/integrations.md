@@ -18,6 +18,7 @@ permission `mcp__intagent__*`.
 | `PreToolUse` | `Edit\|Write\|MultiEdit\|NotebookEdit\|Bash` | `pre_edit` for file writes, `tool_start` for Bash | `permissionDecision: deny` with a reason, `ask`, or `additionalContext` |
 | `PostToolUse` | same | `post_edit`, or `tool_end` + git footprint after Bash | `additionalContext`: news from the team |
 | `PostToolUseFailure` | same | `tool_end`: a failed call is no longer running | `additionalContext` |
+| `SubagentStop` | (all) | `worker_end`: the subagent `agent_id` names is done | nothing |
 | `Stop` | (all) | `stop` + git footprint | nothing |
 | `SessionEnd` | (all) | `session_end` + git footprint (timeout 5 s, of which intagent takes 4) | nothing |
 
@@ -40,6 +41,11 @@ What matters:
 - **`additionalContext`** is shown to the model as a system reminder on all four events intagent answers.
 - **Background task notifications** arrive as `UserPromptSubmit` prompts starting with `<task-notification>`; intagent
   does not treat them as a task description.
+- **Subagents.** A subagent's hooks carry its session's `session_id` and its own `agent_id`, which the main agent's
+  lack. intagent sends it as the event's worker: the board remembers what it told each worker of a session, so two
+  subagents editing a file a teammate changed are each refused once and told why, rather than the second taking the
+  first's refusal as its retry. Their collision is counted and announced once. `SubagentStop` names the subagent that
+  finished, and the board forgets what it told it.
 - **Start directory.** Claude reads `.claude/settings.json` only from the directory it starts in. Starting it in a
   subdirectory skips the project's hooks. `intagent init --user` also installs the hooks in `~/.claude/settings.json`;
   they do nothing in repositories without `.intagent.json`, and Claude runs an identical project and user hook once.
@@ -72,6 +78,7 @@ trust entry and a `trusted_hash` for each intagent hook, computed with Codex's o
 | `UserPromptSubmit` | (all) | `prompt` |
 | `PreToolUse` | `^(apply_patch\|Bash)$` | `pre_edit` with the paths in the patch, or `tool_start` |
 | `PostToolUse` | same | `post_edit`, or `tool_end` + git footprint after Bash |
+| `SubagentStop` | (all) | `worker_end` for the subagent `agent_id` names |
 | `Stop` | (all) | `stop` + git footprint |
 | `SessionEnd` | (all) | `session_end` (timeout 3 s, Codex's maximum) |
 
@@ -91,6 +98,12 @@ What matters:
   `openWorldHint: false`, so Codex runs them without asking.
 - **Linked worktrees.** Codex reads hook declarations from the main checkout's `.codex/`; `--trust-codex` trusts both
   roots.
+- **Subagents** run in threads of their own that share the root thread's `session_id`; their hooks add the thread's
+  id as `agent_id`, which intagent reads as Claude Code's (from Codex's source; not run live). A subagent fires
+  `SubagentStart` and `SubagentStop` where the root fires `SessionStart` and `SessionEnd`. A subagent's
+  `UserPromptSubmit` starts that subagent's turn, so it does not end the tool calls the session's other threads
+  have running. A hook added since you last ran `--trust-codex` stays untrusted, and so ignored, until you run it
+  again.
 
 ## Cursor
 
@@ -129,6 +142,11 @@ What matters:
   both files: Cursor drops an imported hook whose command equals one of its own for the same event.
 - **Sessions** are `conversation_id`; paths resolve against `workspace_roots[0]`. Tool calls are paired by
   `tool_use_id`, so a refused call reported again as failed ends once.
+- **Subagents.** A tool call a subagent makes carries `parent_tool_call_id`, the call that started the subagent, and
+  intagent sends it as the event's worker, as it sends Claude Code's `agent_id` (from the SDK's source; not run
+  live). Cursor's `subagentStop` names the subagent only by `subagent_id`, so intagent does nothing with it, and the
+  board keeps what it told a Cursor subagent until the session goes. Cursor imports Claude Code's `SubagentStop`
+  hook as `subagentStop`, which therefore does nothing either.
 - **Open the repository, not a subfolder.** Cursor reads project hooks from the folder it opened. For a subfolder,
   `intagent init --user` covers it: Cursor imports the Claude Code hooks that puts in `~/.claude/settings.json`.
 - **Windows.** Cursor runs hooks in PowerShell there, which cannot run the guarded command; Cursor carries on without
@@ -154,6 +172,9 @@ What matters:
   around tool calls.
 - **Failure is closed.** A pre-tool hook that exits 1, or whose binary is missing, refuses the tool call. intagent's
   hook always exits 0, and the guard in the command covers teammates who have not installed it.
+- **Subagents.** Copilot's documentation names the subagent (`agent_id`) only in `SubagentStop`, not in its tool
+  hooks, so the board cannot tell one Copilot subagent's edit from another's; intagent reads `agent_id` wherever
+  Copilot sends it.
 
 ## Gemini CLI
 
@@ -191,6 +212,8 @@ What matters:
 - **MCP environment.** Gemini withholds variables whose names look like secrets (`*TOKEN*`, `*KEY*`) from MCP
   servers, so the MCP server reads the token from the user config written by `intagent login`, not from
   `INTAGENT_TOKEN`.
+- **Subagents.** Gemini's hooks carry the session's id and nothing that names a subagent, so the board cannot tell
+  one Gemini subagent's edit from another's.
 
 ## Any other agent
 

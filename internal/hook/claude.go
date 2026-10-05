@@ -32,6 +32,9 @@ type claudeInput struct {
 	ToolInput     json.RawMessage `json:"tool_input"`
 	ToolUseID     string          `json:"tool_use_id"`
 	Prompt        string          `json:"prompt"`
+	// AgentID is present when the hook fires inside a subagent, and on
+	// SubagentStop names the subagent that stopped.
+	AgentID string `json:"agent_id"`
 }
 
 // claudeEditPath names the tool_input field that holds the path each
@@ -50,7 +53,8 @@ func (c ClaudeCode) Parse(stdin []byte) (Event, error) {
 	if err := json.Unmarshal(stdin, &in); err != nil {
 		return Event{}, fmt.Errorf("claude-code hook payload: %w", err)
 	}
-	ev := Event{Name: in.HookEventName, SessionID: in.SessionID, Cwd: in.Cwd, Tool: in.ToolName, ToolUseID: in.ToolUseID}
+	// A subagent's hooks carry its session's id, and its own agent_id.
+	ev := Event{Name: in.HookEventName, SessionID: in.SessionID, Cwd: in.Cwd, Tool: in.ToolName, ToolUseID: in.ToolUseID, Worker: in.AgentID}
 	field, isEdit := claudeEditPath[in.ToolName]
 	switch in.HookEventName {
 	case "SessionStart":
@@ -77,8 +81,11 @@ func (c ClaudeCode) Parse(stdin []byte) (Event, error) {
 			// Shell commands can write files without saying which.
 			ev.Footprint = true
 		}
-	case "PostToolUseFailure", "SubagentStop":
+	case "PostToolUseFailure":
 		ev.Kind = board.KindToolEnd
+	case "SubagentStop":
+		// The subagent agent_id names is done; the session goes on.
+		ev.Kind, ev.Skip = board.KindWorkerEnd, in.AgentID == ""
 	case "Stop":
 		ev.Kind, ev.Footprint = board.KindStop, true
 	case "SessionEnd":

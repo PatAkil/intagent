@@ -423,7 +423,11 @@ func TestInitMigratesOldWiring(t *testing.T) {
 		}
 	}
 	// Claude's PostToolUseFailure is not imported by Cursor, which has its own.
-	if len(ours) != len(imported)+1 || ours["PostToolUseFailure"] != 1 || len(cursor.Hooks["postToolUseFailure"]) != 1 {
+	// Its SubagentStop is, and Cursor runs it once: Cursor has none of its
+	// own, as its subagentStop does not say which subagent stopped in the
+	// terms its tool calls do (parent_tool_call_id).
+	if len(ours) != len(imported)+2 || ours["PostToolUseFailure"] != 1 || len(cursor.Hooks["postToolUseFailure"]) != 1 ||
+		ours["SubagentStop"] != 1 || len(cursor.Hooks["subagentStop"]) != 0 {
 		t.Errorf("intagent handlers on %v", ours)
 	}
 }
@@ -953,7 +957,7 @@ func TestTrustCodexCorrectsEntriesAndDoctorChecksThem(t *testing.T) {
 	key := filepath.Join(a, ".codex/hooks.json") + ":stop:0:0"
 	writeFile(t, cfg, "model = \"gpt-6\"  # mine\n\n[projects.\""+a+"\"]\ntrust_level = \"untrusted\"\n\n[hooks.state.\""+key+"\"]\ntrusted_hash = \"sha256:old\"\n")
 	out, _, code := tm.as("alice", a, "", "doctor")
-	if code != 1 || !strings.Contains(out, "Codex ignores intagent's hooks here until you run 'intagent init --trust-codex'") || !strings.Contains(out, "of intagent's 6 hooks") {
+	if code != 1 || !strings.Contains(out, "Codex ignores intagent's hooks here until you run 'intagent init --trust-codex'") || !strings.Contains(out, "of intagent's 7 hooks") {
 		t.Fatalf("doctor before trusting: %d\n%s", code, out)
 	}
 	out, errOut, code := tm.as("alice", a, "", "init", "--trust-codex")

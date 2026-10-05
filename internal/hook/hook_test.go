@@ -423,3 +423,57 @@ func TestFor(t *testing.T) {
 		t.Error("For accepted an unknown agent")
 	}
 }
+
+// A subagent's hooks carry its session's id and, where the agent says, the
+// subagent's own: Claude Code's and Copilot CLI's agent_id, Codex's agent_id
+// (its thread), and the call that started a Cursor subagent. A subagent's
+// end names it, so the board forgets what it told it; one that names none is
+// skipped. Gemini CLI says nothing of its subagents.
+func TestSubagentsAreNamed(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		ad      Adapter
+		payload string
+		want    Event
+	}{
+		{"claude code edit", ClaudeCode{}, `{"session_id":"s","cwd":"/lab","hook_event_name":"PreToolUse","tool_name":"Edit",` +
+			`"tool_input":{"file_path":"/lab/a.go"},"tool_use_id":"toolu_9","agent_id":"a9f3","agent_type":"general-purpose"}`,
+			Event{Kind: board.KindPreEdit, Name: "PreToolUse", SessionID: "s", Cwd: "/lab", Tool: "Edit", ToolUseID: "toolu_9", Worker: "a9f3",
+				Paths: []string{"/lab/a.go"}}},
+		{"claude code subagent stop", ClaudeCode{}, `{"session_id":"s","cwd":"/lab","hook_event_name":"SubagentStop","stop_hook_active":false,` +
+			`"agent_id":"a9f3","agent_transcript_path":"/t/a9f3.jsonl","agent_type":"general-purpose"}`,
+			Event{Kind: board.KindWorkerEnd, Name: "SubagentStop", SessionID: "s", Cwd: "/lab", Worker: "a9f3"}},
+		{"claude code subagent stop naming none", ClaudeCode{}, `{"session_id":"s","cwd":"/lab","hook_event_name":"SubagentStop"}`,
+			Event{Kind: board.KindWorkerEnd, Skip: true, Name: "SubagentStop", SessionID: "s", Cwd: "/lab"}},
+		{"copilot subagent stop", ClaudeCode{Copilot: true}, `{"hook_event_name":"SubagentStop","session_id":"p","cwd":"/lab",` +
+			`"agent_id":"task-3","agent_type":"task","agent_name":"task","stop_reason":"end_turn"}`,
+			Event{Kind: board.KindWorkerEnd, Name: "SubagentStop", SessionID: "p", Cwd: "/lab", Worker: "task-3"}},
+		{"codex edit", Codex{}, `{"session_id":"019a","turn_id":"t","cwd":"/p","hook_event_name":"PreToolUse","tool_name":"apply_patch",` +
+			`"tool_input":{"command":"*** Begin Patch\n*** Add File: a.txt\n+a\n*** End Patch\n"},"tool_use_id":"call_1",` +
+			`"agent_id":"019b-thread","agent_type":"worker"}`,
+			Event{Kind: board.KindPreEdit, Name: "PreToolUse", SessionID: "019a", Cwd: "/p", Tool: "apply_patch", ToolUseID: "call_1",
+				Worker: "019b-thread", Paths: []string{"a.txt"}, NoAsk: true}},
+		{"codex subagent stop", Codex{}, `{"session_id":"019a","turn_id":"t","cwd":"/p","hook_event_name":"SubagentStop",` +
+			`"agent_id":"019b-thread","agent_type":"worker","agent_transcript_path":null,"last_assistant_message":null,"stop_hook_active":false}`,
+			Event{Kind: board.KindWorkerEnd, Name: "SubagentStop", SessionID: "019a", Cwd: "/p", Worker: "019b-thread"}},
+		{"cursor subagent's edit", Cursor{}, `{"conversation_id":"c1","hook_event_name":"preToolUse","cursor_version":"1.0.35",` +
+			`"workspace_roots":["/ws"],"parent_tool_call_id":"tc_7","tool_name":"Write","tool_input":{"file_path":"/ws/a.ts"},"tool_use_id":"t2"}`,
+			Event{Kind: board.KindPreEdit, Name: "preToolUse", SessionID: "c1", Cwd: "/ws", Tool: "Write", ToolUseID: "t2", Worker: "tc_7",
+				Paths: []string{"/ws/a.ts"}, NoAsk: true}},
+		{"cursor subagent stop", Cursor{}, `{"conversation_id":"c1","hook_event_name":"subagentStop","cursor_version":"1.0.35",` +
+			`"subagent_id":"sa_1","subagent_type":"explore","status":"completed"}`,
+			Event{Skip: true, Name: "subagentStop", SessionID: "c1"}},
+		{"gemini", Gemini{}, `{"session_id":"g","cwd":"/g","hook_event_name":"BeforeTool","tool_name":"write_file",` +
+			`"tool_input":{"file_path":"/g/a.go"},"agent_id":"ignored"}`,
+			Event{Kind: board.KindPreEdit, Name: "BeforeTool", SessionID: "g", Cwd: "/g", Tool: "write_file", Paths: []string{"/g/a.go"},
+				LateContext: true, NoAsk: true}},
+	} {
+		got, err := c.ad.Parse([]byte(c.payload))
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if !reflect.DeepEqual(got, c.want) {
+			t.Errorf("%s:\ngot  %+v\nwant %+v", c.name, got, c.want)
+		}
+	}
+}

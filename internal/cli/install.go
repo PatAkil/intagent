@@ -31,6 +31,7 @@ var claudeWiring = []hookWire{
 	{"PreToolUse", "Edit|Write|MultiEdit|NotebookEdit|Bash", 10},
 	{"PostToolUse", "Edit|Write|MultiEdit|NotebookEdit|Bash", 10},
 	{"PostToolUseFailure", "Edit|Write|MultiEdit|NotebookEdit|Bash", 10},
+	{"SubagentStop", "", 10},
 	{"Stop", "", 10},
 	{"SessionEnd", "", 5},
 }
@@ -40,6 +41,7 @@ var codexWiring = []hookWire{
 	{"UserPromptSubmit", "", 10},
 	{"PreToolUse", "^(apply_patch|Bash)$", 10},
 	{"PostToolUse", "^(apply_patch|Bash)$", 10},
+	{"SubagentStop", "", 10},
 	{"Stop", "", 10},
 	{"SessionEnd", "", 3},
 }

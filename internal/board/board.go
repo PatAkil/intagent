@@ -569,7 +569,11 @@ func (b *Board) Hook(now time.Time, ev HookEvent) (HookResult, error) {
 		res.Context = joinBlocks(b.renderStart(now, c), b.deliver(now, c, s))
 	case KindPrompt:
 		s.Phase = phaseWorking
-		clearTools(s)
+		if ev.Worker == "" {
+			// A worker's prompt is its own turn's, not the session's: the
+			// session's other workers may be running tools.
+			clearTools(s)
+		}
 		b.taskFromPrompt(c, s, ev.Prompt)
 		res.Context = b.deliver(now, c, s)
 	case KindToolStart:
@@ -577,7 +581,7 @@ func (b *Board) Hook(now time.Time, ev HookEvent) (HookResult, error) {
 	case KindPreEdit:
 		startTool(now, s, ev.Tool, ev.ToolUseID)
 		var spent []string
-		res, spent = b.decide(now, c, s, ev.Paths, ev.NoAsk)
+		res, spent = b.decide(now, c, s, ev.Paths, ev.NoAsk, ev.Worker)
 		res.ClaimID = c.ID
 		if len(ev.Paths) > maxCheckPaths || named > b.cfg.MaxFootprint {
 			res.Context = joinBlocks(res.Context, fmt.Sprintf("[intagent] This edit names %d files; intagent checked only "+
@@ -619,6 +623,8 @@ func (b *Board) Hook(now time.Time, ev HookEvent) (HookResult, error) {
 		}
 		b.reconcile(now, c, s, ev.Footprint)
 		res.Context = b.deliver(now, c, s)
+	case KindWorkerEnd:
+		forgetWorker(s, ev.Worker)
 	default:
 		return allow, fmt.Errorf("%w: unknown event kind %q", ErrInvalid, ev.Kind)
 	}
@@ -649,6 +655,7 @@ func (ev HookEvent) clean(maxFootprint int) (HookEvent, error) {
 	ev.Agent = Agent(ident(string(ev.Agent), 40))
 	ev.Tool = ident(ev.Tool, 60)
 	ev.ToolUseID = Clean(ev.ToolUseID, 200)
+	ev.Worker = Clean(ev.Worker, 200)
 	if ev.Member == "" || ev.SessionID == "" || ev.Agent == "" {
 		return ev, fmt.Errorf("%w: member, agent and session_id are required", ErrInvalid)
 	}
@@ -680,7 +687,7 @@ func (ev HookEvent) clean(maxFootprint int) (HookEvent, error) {
 
 var knownKinds = map[Kind]bool{
 	KindSessionStart: true, KindPrompt: true, KindPreEdit: true, KindPostEdit: true, KindToolStart: true,
-	KindToolEnd: true, KindStop: true, KindSessionEnd: true, KindHeartbeat: true,
+	KindToolEnd: true, KindStop: true, KindSessionEnd: true, KindHeartbeat: true, KindWorkerEnd: true,
 }
 
 // startTool records a tool call starting. Agents run tools in parallel, so
@@ -1483,11 +1490,39 @@ func ackKey(c Conflict) string {
 }
 
 // Session.Acked remembers what a session has been told: an ackKey for each
-// conflict the policy has dealt with, a toldKey for each collision counted and
-// announced, and ackPrompted once a prompt has named the claim's task.
+// conflict the policy has dealt with, for each of its workers that was told
+// (workerKey), a toldKey for each collision counted and announced, and
+// ackPrompted once a prompt has named the claim's task.
 const ackPrompted = "task:prompted"
 
 func toldKey(cf Conflict) string { return "told|" + ackKey(cf) }
+
+// workerSep joins an ackKey to the worker it was told to.
+const workerSep = "|w:"
+
+// workerKey is key as told to one worker of a session. Parallel workers
+// (subagents) each read their own context, so a bump one of them heard is
+// not another's retry, and each is warned once itself. The collision is
+// still counted and announced once for the session (toldKey).
+func workerKey(key, worker string) string {
+	if worker == "" {
+		return key
+	}
+	return key + workerSep + worker
+}
+
+// forgetWorker drops what the session remembers telling one of its workers,
+// which has finished. A worker that is run again is told again.
+func forgetWorker(s *session, worker string) {
+	if worker == "" {
+		return
+	}
+	for k := range s.Acked {
+		if strings.HasSuffix(k, workerSep+worker) {
+			delete(s.Acked, k)
+		}
+	}
+}
 
 // verdict sorts the conflicts on one edit by what the policy does about them.
 type verdict struct {
@@ -1515,11 +1550,11 @@ func (v verdict) acted() []Conflict {
 // returns the one-time answers the check spent, the bumps it showed and the
 // questions an agent that cannot ask is told to put, which a refusal the
 // agent never hears gives back.
-func (b *Board) decide(now time.Time, c *claim, s *session, paths []PathRef, noAsk bool) (HookResult, []string) {
+func (b *Board) decide(now time.Time, c *claim, s *session, paths []PathRef, noAsk bool, worker string) (HookResult, []string) {
 	if s.Acked == nil {
 		s.Acked = map[string]bool{}
 	}
-	v := b.judge(now, c, s, paths[:min(len(paths), maxCheckPaths)], noAsk)
+	v := b.judge(now, c, s, paths[:min(len(paths), maxCheckPaths)], noAsk, worker)
 	res := b.answer(now, s, v)
 	spent := v.bumpKeys
 	if res.Decision == DecisionAsk {
@@ -1618,15 +1653,16 @@ func decidedFirst(paths []PathRef, acted []Conflict) []string {
 	return out
 }
 
-// judge applies the policy to the conflicts on every path being written. A
-// bump counts as acknowledged as soon as it is met: its retry goes through.
-func (b *Board) judge(now time.Time, c *claim, s *session, paths []PathRef, noAsk bool) verdict {
+// judge applies the policy to the conflicts on every path being written by
+// the session's worker. A bump counts as acknowledged as soon as it is met:
+// its retry goes through.
+func (b *Board) judge(now time.Time, c *claim, s *session, paths []PathRef, noAsk bool, worker string) verdict {
 	live := b.liveAt(now)
 	var v verdict
 	for _, p := range paths {
 		for _, cf := range b.conflictsFor(live, c, s.Key, p) {
 			v.all = append(v.all, cf)
-			key := ackKey(cf)
+			key := workerKey(ackKey(cf), worker)
 			action := b.cfg.Policy.action(cf.Severity)
 			if action == ActionBump && b.breachedReservation(c, cf) {
 				// A teammate changed a file inside this claim's reservation

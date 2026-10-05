@@ -68,7 +68,7 @@ func (b *Board) unansweredEdit(now time.Time, c *claim, s *session, ev HookEvent
 	// Judged as its pre_edit would have been, on the first maxCheckPaths
 	// paths: a post_edit keeps up to MaxFootprint, and each path judged costs
 	// a pass over the repository's claims under the lock.
-	told := b.wouldTell(now, c, s, ev.Paths[:min(len(ev.Paths), maxCheckPaths)])
+	told := b.wouldTell(now, c, s, ev.Paths[:min(len(ev.Paths), maxCheckPaths)], ev.Worker)
 	if len(told) == 0 {
 		return
 	}
@@ -76,15 +76,15 @@ func (b *Board) unansweredEdit(now time.Time, c *claim, s *session, ev HookEvent
 	b.recordUncheckedBreach(now, c, s, told)
 }
 
-// wouldTell is what a check of paths would tell the session now, judged on a
-// copy so that nothing is acknowledged.
-func (b *Board) wouldTell(now time.Time, c *claim, s *session, paths []PathRef) []Conflict {
+// wouldTell is what a check of paths would tell the session's worker now,
+// judged on a copy so that nothing is acknowledged.
+func (b *Board) wouldTell(now time.Time, c *claim, s *session, paths []PathRef, worker string) []Conflict {
 	probe := *s
 	probe.Acked = maps.Clone(s.Acked)
 	if probe.Acked == nil {
 		probe.Acked = map[string]bool{}
 	}
-	return b.judge(now, c, &probe, paths, true).acted()
+	return b.judge(now, c, &probe, paths, true, worker).acted()
 }
 
 // recordUncheckedBreach records, once per file and reservation, an edit made

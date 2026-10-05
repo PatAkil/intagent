@@ -27,7 +27,11 @@ type Event struct {
 	// ToolUseID identifies the tool call, when the agent gives one, so its
 	// start and end can be paired.
 	ToolUseID string
-	Paths     []string
+	// Worker identifies the worker inside the session the event comes from,
+	// when the agent says: a subagent, which reports under its session's id.
+	// Empty for the session's main agent.
+	Worker string
+	Paths  []string
 	// Prompt is the user's prompt on prompt events.
 	Prompt string
 	// Footprint asks the caller to reconcile the worktree's git changes.

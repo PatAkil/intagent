@@ -336,6 +336,9 @@ const (
 	KindStop         Kind = "stop"
 	KindSessionEnd   Kind = "session_end"
 	KindHeartbeat    Kind = "heartbeat"
+	// KindWorkerEnd says a worker inside the session (HookEvent.Worker), a
+	// subagent, has finished, while the session goes on.
+	KindWorkerEnd Kind = "worker_end"
 )
 
 // Where identifies the worktree an event comes from.
@@ -367,6 +370,13 @@ type HookEvent struct {
 	// the board then holds a pre_edit's warnings until the next event that
 	// can carry them, normally the edit's own post_edit.
 	LateContext bool `json:"late_context,omitempty"`
+	// Worker names the worker inside the session the event comes from, when
+	// the agent says: a subagent, which runs beside the session's other
+	// workers with a context of its own, under the session's id. What the
+	// session was told before an edit, it remembers telling each worker, so
+	// that one worker's retry does not let another's first attempt through.
+	// Empty for the session's main agent.
+	Worker string `json:"worker,omitempty"`
 	// Late, set by the server, reports whether the agent has stopped waiting
 	// for the answer, or will have by the time it arrives. The board asks
 	// once, when it gets to the event: a late pre_edit is dropped unanswered,

@@ -32,6 +32,9 @@ type cursorInput struct {
 	Prompt         string          `json:"prompt"`
 	Cwd            string          `json:"cwd"`
 	CursorVersion  string          `json:"cursor_version"`
+	// ParentToolCallID is set on a tool call a subagent makes: the call that
+	// started the subagent.
+	ParentToolCallID string `json:"parent_tool_call_id"`
 }
 
 // isCursorPayload recognises Cursor's payloads, which Cursor also sends to
@@ -58,7 +61,7 @@ func (Cursor) Parse(stdin []byte) (Event, error) {
 	if session == "" {
 		session = in.SessionID
 	}
-	ev := Event{Name: in.HookEventName, SessionID: session, Tool: in.ToolName, ToolUseID: in.ToolUseID}
+	ev := Event{Name: in.HookEventName, SessionID: session, Tool: in.ToolName, ToolUseID: in.ToolUseID, Worker: in.ParentToolCallID}
 	// Paths resolve against the workspace; a shell command reports its own cwd.
 	if len(in.WorkspaceRoots) > 0 {
 		ev.Cwd = in.WorkspaceRoots[0]
