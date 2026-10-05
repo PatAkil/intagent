@@ -401,8 +401,11 @@ kill "$(cat /tmp/lg/pid)"
 `go run ./scripts/loadgen -h` lists the rest: the shape of the team and its footprints, the rate, a warm-up, and
 flags that model older clients and dashboards.
 
-Pushing a tag `vX.Y.Z` runs the release workflow: it tests, publishes a GitHub release with those archives, and
-pushes the server image to `ghcr.io/<owner>/intagent` for amd64 and arm64.
+Pushing a tag `vX.Y.Z` runs the release workflow: it tests, builds those archives, pushes the server image to
+`ghcr.io/<owner>/intagent` for amd64 and arm64, and last publishes a GitHub release with the archives. The release's
+notes are `docs/releases/vX.Y.Z.md` when the tagged commit has it, and otherwise a short note on what to download
+followed by the merged pull requests. A tag with a hyphen (`v1.2.0-rc.1`) is published as a pre-release, and does not
+move the image's `latest`.
 
 The design is in [docs/design.md](docs/design.md).
 

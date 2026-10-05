@@ -40,15 +40,21 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # Generated notes list merged pull requests, and a release without
-          # any is a single changelog link, so the notes start with what to
-          # download.
-          notes="Download the archive for your system and check it against SHA256SUMS; each holds the intagent \
+          # Pre-releases are marked as such, so they do not become the latest release either.
+          args=(--title "$GITHUB_REF_NAME" --verify-tag)
+          [[ "$GITHUB_REF_NAME" != *-* ]] || args+=(--prerelease)
+          # A release's own notes, docs/releases/<tag>.md, are its whole page.
+          # Without them, generated notes list merged pull requests, and a
+          # release without any is a single changelog link, so a fixed note
+          # comes first, saying what to download.
+          notes_file="docs/releases/$GITHUB_REF_NAME.md"
+          if [[ -f "$notes_file" ]]; then
+            args+=(--notes-file "$notes_file")
+          else
+            notes="Download the archive for your system and check it against SHA256SUMS; each holds the intagent \
           binary, README.md, LICENSE, NOTICE and docs. On macOS the binary is not signed: if a browser downloaded \
           it, run \`xattr -d com.apple.quarantine intagent\` once. The server image is \
           \`ghcr.io/${GITHUB_REPOSITORY,,}:$GITHUB_REF_NAME\`, for amd64 and arm64."
-          # Pre-releases are marked as such, so they do not become the latest release either.
-          pre=()
-          [[ "$GITHUB_REF_NAME" != *-* ]] || pre=(--prerelease)
-          gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --notes "$notes" --generate-notes \
-            --verify-tag "${pre[@]}"
+            args+=(--notes "$notes" --generate-notes)
+          fi
+          gh release create "$GITHUB_REF_NAME" dist/* "${args[@]}"
