@@ -435,33 +435,80 @@ func sharesArea(a, b *claim) bool {
 type liveness struct {
 	b      *Board
 	now    time.Time
-	claims map[string]bool // what claim found, by claim ID
+	claims map[string]claimLive // what find found, by claim ID
+}
+
+// claimLive is what liveness found of one claim's sessions.
+type claimLive struct {
+	live bool // one of them is live
+	own  bool // one that reports from the claim is live
+	// from is, when the claim is live only through sessions that moved from
+	// it (Also), the claim they all report from now, if they report from one.
+	from string
 }
 
 func (b *Board) liveAt(now time.Time) liveness {
-	return liveness{b: b, now: now, claims: map[string]bool{}}
+	return liveness{b: b, now: now, claims: map[string]claimLive{}}
 }
 
-// claim reports whether claim id has a live session.
+// claim reports whether claim id has a live session, its own or one that
+// moved from it.
 func (l liveness) claim(id string) bool {
 	if trace != nil {
 		trace.liveClaims++
 	}
-	if live, ok := l.claims[id]; ok {
-		return live
+	return l.find(id).live
+}
+
+// carried reports whether claim id is live only through sessions that moved
+// from it to claim self and report from there now. To self it is their own
+// work in another worktree: what they left there neither holds them back
+// nor is news to them. To anyone else it is live.
+func (l liveness) carried(id, self string) bool {
+	return self != "" && l.find(id).from == self
+}
+
+// find looks at claim id's sessions, its own first: one of those that is
+// live settles it; of those that moved from it, two live ones that report
+// from different claims do.
+func (l liveness) find(id string) claimLive {
+	if f, ok := l.claims[id]; ok {
+		return f
 	}
-	live := false
-	for s := range l.b.sessionsOf(id) {
+	var f claimLive
+	for _, s := range l.b.claimSessions[id] {
 		if trace != nil {
 			trace.sessionVisits++
 		}
 		if l.b.state(l.now, s).Live() {
-			live = true
+			f = claimLive{live: true, own: true}
 			break
 		}
 	}
-	l.claims[id] = live
-	return live
+	if !f.live {
+		f = l.moved(id)
+	}
+	l.claims[id] = f
+	return f
+}
+
+// moved is what claim id's sessions that moved from it (Also) make of it.
+func (l liveness) moved(id string) claimLive {
+	var f claimLive
+	for _, s := range l.b.alsoSessions[id] {
+		if trace != nil {
+			trace.sessionVisits++
+		}
+		switch {
+		case !l.b.state(l.now, s).Live():
+		case !f.live:
+			f.live, f.from = true, s.ClaimID
+		case s.ClaimID != f.from:
+			f.from = ""
+			return f
+		}
+	}
+	return f
 }
 
 // session reports whether the session with key k is live.

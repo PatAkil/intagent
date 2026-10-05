@@ -285,8 +285,9 @@ type session struct {
 	// when it last did: the worktree an agent moved from, or the worktrees
 	// of workers that report under the session's id. Each stays live while
 	// the session is, as ClaimID does, so a reservation made there keeps
-	// blocking teammates while its agent works elsewhere. At most
-	// maxAlsoClaims; only the functions in index.go change it.
+	// blocking teammates while its agent works elsewhere; it does not block
+	// the session itself (liveness.carried). At most maxAlsoClaims; only the
+	// functions in index.go change it.
 	Also map[string]time.Time `json:"also,omitempty"`
 	// refused holds the last few calls refused: a post_edit for one means
 	// the agent ran it without hearing the refusal. It is not saved; a

@@ -53,7 +53,7 @@ started, was stopped at the exact edit that would have collided, and Alice's age
 | **After every write** | Records the file. If a teammate's agent touched the same file, *their* agent hears about it at its next step: awareness is symmetric. |
 | **Between turns and at the end** | Re-reads `git diff` against the default branch, so reverted or merged work disappears by itself. |
 | **Silence** | A working agent that goes quiet for 10 minutes (45 inside a tool call) shows as *stalled*; its exclusive intents stop blocking anyone. After 2 hours it counts as *gone*. Nothing an agent holds outlives it for long. |
-| **Subagents and worktrees** | Each of an agent's subagents hears of a collision itself, where the agent says which subagent is editing (Claude Code, Codex, Cursor). An agent that moves to another worktree in the same session keeps the reservations it made in the first while it runs. |
+| **Subagents and worktrees** | Each of an agent's subagents hears of a collision itself, where the agent says which subagent is editing (Claude Code, Codex, Cursor). An agent that moves to another worktree in the same session keeps the reservations it made in the first while it runs: they keep refusing teammates, not the agent or its subagents. |
 
 Agents can also act deliberately through the MCP tools: `declare_intent` (with `shared` or `exclusive` mode),
 `check_paths`, `team_board`, `send_note` and `release_intent`.

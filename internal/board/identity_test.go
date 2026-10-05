@@ -204,7 +204,14 @@ func worktree(name string) Where {
 // aliceFrom sends an event of alice's session s1 from where.
 func (h *harness) aliceFrom(kind Kind, where Where, paths ...string) HookResult {
 	h.t.Helper()
-	ev := HookEvent{Kind: kind, Member: "alice", Agent: AgentClaudeCode, SessionID: "s1", Where: where, Paths: refs(paths...)}
+	return h.aliceWorker(kind, where, "", paths...)
+}
+
+// aliceWorker sends an event of a worker of alice's session s1 from where.
+func (h *harness) aliceWorker(kind Kind, where Where, worker string, paths ...string) HookResult {
+	h.t.Helper()
+	ev := HookEvent{Kind: kind, Member: "alice", Agent: AgentClaudeCode, SessionID: "s1", Where: where, Paths: refs(paths...),
+		Worker: worker}
 	if kind == KindPreEdit || kind == KindPostEdit {
 		ev.Tool = "Edit"
 	}
@@ -269,26 +276,155 @@ func TestAWorktreeMoveKeepsItsReservation(t *testing.T) {
 	}
 }
 
+// The claims a session keeps live after it moved are its own work, not a
+// teammate's: from the worktree it moved to, its edits inside the
+// reservation it made in the first are let through without a word, git
+// finding its changes there is no breach, intagent guard does not refuse
+// its commit, and it can declare the same reservation where it now works.
+// Teammates are still refused every time. Before, the session was refused
+// every time by its own reservation, its guard refused its commits, its
+// declaration was rejected and its changes were recorded as breaches.
+func TestAMovedSessionIsNotHeldBackByItsOwnReservation(t *testing.T) {
+	h := newHarness(t)
+	h.aliceFrom(KindSessionStart, whereOf("alice"))
+	h.declare("alice", ModeExclusive, "rework payments", "svc/pay/**")
+	h.advance(time.Minute)
+	h.aliceFrom(KindPrompt, worktree("b"))
+	for range 2 {
+		if res := h.aliceFrom(KindPreEdit, worktree("b"), "svc/pay/retry.go"); res.Decision != DecisionAllow || len(res.Conflicts) != 0 {
+			t.Fatalf("alice's edit in b inside her own reservation: %s %v", res.Decision, res.Conflicts)
+		}
+	}
+	res, err := h.b.Check(h.now, CheckRequest{Member: "alice", Where: worktree("b"), Paths: refs("svc/pay/retry.go")})
+	if err != nil || len(res.Conflicts) != 0 {
+		t.Fatalf("intagent guard's check in b: %v %v, want no conflict", res.Conflicts, err)
+	}
+	scan := HookEvent{Kind: KindToolEnd, Member: "alice", Agent: AgentClaudeCode, SessionID: "s1", Where: worktree("b"),
+		Footprint: &Footprint{Files: refs("svc/pay/retry.go", "svc/pay/fees.go")}}
+	if got, err := h.b.Hook(h.now, scan); err != nil || got.Context != "" {
+		t.Fatalf("git finds alice's changes in b: %q %v, want nothing said", got.Context, err)
+	}
+	if n := len(h.activities(ActivityConflict)); n != 0 {
+		t.Fatalf("%d conflicts recorded, want none: %+v", n, h.activities(ActivityConflict))
+	}
+	moved, err := h.b.Declare(h.now, DeclareRequest{Member: "alice", Where: worktree("b"), Patterns: []string{"svc/pay/**"},
+		Mode: ModeExclusive, Summary: "rework payments"})
+	if err != nil || len(moved.Accepted) != 1 || len(moved.Overlaps) != 0 {
+		t.Fatalf("alice declares her reservation in b: %+v %v, want it accepted, overlapping nothing", moved, err)
+	}
+
+	h.hook(KindSessionStart, "bob", "b1")
+	for range 2 {
+		if res := h.hook(KindPreEdit, "bob", "b1", "svc/pay/retry.go"); res.Decision != DecisionRefuse {
+			t.Fatalf("bob's edit inside alice's reservations: %s, want a refusal", res.Decision)
+		}
+	}
+	if res, err := h.b.Check(h.now, CheckRequest{Member: "bob", Where: whereOf("bob"), Paths: refs("svc/pay/retry.go")}); err != nil ||
+		len(res.Conflicts) != 2 || res.Conflicts[0].Severity != SeverityBlock || res.Conflicts[1].Severity != SeverityBlock {
+		t.Fatalf("bob's check: %v %v, want both of alice's reservations blocking", res.Conflicts, err)
+	}
+}
+
+// A worker in a worktree of its own (a Claude Code subagent with worktree
+// isolation) is not held back by the reservation its session made before it
+// ran, and neither is the session's main agent back where it was, by what
+// the worker changed.
+func TestAWorkerIsNotHeldBackByItsSessionsReservation(t *testing.T) {
+	h := newHarness(t)
+	h.aliceFrom(KindSessionStart, whereOf("alice"))
+	h.declare("alice", ModeExclusive, "rework payments", "svc/pay/**")
+	h.advance(time.Minute)
+	for range 2 {
+		if res := h.aliceWorker(KindPreEdit, worktree("w1"), "agent-1", "svc/pay/retry.go"); res.Decision != DecisionAllow ||
+			len(res.Conflicts) != 0 {
+			t.Fatalf("the worker's edit inside its session's reservation: %s %v", res.Decision, res.Conflicts)
+		}
+	}
+	h.aliceWorker(KindPostEdit, worktree("w1"), "agent-1", "svc/pay/retry.go")
+	h.advance(time.Second)
+	if res := h.aliceFrom(KindPrompt, whereOf("alice")); res.Context != "" {
+		t.Fatalf("the main agent is told of its worker's change: %q", res.Context)
+	}
+	if res := h.aliceFrom(KindPreEdit, whereOf("alice"), "svc/pay/retry.go"); res.Decision != DecisionAllow || len(res.Conflicts) != 0 {
+		t.Fatalf("the main agent's edit of the file its worker changed: %s %v", res.Decision, res.Conflicts)
+	}
+}
+
+// A claim kept live by another agent, at work in it or moved from it to
+// somewhere else, before or after this session moved, still holds back a
+// session that moved from it: the reservation may be that agent's. (Each
+// case is played several times, as which session the board finds first
+// follows the order of a map.)
+func TestAReservationAnotherAgentKeepsStillHoldsBack(t *testing.T) {
+	cases := []struct {
+		name   string
+		to     Where
+		before bool
+	}{{"at work in it", whereOf("alice"), true}, {"moved before", worktree("c"), true},
+		{"moved after", worktree("c"), false}}
+	for i := range 4 * len(cases) {
+		tc := cases[i%len(cases)]
+		h := newHarness(t)
+		h.aliceFrom(KindSessionStart, whereOf("alice"))
+		h.declare("alice", ModeExclusive, "rework payments", "svc/pay/**")
+		other := func() {
+			ev := HookEvent{Kind: KindSessionStart, Member: "alice", Agent: AgentCodex, SessionID: "x1", Where: whereOf("alice")}
+			if _, err := h.b.Hook(h.now, ev); err != nil {
+				t.Fatal(err)
+			}
+			ev.Kind, ev.Where = KindPrompt, tc.to
+			if _, err := h.b.Hook(h.now, ev); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if tc.before {
+			other()
+		}
+		h.aliceFrom(KindPrompt, worktree("b"))
+		if !tc.before {
+			other()
+		}
+		if res := h.aliceFrom(KindPreEdit, worktree("b"), "svc/pay/retry.go"); res.Decision != DecisionRefuse ||
+			res.Conflicts[0].Severity != SeverityBlock {
+			t.Fatalf("with alice's other agent %s, her moved session's edit: %s %v, want a refusal for the reservation",
+				tc.name, res.Decision, res.Conflicts)
+		}
+	}
+}
+
 // A session whose workers each report from a worktree of their own, under the
 // session's id, keeps every one of those claims live: the parent's
 // reservation refuses every one of a teammate's edits, and no claim is
-// released and opened again as the session's events move between them.
-// Before, with 10 workers, 13 of 600 edits were refused and the claims were
-// released and opened again 360 times in 10 minutes.
+// released and opened again as the session's events move between them. The
+// workers' own edits inside it, and of the files the others change, go
+// through. Before, with 10 workers, 13 of 600 edits were refused and the
+// claims were released and opened again 360 times in 10 minutes.
 func TestFanOutKeepsEveryWorktreeLive(t *testing.T) {
 	h := newHarness(t)
 	h.aliceFrom(KindSessionStart, whereOf("alice"))
 	h.declare("alice", ModeExclusive, "rework payments", "svc/pay/**")
 	h.hook(KindSessionStart, "bob", "b1")
-	refused := 0
+	refused, workers := 0, 0
 	for sec := range 600 {
 		h.advance(time.Second)
 		if sec%30 == 0 {
 			h.aliceFrom(KindToolEnd, whereOf("alice"))
 		}
 		for w := range 10 {
-			if sec%(2+w%5) == 0 {
-				h.aliceFrom(KindToolEnd, worktree(string(rune('a'+w))))
+			if sec%(2+w%5) != 0 {
+				continue
+			}
+			where, worker := worktree(string(rune('a'+w))), fmt.Sprintf("agent-%d", w)
+			if sec%60 == 0 {
+				file := fmt.Sprintf("svc/pay/f%d.go", sec/60)
+				if res := h.aliceWorker(KindPreEdit, where, worker, file); res.Decision != DecisionAllow || res.Context != "" {
+					t.Fatalf("worker %s's edit of %s in its session's reservation: %s %q", worker, file, res.Decision, res.Context)
+				}
+				h.aliceWorker(KindPostEdit, where, worker, file)
+				workers++
+			}
+			if res := h.aliceWorker(KindToolEnd, where, worker); res.Context != "" {
+				t.Fatalf("worker %s is told %q", worker, res.Context)
 			}
 		}
 		if res := h.hook(KindPreEdit, "bob", "b1", "svc/pay/retry.go"); res.Decision == DecisionRefuse {
@@ -298,8 +434,8 @@ func TestFanOutKeepsEveryWorktreeLive(t *testing.T) {
 			h.b.Sweep(h.now)
 		}
 	}
-	if refused != 600 {
-		t.Errorf("%d of 600 of bob's edits refused, want all", refused)
+	if refused != 600 || workers != 100 {
+		t.Errorf("%d of 600 of bob's edits refused, want all, and %d workers' edits, want 100", refused, workers)
 	}
 	if opened, released := len(h.activities(ActivityClaimOpened)), len(h.activities(ActivityClaimReleased)); opened != 12 || released != 0 {
 		t.Errorf("%d claims opened and %d released, want 12 (alice's 11 and bob's) and none", opened, released)

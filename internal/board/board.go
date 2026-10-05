@@ -1036,7 +1036,7 @@ func (b *Board) touch(now time.Time, c *claim, s *session, paths []PathRef) {
 }
 
 // alertOthers tells every other claim that changed or claimed the same files,
-// of those still listening.
+// of those still listening, but those c's sessions carry.
 func (b *Board) alertOthers(now time.Time, c *claim, paths []PathRef) {
 	byName := orderByName(paths)
 	covered := make([]bool, len(paths)) // by the claim being compared
@@ -1066,6 +1066,11 @@ func (b *Board) alertOthers(now time.Time, c *claim, paths []PathRef) {
 			}
 		}
 		b.coverByIntents(o, paths, byName, covered)
+		// The work c's sessions left in o is theirs: they are not told
+		// there of what they do here.
+		if !slices.Contains(covered, true) || live.carried(o.ID, c.ID) {
+			continue
+		}
 		// o remembers it was told of the first few files c changed, so
 		// that c changing them again does not tell it again; past those,
 		// a file that comes back into c's changes is told again, so what
@@ -1239,13 +1244,14 @@ func (b *Board) tellUnchecked(now time.Time, c *claim, s *session, lines []strin
 }
 
 // reservationHolders lists the claims whose exclusive intents can block a
-// change in c's worktree: the live ones in its repository, other than c,
-// that hold one. They are in ID order.
+// change in c's worktree: the live ones in its repository, other than c and
+// those c's sessions carry, that hold one. They are in ID order.
 func (b *Board) reservationHolders(now time.Time, c *claim) []*claim {
 	var holders []*claim
 	live := b.liveAt(now)
 	for o := range b.claimsIn(c.Repo) {
-		if o.ID != c.ID && slices.ContainsFunc(o.Intents, func(in Intent) bool { return in.Mode == ModeExclusive }) && live.claim(o.ID) {
+		if o.ID != c.ID && slices.ContainsFunc(o.Intents, func(in Intent) bool { return in.Mode == ModeExclusive }) &&
+			live.claim(o.ID) && !live.carried(o.ID, c.ID) {
 			holders = append(holders, o)
 		}
 	}
@@ -1339,6 +1345,8 @@ func (b *Board) deleteClaim(now time.Time, c *claim, kind ActivityKind) {
 // --- conflicts and decisions ---------------------------------------------
 
 // conflictsFor lists the claims that matter to one path, most severe first.
+// A claim self's sessions carry (liveness.carried), the work they left in
+// another worktree, is theirs, and no more a conflict than self is.
 func (b *Board) conflictsFor(live liveness, self *claim, selfSession string, p PathRef) []Conflict {
 	if trace != nil {
 		trace.conflictsFor++
@@ -1348,7 +1356,7 @@ func (b *Board) conflictsFor(live liveness, self *claim, selfSession string, p P
 		if o.ID == self.ID {
 			continue
 		}
-		if cf, ok := b.conflictWith(live, o, p); ok {
+		if cf, ok := b.conflictWith(live, o, p); ok && !live.carried(o.ID, self.ID) {
 			out = append(out, cf)
 		}
 	}
@@ -2008,9 +2016,12 @@ func (b *Board) Declare(now time.Time, r DeclareRequest) (DeclareResult, error) 
 	return res, nil
 }
 
+// exclusiveClash finds an active claim's exclusive intent that overlaps
+// pattern, other than self's and those of the claims self's sessions carry.
 func (b *Board) exclusiveClash(self *claim, pattern string, live liveness) (Conflict, bool) {
 	for o := range b.comparing(self.Repo) {
-		if o.ID == self.ID || !slices.ContainsFunc(o.Intents, func(in Intent) bool { return in.Mode == ModeExclusive }) || !live.claim(o.ID) {
+		if o.ID == self.ID || !slices.ContainsFunc(o.Intents, func(in Intent) bool { return in.Mode == ModeExclusive }) ||
+			!live.claim(o.ID) || live.carried(o.ID, self.ID) {
 			continue
 		}
 		for _, in := range o.Intents {
@@ -2036,7 +2047,8 @@ func upsertIntent(list []Intent, in Intent) []Intent {
 	return append(list, in)
 }
 
-// intentOverlaps lists other claims whose intents or changed files meet a new intent.
+// intentOverlaps lists other claims whose intents or changed files meet a new
+// intent, but those c's sessions carry.
 func (b *Board) intentOverlaps(c *claim, in Intent, live liveness) []Conflict {
 	// The files the intent can cover are those under the directory it is
 	// rooted in, which are together in each claim's ordered paths: from
@@ -2090,7 +2102,7 @@ func (b *Board) intentOverlaps(c *claim, in Intent, live liveness) []Conflict {
 				cf.Why = "has unmerged changes to " + listPaths(hit, 3)
 			}
 		}
-		if cf.Severity > SeverityNone {
+		if cf.Severity > SeverityNone && !live.carried(o.ID, c.ID) {
 			cf.Active = live.claim(o.ID)
 			out = append(out, cf)
 		}
