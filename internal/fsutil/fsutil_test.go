@@ -137,6 +137,38 @@ func TestLinkAsideKeepsTheFileReplaced(t *testing.T) {
 	}
 }
 
+// LinkAside leaves no temporary file behind when the file is already kept
+// aside: as when a save of the board fails, and the next one links the same
+// board.json aside again. Renaming a temporary link onto another name for
+// the same file does nothing, and left the link behind on every failed
+// save, each holding a whole snapshot's disk until the next start.
+func TestLinkAsideAgainLeavesNothingBehind(t *testing.T) {
+	dir := t.TempDir()
+	p, prev := filepath.Join(dir, "board.json"), filepath.Join(dir, "board.json.prev")
+	if err := WriteFile(p, []byte("one"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for range 3 { // the saves that fail after it leave p as it was
+		if err := LinkAside(p, prev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	if len(names) != 2 {
+		t.Fatalf("files in the directory: %v, want board.json and board.json.prev", names)
+	}
+	if got, _ := os.ReadFile(prev); string(got) != "one" {
+		t.Fatalf("aside = %q", got)
+	}
+}
+
 func TestWriteFileWritesThroughLinks(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symbolic links need privileges on Windows")

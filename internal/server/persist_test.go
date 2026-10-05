@@ -888,3 +888,34 @@ func TestDamagedDurablePartIsSetAside(t *testing.T) {
 		t.Fatalf("the newer durable part was moved: %v", err)
 	}
 }
+
+// Saves that fail leave nothing behind in the data directory: each links the
+// snapshot aside as board.json.prev before it writes, and while saves fail
+// board.json.prev already is board.json. A temporary link was left at every
+// attempt, each holding a whole snapshot's disk, until the next start.
+func TestFailingSavesLeaveNothingBehind(t *testing.T) {
+	ts, clock, _ := persistServer(t)
+	ts.change(t, 0)
+	if err := ts.save(nil); err != nil {
+		t.Fatal(err)
+	}
+	ts.saveFile = func(string, fs.FileMode, func(io.Writer) error) error {
+		return &fs.PathError{Op: "write", Path: "board.json", Err: syscall.ENOSPC}
+	}
+	for n := 1; n <= 5; n++ {
+		ts.change(t, n)
+		clock.add(time.Minute)
+		if err := ts.save(nil); !errors.Is(err, syscall.ENOSPC) {
+			t.Fatalf("save %d: %v", n, err)
+		}
+	}
+	entries, err := os.ReadDir(ts.dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".tmp") {
+			t.Errorf("left behind: %s", e.Name())
+		}
+	}
+}

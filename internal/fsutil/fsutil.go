@@ -161,7 +161,11 @@ func RemoveTemps(path string) (int, error) {
 // LinkAside makes aside another name for the file at path, replacing what
 // was at aside, so that the file outlives a WriteFile that replaces path. It
 // links under a temporary name and renames that into place, so aside is
-// always a whole file. A missing file at path leaves aside as it was.
+// always a whole file. A missing file at path leaves aside as it was. When
+// aside already is another name for that file (a write that would have
+// replaced path failed since the last LinkAside), the rename does nothing,
+// as rename does for two names of one file, and the temporary name is
+// removed.
 func LinkAside(path, aside string) error {
 	target, err := linkTarget(path) // WriteFile replaces the file a link names
 	if err != nil {
@@ -176,6 +180,9 @@ func LinkAside(path, aside string) error {
 	}
 	if err := os.Rename(tmp, aside); err != nil {
 		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Remove(tmp); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
 	return nil
