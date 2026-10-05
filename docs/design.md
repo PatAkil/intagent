@@ -81,8 +81,11 @@ sessions that ended or went gone last, and up to twice as many between sweeps, a
 working in one worktree may stall together on a network blip, and each that comes back is announced as recovered. The
 board keeps at most `max_sessions` (20,000) sessions: a new session that finds it full makes room, as each sweep does
 past nine tenths of the bound, by dropping the sessions that ended or went gone, then those that stalled, then live
-ones, the longest silent first, down to nine tenths. A flood of fresh session ids, each heard from once and live for two
-hours, would otherwise keep every new session off the board; an agent whose session was dropped while live starts a new
+ones, down to nine tenths; of each, those of the member holding the most go first, each member's longest silent first,
+so that no member loses a session while another holds more. A flood of fresh session ids, each heard from once and live
+for two hours, would otherwise keep every new session off the board; and were live ones dropped longest silent first
+whoever held them, it would drop every teammate's agent deep in a long tool call, whose reservations would stop
+blocking: it costs the flooder's own sessions instead. An agent whose session was dropped while live starts a new
 one when it next reports, and the repository's stats count such sessions (`evicted`). Past `max_dormant_claims` (20,000)
 claims with no live session, each sweep forgets up to 200 of those that no longer listen (quiet for longer than
 `dormant_for`), those holding no intent first, then those that do, each quiet longest first, announced in one

@@ -207,7 +207,8 @@ refusal and alert per repository.
 ```
 
 `max_sessions` and `max_dormant_claims` bound what the server keeps, whatever its clients send: past the first, a new
-agent session makes room by dropping those silent longest, ended ones first and live ones last, and past the second the
+agent session makes room by dropping ended sessions first and live ones last, and of each those of the member holding
+the most first, silent longest first, so that one member's flood of sessions costs their own, and past the second the
 claims with no agent running that were quiet longest are forgotten, once they have been quiet for `dormant_for`, those
 holding an intent last. Both default to 20,000, twenty times the scale intagent is meant for; a server older than these
 settings refuses a team file that sets one. Not settings: one claim's changed files may take 512 KB on the server, and

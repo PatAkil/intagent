@@ -90,17 +90,21 @@ func (b *Board) trimQuiet(quiet []*session, keep int) bool {
 func (b *Board) sessionRoom() int { return b.cfg.MaxSessions - max(1, b.cfg.MaxSessions/10) }
 
 // evictSessions drops, when the board holds more than sessionRoom sessions,
-// those that went silent longest (by when each was last heard from, then
-// key) until it holds sessionRoom: first those that ended or are gone, then
-// those that stalled, which the dashboard shows and whose agents may yet
-// come back, and only then live ones. A flood of fresh session ids fills the
-// board with live sessions, each heard from once; were they kept, no new
-// session would find room until they went gone, two hours on. An agent whose
-// session was dropped while live starts a new one when it next reports, and
-// may be told again what it was told; each is counted in its repository's
-// stats (Stats.Evicted). Hook calls it when a new session finds the board
-// full, and Sweep when the board is past sessionRoom. It reports whether it
-// dropped any.
+// enough of them that it holds sessionRoom: first those that ended or are
+// gone, then those that stalled, which the dashboard shows and whose agents
+// may yet come back, and only then live ones; and of each, those of the
+// member holding the most first, each member's silent longest first
+// (fairOrder). A flood of fresh session ids fills the board with live
+// sessions, each heard from once; were they kept, no new session would find
+// room until they went gone, two hours on. Were live ones dropped silent
+// longest first whoever held them, the flood would cost each teammate whose
+// agent is deep in a long tool call its session, and a reservation it holds
+// would stop blocking; it costs the flooding member's own sessions instead.
+// An agent whose session was dropped while live starts a new one when it
+// next reports, and may be told again what it was told; each is counted in
+// its repository's stats (Stats.Evicted). Hook calls it when a new session
+// finds the board full, and Sweep when the board is past sessionRoom. It
+// reports whether it dropped any.
 func (b *Board) evictSessions(now time.Time) bool {
 	keep := b.sessionRoom()
 	if len(b.sessions) <= keep {
@@ -118,13 +122,7 @@ func (b *Board) evictSessions(now time.Time) bool {
 		}
 	}
 	for i, tier := range tiers {
-		slices.SortFunc(tier, func(x, y *session) int {
-			if c := x.LastSeen.Compare(y.LastSeen); c != 0 {
-				return c
-			}
-			return strings.Compare(x.Key, y.Key)
-		})
-		for _, s := range tier {
+		for _, s := range fairOrder(tier) {
 			if len(b.sessions) <= keep {
 				return true
 			}
@@ -135,6 +133,48 @@ func (b *Board) evictSessions(now time.Time) bool {
 		}
 	}
 	return true
+}
+
+// fairOrder orders sessions to be let go of in fair share: each next from
+// the member holding the most of those not let go of yet, that member's
+// silent longest (by when each was last heard from, then key), and between
+// members holding as many, the session silent longest. Let go of in this
+// order, a member never loses a session while another holds more of them,
+// so a flood of one member's sessions costs that member's own down to as
+// many as the next member holds before it costs anyone else one. It
+// reorders sessions in place and returns them.
+func fairOrder(sessions []*session) []*session {
+	slices.SortFunc(sessions, func(x, y *session) int {
+		if c := x.LastSeen.Compare(y.LastSeen); c != 0 {
+			return c
+		}
+		return strings.Compare(x.Key, y.Key)
+	})
+	// A session's height is how many of its member's sessions are left when
+	// its turn comes, itself included. Highest first, and in the order of
+	// silence among sessions of one height, is fair share; a counting sort
+	// keeps that order in one pass.
+	height := make([]int, len(sessions))
+	left, most := map[string]int{}, 0
+	for i, s := range slices.Backward(sessions) {
+		left[s.Member]++
+		height[i] = left[s.Member]
+		most = max(most, height[i])
+	}
+	next := make([]int, most+1) // where the next session of each height goes
+	for _, h := range height {
+		next[h]++
+	}
+	for h, at := most, 0; h > 0; h-- {
+		next[h], at = at, at+next[h]
+	}
+	order := make([]*session, len(sessions))
+	for i, s := range sessions {
+		order[next[height[i]]] = s
+		next[height[i]]++
+	}
+	copy(sessions, order)
+	return sessions
 }
 
 // full reports whether ev comes from a session the board does not have and

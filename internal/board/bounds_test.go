@@ -88,9 +88,9 @@ func TestAFullBoardMakesRoomInOrder(t *testing.T) {
 	}
 	h.advance(h.b.cfg.StallAfter)
 	var gone []string
-	for i := range 8 {
+	for i := range 8 { // each of a member of their own, holding fewer than w
 		before := maps.Clone(h.b.sessions)
-		h.at(KindPrompt, "n", fmt.Sprint("n", i), fmt.Sprint("n", i))
+		h.at(KindPrompt, fmt.Sprint("n", i), "w", fmt.Sprint("n", i))
 		for k, s := range before {
 			if h.b.sessions[k] == nil {
 				gone = append(gone, s.ID)
@@ -102,6 +102,85 @@ func TestAFullBoardMakesRoomInOrder(t *testing.T) {
 	}
 	if n := h.b.statsFor(repo).Evicted; n != 2 {
 		t.Errorf("%d live sessions counted evicted, want 2", n)
+	}
+}
+
+// Among sessions in the same state, a full board makes room from the member
+// holding the most of them first, and only between members holding as many
+// from the session silent longest: a member never loses a session while
+// another holds more. Here b's sessions are the oldest, but a holds more.
+func TestAFullBoardMakesRoomFromWhoeverHoldsMost(t *testing.T) {
+	h := newHarness(t, func(c *Config) { c.MaxSessions = 10 })
+	for _, ms := range []struct {
+		member string
+		n      int
+	}{{"b", 3}, {"a", 5}, {"c", 1}} {
+		for i := range ms.n {
+			h.advance(time.Second)
+			h.at(KindPrompt, ms.member, "w", fmt.Sprint(ms.member, i))
+		}
+	}
+	var gone []string
+	for i := range 8 {
+		h.advance(time.Second)
+		before := maps.Clone(h.b.sessions)
+		h.at(KindPrompt, fmt.Sprint("n", i), "w", fmt.Sprint("n", i))
+		for k, s := range before {
+			if h.b.sessions[k] == nil {
+				gone = append(gone, s.ID)
+			}
+		}
+	}
+	if want := []string{"a0", "a1", "b0", "a2", "b1", "a3", "b2"}; !slices.Equal(gone, want) {
+		t.Fatalf("new sessions made room from %v, want %v", gone, want)
+	}
+	if n := h.b.statsFor(repo).Evicted; n != 7 {
+		t.Errorf("%d live sessions counted evicted, want 7", n)
+	}
+}
+
+// A flood of one member's fresh session ids into a full board costs that
+// member's own sessions, not teammates': alice's reservation keeps blocking
+// while she runs a long command, and no honest agent's session is dropped.
+// Before, the board let go of the live sessions silent longest, which were
+// the honest agents deep in tool calls: in the scale re-attack, 19,500 fresh
+// ids against a board of 20,000 dropped alice's and all 999 other honest
+// agents' sessions, and bob's retry went through alice's reservation.
+func TestAFloodCostsOnlyTheFloodersSessions(t *testing.T) {
+	h := newHarness(t, func(c *Config) { c.MaxSessions = 200 })
+	h.hook(KindPrompt, "alice", "a1")
+	h.declare("alice", ModeExclusive, "Retry rework", "svc/pay/**")
+	if _, err := h.b.Hook(h.now, HookEvent{Kind: KindToolStart, Member: "alice", Agent: AgentClaudeCode, SessionID: "a1",
+		Where: whereOf("alice"), Tool: "Bash", ToolUseID: "long"}); err != nil {
+		t.Fatal(err)
+	}
+	honest := []string{sessionKey("alice", AgentClaudeCode, "a1")}
+	for i := range 40 { // ten teammates, four agents each, heard from since
+		h.advance(100 * time.Millisecond)
+		m, wt := fmt.Sprint("m", i%10), fmt.Sprint("w", i)
+		h.at(KindPrompt, m, wt, wt)
+		honest = append(honest, sessionKey(m, AgentClaudeCode, wt))
+	}
+	// Fresh ids a millisecond apart from 50 worktrees, each live, waiting,
+	// for IdleAfter: two and a half boards' worth.
+	for i := range 500 {
+		h.advance(time.Millisecond)
+		h.at(KindStop, "ci", fmt.Sprint("ci", i%50), fmt.Sprint("job", i))
+	}
+	h.advance(time.Second)
+	for try := range 2 {
+		if res := h.hook(KindPreEdit, "bob", "b1", "svc/pay/retry.go"); res.Decision != DecisionRefuse {
+			t.Fatalf("bob's edit %d inside alice's reservation: %s, want deny", try+1, res.Decision)
+		}
+	}
+	for _, k := range honest {
+		if h.b.sessions[k] == nil {
+			t.Errorf("session %s was dropped for the flood", k)
+		}
+	}
+	// Every session dropped was the flood's, each live and counted.
+	if evicted, created := h.b.statsFor(repo).Evicted, 1+40+500+1; evicted == 0 || evicted != created-len(h.b.sessions) {
+		t.Errorf("%d sessions counted evicted; %d created, %d kept", evicted, created, len(h.b.sessions))
 	}
 }
 
