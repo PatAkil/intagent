@@ -19,23 +19,22 @@ import (
 	"github.com/patakil/intagent/internal/fsutil"
 )
 
-// The board lives in memory, and is saved to the data directory in two
-// parts. Most of what it holds its agents send it again: a worktree's changed
-// files at its next scan, a session at its next hook, and what a session was
-// told or a claim alerted of only keeps it from being told twice. What they
-// cannot send again (the claims' intents, the notes in their inboxes and in
-// members' mailboxes, the feed and the stats), and what reservations need
-// before they do (the sessions keeping them live, and which sessions ended
-// and which claims went since the whole save before the last, which a
-// restart restores if the last is damaged): board.Durable, a small part of
-// it, saved soon after it changes, in board.json.durable. The whole board is
-// saved in board.json at most every bulkSaveEvery while it changes, and at a
-// clean stop. So a crash loses up to bulkSaveEvery of files, of
-// other sessions and of what agents were told, which they send again or
-// which at worst tells them something again, and about a second of the
-// rest (docs/design.md says exactly what). Both files are compressed with
-// gzip, and a restart restores the board from board.json and then the
-// durable part, if it was saved after it.
+// The board lives in memory, and is saved to the data directory in two parts.
+// Most of what it holds its agents send it again: a worktree's changed files at
+// its next scan, a session at its next hook, and what a session was told or a
+// claim alerted of only keeps it from being told twice. What they cannot send
+// again (the claims' intents, the notes in their inboxes and in members'
+// mailboxes, the feed and the stats), and what reservations need before they do
+// (the sessions keeping them live, and which sessions ended and which claims
+// went since the whole save before the last, which a restart restores if the
+// last is damaged): board.Durable, a small part of it, saved soon after it
+// changes, in board.json.durable. The whole board is saved in board.json at
+// most every bulkSaveEvery while it changes, and at a clean stop. So a crash
+// loses up to bulkSaveEvery of files, of other sessions and of what agents were
+// told, which they send again or which at worst tells them something again, and
+// about a second of the rest (docs/design.md says exactly what). Both files are
+// compressed with gzip, and a restart restores the board from board.json and
+// then the durable part, if it was saved after it.
 
 const (
 	// The whole board is saved at most every bulkSaveEvery while it changes.
@@ -103,7 +102,8 @@ type saves struct {
 	cause    string
 	nextLog  time.Time
 	// noted is when the persister last noted that the server runs
-	// (aliveIfDue); only it reads and writes it.
+	// (aliveIfDue); only its loop that saves the durable part reads and
+	// writes it.
 	noted time.Time
 }
 
@@ -506,14 +506,30 @@ func (a abandonable) Write(p []byte) (int, error) {
 	}
 }
 
-// persist saves the board while the server runs, as saves are due, and
-// notes every aliveEvery that it runs. Once the server starts to stop, it
-// abandons a save in flight and returns: Serve saves once more when the
-// requests are done.
+// persist saves the board while the server runs, as saves are due: its
+// durable part on one goroutine, which also notes every aliveEvery that the
+// server runs, and the whole board on another, so that a whole save, which
+// takes a second or more on a large board and longer on a slow disk, does
+// not hold up the durable part's. Each writes its own files, and each holds
+// the board's lock only to copy what it saves. Once the server starts to
+// stop, they abandon a whole save in flight and return: Serve saves once
+// more when the requests are done.
 func (s *Server) persist(ctx context.Context) {
 	if s.dataDir == "" {
 		return
 	}
+	whole := make(chan struct{})
+	go func() {
+		defer close(whole)
+		s.every(ctx, func() time.Duration { return s.saveBoardIfDue(s.closing) })
+	}()
+	s.every(ctx, func() time.Duration { return min(s.saveDurableIfDue(), s.aliveIfDue()) })
+	<-whole
+}
+
+// every calls look a minSaveEvery after it starts, and then as long after
+// each call as it asks, until the server starts to stop.
+func (s *Server) every(ctx context.Context, look func() time.Duration) {
 	t := time.NewTimer(minSaveEvery)
 	defer t.Stop()
 	for {
@@ -523,18 +539,13 @@ func (s *Server) persist(ctx context.Context) {
 		case <-s.closing:
 			return
 		case <-t.C:
-			t.Reset(min(s.saveIfDue(s.closing), s.aliveIfDue()))
+			t.Reset(look())
 		}
 	}
 }
 
-// saveIfDue saves the board's durable part, and then the whole board, if
-// it changed and a save is due, and returns how long until it should look
-// again. The board's save is abandoned once stop is closed.
-func (s *Server) saveIfDue(stop <-chan struct{}) time.Duration {
-	return min(s.saveDurableIfDue(), s.saveBoardIfDue(stop))
-}
-
+// saveDurableIfDue saves the board's durable part if it changed and a save
+// is due, and returns how long until it should look again.
 func (s *Server) saveDurableIfDue() time.Duration {
 	if wait := s.durable.wait(s.clock(), durableSoon, durableEvery); wait > 0 {
 		return wait
@@ -545,6 +556,9 @@ func (s *Server) saveDurableIfDue() time.Duration {
 	return max(minSaveEvery, s.durable.wait(s.clock(), durableSoon, durableEvery))
 }
 
+// saveBoardIfDue saves the whole board if it changed and a save is due, and
+// returns how long until it should look again. The save is abandoned once
+// stop is closed.
 func (s *Server) saveBoardIfDue(stop <-chan struct{}) time.Duration {
 	if wait := s.saves.wait(s.clock(), bulkSaveEvery, time.Hour); wait > 0 {
 		return wait

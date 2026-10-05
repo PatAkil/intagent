@@ -23,6 +23,14 @@ import (
 	"github.com/patakil/intagent/internal/fsutil"
 )
 
+// saveIfDue looks as the persister's two loops do (persist), the durable
+// part's first, and returns how long until either should look again: tests
+// drive the persister with it, on a clock they move. The whole board's save
+// is abandoned once stop is closed.
+func (s *Server) saveIfDue(stop <-chan struct{}) time.Duration {
+	return min(s.saveDurableIfDue(), s.saveBoardIfDue(stop))
+}
+
 // handClock is the server's request clock in a test, moved by hand.
 type handClock struct {
 	mu  sync.Mutex
@@ -801,6 +809,62 @@ func TestACrashKeepsAnIntentDeclaredASecondBefore(t *testing.T) {
 		SessionID: "b1", Where: board.Where{Repo: repo, Host: "h", Worktree: "/w/bob"}})
 	if err != nil || !strings.Contains(res.Context, "svc is mine today") {
 		t.Errorf("bob's next session, after the crash, was told %q (%v)", res.Context, err)
+	}
+}
+
+// The durable part is saved while the whole board is being written: a
+// reservation made during a whole save, which takes a second or more on a
+// large board and longer on a slow disk, survives a crash before that save
+// ends. Here the whole save runs until the test ends, and the server is
+// killed, its data directory copied and restored, until the reservation
+// blocks bob there. Before, one goroutine saved both, the durable part
+// waited for the whole save, and the reservation was lost: from a whole
+// save's copy of the board until its rename and a second after, nothing of
+// the board reached the disk.
+func TestADurablePartIsSavedWhileTheWholeBoardIsWritten(t *testing.T) {
+	ts, _, _ := persistServer(t)
+	ts.Server.clock = time.Now // the persister's timers run on the wall clock
+	writing, killed := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	ts.saveFile = func(path string, perm fs.FileMode, fill func(io.Writer) error) error {
+		if filepath.Base(path) != "board.json" {
+			return fsutil.WriteFileFunc(path, perm, fill)
+		}
+		once.Do(func() { close(writing) })
+		<-killed // the whole save is never renamed in
+		return errors.New("killed")
+	}
+	stop := serveTest(t, ts)
+	defer func() { close(killed); _ = stop() }()
+	ts.do(t, http.MethodPost, "/v1/hook", "alice", hookEv(board.KindPrompt, "alice", "a1"), nil)
+	select {
+	case <-writing:
+	case <-time.After(10 * time.Second):
+		t.Fatal("no whole save started")
+	}
+	if _, err := ts.Board().Declare(ts.now(), board.DeclareRequest{Member: "alice", Where: where("alice"),
+		Patterns: []string{"svc/**"}, Mode: board.ModeExclusive}); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+		b := ts.killed(t).Board()
+		var got []board.Decision
+		for range 2 {
+			ev := hookEv(board.KindPreEdit, "bob", "b1", "svc/a.go")
+			ev.Member = "bob"
+			res, err := b.Hook(ts.now(), ev)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got = append(got, res.Decision)
+		}
+		if slices.Equal(got, []board.Decision{board.DecisionRefuse, board.DecisionRefuse}) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("10 seconds into a whole save, a crash loses the reservation alice made during it: bob's edit "+
+				"inside it, and his retry: %v", got)
+		}
 	}
 }
 

@@ -257,8 +257,9 @@ internal/mcp           a minimal stdio MCP server and intagent's tools
 internal/web           the dashboard, embedded
 ```
 
-The server keeps the board in memory behind one mutex, and a goroutine of its own saves it in two atomic snapshots
-(write, fsync, rename), compressed with gzip at its fastest. Most of what the board holds its agents send it again: a
+The server keeps the board in memory behind one mutex, and saves it in two atomic snapshots (write, fsync, rename),
+compressed with gzip at its fastest, each on a goroutine of its own, so that the whole board's save, which takes a
+second or more on a large board, does not hold up the other's. Most of what the board holds its agents send it again: a
 worktree's changed files at its next scan, a session at its next hook, and what a session was told or a claim alerted of
 only keeps it from being told twice. What they cannot send again is small: the claims' intents, the notes in their
 inboxes and in members' mailboxes, the feed and the stats, a megabyte or two of a board of a hundred. Some of what they
@@ -288,7 +289,8 @@ hour, where saving the whole board every few seconds wrote 20 to 37 GB.
 What an unclean stop (a crash, or a clean stop whose final save failed) loses, then:
 
 - about a second of intents, notes and mail; of the sessions that keep reservations live starting, moving, ending and
-  going into or out of tool calls; and of sessions ending and claims being released or forgotten. More while saves fail.
+  going into or out of tool calls; and of sessions ending and claims being released or forgotten; while the whole board
+  is being saved too. More while saves fail.
 - up to 30 seconds of the feed and the stats, and of when the sessions that keep reservations live were last heard from:
   such an agent that has gone silent is announced stalled up to 30 seconds early.
 - up to 5 minutes of changed files. An agent at work sends them again at its next scan, at the end of its next tool call
