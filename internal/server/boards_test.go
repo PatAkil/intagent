@@ -860,6 +860,38 @@ func TestAgentBoardTakesTheSlot(t *testing.T) {
 	}
 }
 
+// An agent's request for the text whose client gives up while it waits for
+// the slot lets go of its place: it neither reads the board for nobody, nor
+// keeps the builds and repository lists that wait behind it waiting longer.
+// Before, every such request still read the board once the slot came free.
+func TestAgentBoardLetsGoOfRequestsAbandoned(t *testing.T) {
+	ts := newTestServer(t)
+	ts.do(t, "POST", "/v1/hook", "alice", hookEv(board.KindPostEdit, "alice", "a1", "x/y.go"), nil)
+	ts.boards.slot <- struct{}{} // a build reading
+	w := where("bob")
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequestWithContext(ctx, http.MethodGet,
+		"/v1/board?format=text&limit=20&repo="+repo+"&host="+w.Host+"&worktree="+w.Worktree, nil)
+	rec := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ts.handleAgentBoard(rec, req, repo)
+	}()
+	cancel() // the client gives up
+	select {
+	case <-done:
+		<-ts.boards.slot
+	case <-time.After(10 * time.Second):
+		<-ts.boards.slot
+		<-done
+		t.Fatal("a request its client gave up on still waited for the slot")
+	}
+	if rec.Body.Len() != 0 {
+		t.Errorf("the request its client gave up on was answered:\n%s", rec.Body)
+	}
+}
+
 // The JSON of the builds being sent uncompressed is counted once per build,
 // however many requests send it, and only past the small size.
 func TestPlainAnswersBudget(t *testing.T) {

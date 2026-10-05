@@ -344,7 +344,8 @@ second, and cannot take the places of real repositories and leave their dashboar
 repository list (`/v1/repos`), which every dashboard asks for on the same 15-second timer and which walks every claim
 and session on the board under its lock, is shared and paced the same way, so tabs opened together cost one read of it
 rather than one each. An agent's text (`team_board`) is the caller's own, so it is not shared, but it waits for the
-same turn as builds: agents asking at once keep at most one such read ahead of a hook.
+same turn as builds: agents asking at once keep at most one such read ahead of a hook, and one whose client
+gives up while it waits lets go of its turn.
 
 The dashboard follows a repository through a server-sent event stream. Each activity is encoded once, and the server
 keeps the last 1024 publishes, up to 16 MB of them, in one ring that every stream reads at its own pace, so publishing

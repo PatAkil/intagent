@@ -790,7 +790,9 @@ func (s *Server) handleAgentBoard(w http.ResponseWriter, r *http.Request, repo s
 	// reads them, and takes the builds' slot: agents asking at once then
 	// keep at most one such read ahead of a hook.
 	var text string
-	s.boards.reading(func() { text = s.board.AgentText(s.now(), where, memberFrom(r), limit) })
+	if err := s.boards.reading(r.Context(), func() { text = s.board.AgentText(s.now(), where, memberFrom(r), limit) }); err != nil {
+		return // its client has gone
+	}
 	writeText(w, text+"\n")
 }
 

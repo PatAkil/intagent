@@ -153,11 +153,21 @@ func (c *boardBuilds) repoList(ctx context.Context) (*boardBuild, error) {
 }
 
 // reading runs read, a read of a whole repository or of the whole board under
-// its lock, once no build or other such read is reading.
-func (c *boardBuilds) reading(read func()) {
-	c.slot <- struct{}{}
+// its lock, once no build or other such read is reading, unless ctx ends
+// first: a request whose client has gone does not keep its place, nor read
+// the board for nobody ahead of the builds that wait behind it.
+func (c *boardBuilds) reading(ctx context.Context, read func()) error {
+	select {
+	case c.slot <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 	defer func() { <-c.slot }()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	read()
+	return nil
 }
 
 // join returns a build of repo's board, or of the list for allRepos, that
