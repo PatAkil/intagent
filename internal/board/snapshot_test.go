@@ -16,12 +16,13 @@ import (
 	"unsafe"
 )
 
-// Snapshots share the claims' footprints and alerts, and what sessions were
-// told, with the board, and are encoded after the lock is released, so each
-// is copied on write. Eight writers change footprints in every way a hook can
-// (a new file, a newer touch, an area that moves, a footprint replaced), and
-// are told of each other's changes, while snapshots are taken and restored;
-// under -race the detector must find nothing.
+// Snapshots share what claims and sessions hold with the board, and are
+// encoded after the lock is released, so each is copied on write, or
+// replaced. Eight writers change footprints in every way a hook can (a new
+// file, a newer touch, an area that moves, a footprint replaced, directories
+// added whole), are told of each other's changes and hear them, and declare
+// and release intents, while snapshots are taken and restored; under -race
+// the detector must find nothing.
 func TestSnapshotsShareFootprintsWithoutRaces(t *testing.T) {
 	shareFootprintsUnderLoad(t, "")
 }
@@ -30,11 +31,12 @@ func TestSnapshotsShareFootprintsWithoutRaces(t *testing.T) {
 // TestSnapshotSharingControl play the control in a process of its own.
 const raceControl = "INTAGENT_TEST_RACE_CONTROL"
 
-// The control for the test above: there, a claim that forgot its footprint
-// or its alerts were shared, or a session what it was told, and so changed
-// it in place as a missed copy on write would, must make the race detector
-// report it. Otherwise the test above could not fail. The control runs in a
-// process of its own, which must fail.
+// The control for the test above: there, a claim that forgot its footprint,
+// its alerts, its counts of what it was told or its inbox were shared, or a
+// session what it was told, and so changed it in place as a missed copy on
+// write would, must make the race detector report it. Otherwise the test
+// above could not fail. The control runs in a process of its own, which must
+// fail.
 func TestSnapshotSharingControl(t *testing.T) {
 	if forget := os.Getenv(raceControl); forget != "" {
 		shareFootprintsUnderLoad(t, forget)
@@ -43,7 +45,8 @@ func TestSnapshotSharingControl(t *testing.T) {
 	if !raceEnabled {
 		t.Skip("the control needs the race detector (go test -race)")
 	}
-	for forget, writer := range map[string]string{"footprint": "(*claim).putTouch", "alerted": "(*claim).alert", "acked": "(*session).ack"} {
+	for forget, writer := range map[string]string{"footprint": "(*claim).putTouch", "alerted": "(*claim).alert",
+		"told": "(*claim).setTold", "inbox": "(*Board).deliverInbox", "acked": "(*session).ack"} {
 		cmd := exec.Command(os.Args[0], "-test.run=^TestSnapshotSharingControl$", "-test.count=1")
 		cmd.Env = append(os.Environ(), raceControl+"="+forget)
 		out, err := cmd.CombinedOutput()
@@ -55,8 +58,8 @@ func TestSnapshotSharingControl(t *testing.T) {
 
 // shareFootprintsUnderLoad runs eight writers against snapshots and
 // restores. With forget set, a ninth goroutine keeps clearing every claim's
-// mark that a snapshot shares its footprint, or its alerts, or every
-// session's that one shares what it was told.
+// mark that a snapshot shares its footprint, alerts, counts of what it was
+// told or inbox, or every session's that one shares what it was told.
 func shareFootprintsUnderLoad(t *testing.T, forget string) {
 	h := newHarness(t)
 	var wg sync.WaitGroup
@@ -75,7 +78,15 @@ func shareFootprintsUnderLoad(t *testing.T, forget string) {
 				}
 				if i%10 == 9 {
 					_, _ = h.b.Hook(now, HookEvent{Kind: KindHeartbeat, Member: m, Agent: AgentCodex, SessionID: "s", Where: whereOf(m),
-						Footprint: &Footprint{Files: []PathRef{file, {Path: "q/1.go", Area: "q"}}}})
+						Footprint: &Footprint{Files: []PathRef{file, {Path: "q/1.go", Area: "q"}}, Truncated: true,
+							Dirs: []PathRef{{Path: fmt.Sprintf("gen/%d", i%3), Area: "gen"}}}})
+				}
+				switch i % 10 {
+				case 3, 4: // the same intent declared twice, then released
+					_, _ = h.b.Declare(now, DeclareRequest{Member: m, Where: whereOf(m), Summary: fmt.Sprint("step ", i),
+						Patterns: []string{"p/**"}, Mode: ModeShared})
+				case 5:
+					_, _ = h.b.Release(now, ReleaseRequest{Member: m, Where: whereOf(m)})
 				}
 			}
 		}()
@@ -97,6 +108,10 @@ func shareFootprintsUnderLoad(t *testing.T, forget string) {
 						c.fpShared = false
 					case "alerted":
 						c.alertedShared = false
+					case "told":
+						c.toldShared = false
+					case "inbox":
+						c.inboxShared = false
 					}
 				}
 				for _, s := range h.b.sessions {
@@ -149,6 +164,69 @@ func TestSnapshotCopyDoesNotGrowWithFootprints(t *testing.T) {
 	}
 	if one, many := allocs(1), allocs(500); many > one {
 		t.Fatalf("a snapshot's copy allocates %.0f times with 500 files a claim, %.0f with one", many, one)
+	}
+}
+
+// The copy a snapshot takes under the lock is of the claims and the sessions
+// alone: what it allocates grows with how many there are, not with what each
+// holds. Twenty claims that heard of each other's work, hold fifty inbox items
+// each, added a hundred directories whole and declared twenty intents, and
+// whose sessions were told of each other's files and heard their inboxes, cost
+// what twenty that did none of that cost. It copied each claim's inbox, its
+// count of what it was told of each teammate, its directories and its
+// intents: on the 2-hour board of the persist lane, 16 ms of the 20 ms the
+// lock was held for.
+func TestSnapshotCopyIsOfClaimsAndSessions(t *testing.T) {
+	const members = 20
+	copied := func(rich bool) uint64 {
+		h := newHarness(t, func(c *Config) { c.KeepActivities = 5 })
+		for m := range members {
+			member := fmt.Sprintf("m%02d", m)
+			fp := &Footprint{Files: refs(fmt.Sprintf("own/%s.go", member))}
+			if rich {
+				for f := range 30 {
+					fp.Files = append(fp.Files, PathRef{Path: fmt.Sprintf("lib/f%02d.go", f), Area: "lib"})
+				}
+				fp.Truncated = true
+				for d := range 100 {
+					fp.Dirs = append(fp.Dirs, PathRef{Path: fmt.Sprintf("gen/d%03d", d), Area: "gen"})
+				}
+			}
+			if _, err := h.b.Hook(h.now, HookEvent{Kind: KindHeartbeat, Member: member, Agent: AgentClaudeCode, SessionID: "s",
+				Where: whereOf(member), Footprint: fp}); err != nil {
+				t.Fatal(err)
+			}
+			if rich {
+				for i := range 20 {
+					h.declare(member, ModeShared, "", fmt.Sprintf("lib/p%02d/**", i))
+				}
+			}
+		}
+		if rich {
+			for m := range members {
+				member := fmt.Sprintf("m%02d", m)
+				h.hook(KindPreEdit, member, "s", "lib/f00.go", "lib/f01.go")
+				h.hook(KindPrompt, member, "s")
+			}
+		}
+		var items, told, dirs, intents int
+		for _, c := range h.b.claims {
+			items, told, dirs, intents = items+len(c.Inbox), told+len(c.Told), dirs+len(c.Dirs), intents+len(c.Intents)
+		}
+		if rich && (items < members*40 || told < members*(members-1)/2 || dirs < members*100 || intents < members*20) {
+			t.Fatalf("the claims hold %d inbox items, %d teammates told of, %d directories and %d intents: too few for the test",
+				items, told, dirs, intents)
+		}
+		if len(h.b.claims) != members || len(h.b.sessions) != members {
+			t.Fatalf("%d claims and %d sessions, want %d of each", len(h.b.claims), len(h.b.sessions), members)
+		}
+		return allocatedBy(func() { h.b.snapshotCopy(h.now) })
+	}
+	lean, rich := copied(false), copied(true)
+	t.Logf("a snapshot's copy of %d claims and sessions allocates %d bytes when they hold little, %d when they hold much",
+		members, lean, rich)
+	if rich > lean+members*64 {
+		t.Fatalf("a snapshot's copy allocates %d bytes when the claims and sessions hold much, %d when they hold little", rich, lean)
 	}
 }
 

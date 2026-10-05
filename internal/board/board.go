@@ -1109,10 +1109,7 @@ func (b *Board) alertOthers(now time.Time, c *claim, paths []PathRef) {
 			continue
 		}
 		if told != o.Told[c.ID] {
-			if o.Told == nil {
-				o.Told = map[string]int{}
-			}
-			o.Told[c.ID] = told
+			o.setTold(c.ID, told)
 		}
 		b.statsOf(c.Repo, now).Alerts++
 		b.enqueue(now, o, InboxItem{
@@ -1899,7 +1896,7 @@ func (b *Board) enqueue(now time.Time, c *claim, it InboxItem) {
 		i := evictIndex(keep)
 		keep = slices.Delete(keep, i, i+1)
 	}
-	c.Inbox = keep
+	c.Inbox, c.inboxShared = keep, false // a new slice, which no snapshot shares
 }
 
 // evictIndex picks the item a full inbox lets go of: the oldest one some
@@ -1966,6 +1963,7 @@ func (b *Board) deliverInbox(now time.Time, c *claim, s *session) string {
 		slices.Sort(next) // told in the inbox's order
 	}
 	var fresh, earlier []InboxItem
+	c.ownInbox()
 	for _, i := range next {
 		it := &c.Inbox[i]
 		if it.Shown {
@@ -2127,16 +2125,16 @@ func (b *Board) exclusiveClash(self *claim, pattern string, live liveness) (Conf
 }
 
 func upsertIntent(list []Intent, in Intent) []Intent {
-	for i := range list {
-		if list[i].Pattern == in.Pattern {
-			list[i] = in
-			return list
-		}
+	// A new slice: a snapshot may share the claim's.
+	if i := slices.IndexFunc(list, func(x Intent) bool { return x.Pattern == in.Pattern }); i >= 0 {
+		out := slices.Clone(list)
+		out[i] = in
+		return out
 	}
 	if len(list) >= maxIntents {
 		list = list[1:]
 	}
-	return append(list, in)
+	return append(slices.Clip(list), in)
 }
 
 // intentOverlaps lists other claims whose intents or changed files meet a new
@@ -2657,6 +2655,7 @@ func (b *Board) Sweep(now time.Time) {
 func (b *Board) tidy(now time.Time, c *claim, live bool) bool {
 	tidied := false
 	if len(c.Inbox) > 0 && now.Sub(c.Inbox[0].At) >= inboxTTL {
+		c.ownInbox()
 		c.Inbox = slices.DeleteFunc(c.Inbox, func(it InboxItem) bool { return now.Sub(it.At) >= inboxTTL })
 		if len(c.Inbox) == 0 {
 			c.Inbox = nil
@@ -2664,7 +2663,7 @@ func (b *Board) tidy(now time.Time, c *claim, live bool) bool {
 		tidied = true
 	}
 	if (len(c.Alerted) > 0 || len(c.Told) > 0) && !live && now.Sub(c.UpdatedAt) > b.cfg.DormantFor {
-		c.Alerted, c.alertedShared, c.Told = nil, false, nil
+		c.Alerted, c.alertedShared, c.Told, c.toldShared = nil, false, nil, false
 		tidied = true
 	}
 	return tidied
@@ -2694,12 +2693,18 @@ func (c *claim) pruneAlerted(claims map[string]*claim) bool {
 	pruned := false
 	for id := range c.Told {
 		if claims[id] == nil {
-			delete(c.Told, id)
 			pruned = true
+			break
 		}
 	}
-	if pruned && len(c.Told) == 0 {
-		c.Told = nil
+	if pruned {
+		if c.toldShared {
+			c.Told, c.toldShared = maps.Clone(c.Told), false
+		}
+		maps.DeleteFunc(c.Told, func(id string, _ int) bool { return claims[id] == nil })
+		if len(c.Told) == 0 {
+			c.Told = nil
+		}
 	}
 	dead := func(k string) bool {
 		id := alertedClaim(k)

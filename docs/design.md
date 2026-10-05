@@ -251,9 +251,10 @@ duration after it started, between 1 and 30 seconds. An unclean stop loses what 
 began, which on a large board is a few seconds' work, and more while saves fail. Go's soft memory limit is set to 85% of
 the memory limit of the server's cgroup (`serve --memory-limit` sets another, or `off` none; `GOMEMLIMIT`, if set,
 wins), so a large board's saves collect garbage harder rather than run the container out of memory. A snapshot shares
-the claims' footprints and alerts, and what each session was told, with the board, which copies one before it next
-changes it, so the lock is held only to copy the claims and sessions, and it is written to disk a claim at a time. Saves
-that fail are tried again after 1, 2, 4, 8 and 16 seconds, then every 30; the server logs the first failure, then one a
+what the claims and sessions hold with the board (footprints, alerts, inboxes, intents, what each session was told),
+which copies or replaces each before it next changes it, so the lock is held only to copy the claims' and sessions'
+records themselves: about 5 ms for 2,000 claims and 18,000 sessions. It is written to disk a claim at a time. Saves that
+fail are tried again after 1, 2, 4, 8 and 16 seconds, then every 30; the server logs the first failure, then one a
 minute, then the recovery, and `/healthz` says so. Stalled sessions are looked for on a goroutine of their own, so a
 slow or stuck disk does not delay the news. A clean stop abandons a save in flight, waits for the requests in flight,
 and saves once more; `serve` exits non-zero if that save fails. Each save keeps the snapshot it replaces as

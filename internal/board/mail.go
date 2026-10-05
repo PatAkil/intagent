@@ -85,6 +85,7 @@ func (b *Board) collectMail(now time.Time, c *claim) {
 		return
 	}
 	delete(b.mail, k)
+	c.ownInbox()
 	for _, it := range m.Items {
 		if now.Sub(it.At) < inboxTTL {
 			c.InboxSeq++

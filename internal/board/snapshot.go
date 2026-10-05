@@ -58,9 +58,9 @@ const snapshotBuffer = 256 << 10
 // WriteSnapshot serialises the board to w for persistence, and returns the
 // board's version it holds. The state is copied under the lock and encoded
 // outside it, so a large board does not hold up hooks while it is written.
-// The copy shares each claim's footprint and alerts with the board, so the
+// The copy shares what each claim and session holds with the board, so the
 // time the lock is held grows with the claims and sessions, not with the
-// files they changed. The claims, in order of ID, and the sessions, in order
+// files they changed, the news they hold or what they were told. The claims, in order of ID, and the sessions, in order
 // of key, are encoded one at a time, so the encoding takes as much memory
 // as the largest of them, not as the board: the bytes are those json.Marshal
 // gives the snapshot.
@@ -182,22 +182,41 @@ func (b *Board) snapshotCopy(now time.Time) (snapshot, uint64) {
 	return s, b.version
 }
 
-// shareFootprint copies a claim for a snapshot, deeply enough to be read
-// while the original changes, except for what the claim no longer changes
-// in place: its footprint and the touches in it (putTouch), the alerts it
-// heard (alert) and its inbox items' paths. The copy reads the claim's own.
-// Both are marked shared, so a copy put on a board copies them before it
-// changes them too.
+// shareFootprint copies a claim for a snapshot, to be read while the
+// original changes: the struct alone, for it shares what the claim holds.
+// The claim copies its footprint (putTouch), alerts (alert), counts of what
+// it was told (setTold) and inbox (ownInbox) before it next changes them in
+// place, and replaces its intents and directories rather than change them.
+// The copy marks what it shares too, so a copy put on a board copies them
+// before it changes them as well.
 func (c *claim) shareFootprint() *claim {
-	c.fpShared, c.alertedShared = true, true
+	c.fpShared, c.alertedShared, c.toldShared, c.inboxShared = true, true, true, true
 	d := *c
-	d.Intents = slices.Clone(c.Intents)
-	d.Told = maps.Clone(c.Told)     // alertOthers counts in it
-	d.Dirs = maps.Clone(c.Dirs)     // a few hundred at most
-	d.Inbox = slices.Clone(c.Inbox) // deliverInbox marks items shown
 	// The copy is not on the board: it has no indexes.
 	d.areaAt, d.sortedPaths, d.removed = nil, nil, false
 	return &d
+}
+
+// setTold notes that the claim was told of n files teammate claim id
+// changed. When a snapshot shares the counts, it changes a copy, which the
+// claim keeps.
+func (c *claim) setTold(id string, n int) {
+	switch {
+	case c.Told == nil:
+		c.Told = map[string]int{}
+	case c.toldShared:
+		c.Told = maps.Clone(c.Told)
+	}
+	c.toldShared = false
+	c.Told[id] = n
+}
+
+// ownInbox gives the claim an inbox of its own to change in place, a copy
+// of one a snapshot shares.
+func (c *claim) ownInbox() {
+	if c.inboxShared {
+		c.Inbox, c.inboxShared = slices.Clone(c.Inbox), false
+	}
 }
 
 // alert notes that the claim heard the alert k, and reports whether it had

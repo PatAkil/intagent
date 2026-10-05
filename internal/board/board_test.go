@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -1171,8 +1172,10 @@ func TestParseHelpers(t *testing.T) {
 // Snapshot copies claims and sessions to encode them outside the lock; a
 // field added later without a deep copy would be read while hooks write it.
 // A snapshot's copies share nothing the board changes in place. A claim's
-// footprint and alerts, and what a session was told, are shared, and the
-// claim or session copies each before it next changes it.
+// footprint, alerts, counts of what it was told and inbox, and what a session
+// was told, are shared, and the claim or session copies each before it next
+// changes it; a claim's intents and directories, and what a session heard,
+// are shared too, and only ever replaced.
 func TestClonesShareNothingMutable(t *testing.T) {
 	c := &claim{Intents: []Intent{{Pattern: "a/**"}}, Footprint: map[string]*touch{"a.go": {}},
 		Inbox: []InboxItem{{Paths: []string{"a"}}}, Alerted: map[string]bool{"k": true},
@@ -1190,13 +1193,10 @@ func TestClonesShareNothingMutable(t *testing.T) {
 				switch {
 				case fa.IsNil():
 					t.Errorf("%s.%s is nil in the fixture: give it a value so the test covers it", a.Type().Name(), name)
-				case name == "Footprint" || name == "Alerted" || name == "Acked":
-					if fa.Pointer() != fb.Pointer() || !c.fpShared || !c.alertedShared || !s.ackedShared {
+				case slices.Contains([]string{"Footprint", "Alerted", "Told", "Inbox", "Acked", "Intents", "Dirs", "Heard"}, name):
+					if fa.Pointer() != fb.Pointer() || !c.fpShared || !c.alertedShared || !c.toldShared || !c.inboxShared ||
+						!s.ackedShared {
 						t.Errorf("%s is copied, or not marked shared", name)
-					}
-				case name == "Heard": // replaced, never changed (hear)
-					if fa.Pointer() != fb.Pointer() {
-						t.Errorf("%s is copied", name)
 					}
 				case fa.Pointer() == fb.Pointer():
 					t.Errorf("%s.%s is shared by the clone", a.Type().Name(), name)
@@ -1216,6 +1216,15 @@ func TestClonesShareNothingMutable(t *testing.T) {
 	if len(cc.Footprint) != 1 || len(cc.Alerted) != 1 || c.fpShared || c.alertedShared || len(c.Footprint) != 2 || len(c.Alerted) != 2 {
 		t.Errorf("a change reached the maps a snapshot shares: %d files and %d alerts there, %d and %d in the claim",
 			len(cc.Footprint), len(cc.Alerted), len(c.Footprint), len(c.Alerted))
+	}
+	c.setTold("c", 2)
+	c.ownInbox()
+	c.Inbox[0].Shown = true
+	c.Intents = upsertIntent(c.Intents, Intent{Pattern: "a/**", Summary: "again"})
+	if cc.Told["c"] != 1 || cc.Inbox[0].Shown || cc.Intents[0].Summary != "" || c.toldShared || c.inboxShared ||
+		c.Told["c"] != 2 || !c.Inbox[0].Shown || c.Intents[0].Summary != "again" {
+		t.Errorf("a change reached what a snapshot shares: told %v, inbox %+v and intents %+v there; %v, %+v and %+v in the claim",
+			cc.Told, cc.Inbox, cc.Intents, c.Told, c.Inbox, c.Intents)
 	}
 	s.ack("k2")
 	if len(sc.Acked) != 1 || s.ackedShared || len(s.Acked) != 2 {

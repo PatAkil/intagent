@@ -211,13 +211,15 @@ type InboxItem struct {
 
 // claim is the unit of ownership: one member's work in one worktree.
 type claim struct {
-	ID        string            `json:"id"`
-	Repo      string            `json:"repo"`
-	Member    string            `json:"member"`
-	Host      string            `json:"host"`
-	Worktree  string            `json:"worktree"`
-	Branch    string            `json:"branch,omitempty"`
-	Task      string            `json:"task,omitempty"`
+	ID       string `json:"id"`
+	Repo     string `json:"repo"`
+	Member   string `json:"member"`
+	Host     string `json:"host"`
+	Worktree string `json:"worktree"`
+	Branch   string `json:"branch,omitempty"`
+	Task     string `json:"task,omitempty"`
+	// Intents is replaced whenever it changes, never changed in place: a
+	// snapshot shares it.
 	Intents   []Intent          `json:"intents,omitempty"`
 	Footprint map[string]*touch `json:"footprint,omitempty"`
 	// FootprintTruncated is set when git reported more files than intagent keeps.
@@ -225,16 +227,22 @@ type claim struct {
 	// Dirs are the directories the worktree added whole that its last scan
 	// named in place of the files it left out (Footprint.Dirs), each with
 	// when the board first heard of it, as far as the byte budgets leave room
-	// once its files are kept. A reconcile replaces the map.
-	Dirs  map[string]*touch `json:"dirs,omitempty"`
-	Inbox []InboxItem       `json:"inbox,omitempty"`
+	// once its files are kept. A reconcile replaces the map, and nothing
+	// changes it in place: a snapshot shares it.
+	Dirs map[string]*touch `json:"dirs,omitempty"`
+	// Inbox holds what the claim's sessions are to hear, in time order. A
+	// snapshot shares it while inboxShared is set, and ownInbox copies it
+	// before it is changed in place.
+	Inbox []InboxItem `json:"inbox,omitempty"`
 	// InboxSeq is the Seq of the last item put in the inbox.
 	InboxSeq uint64 `json:"inbox_seq,omitempty"`
 	// Alerted remembers which symmetric alerts this claim already received.
 	// Only alert adds to it.
 	Alerted map[string]bool `json:"alerted,omitempty"`
 	// Told counts, for each teammate's claim, the files Alerted remembers
-	// it was told that claim changed, which are at most maxToldPaths.
+	// it was told that claim changed, which are at most maxToldPaths. Only
+	// setTold and pruneAlerted change it, copying it first while a
+	// snapshot shares it (toldShared).
 	Told      map[string]int `json:"told,omitempty"`
 	CreatedAt time.Time      `json:"created_at"`
 	UpdatedAt time.Time      `json:"updated_at"`
@@ -254,10 +262,12 @@ type claim struct {
 	// looks at them again: a hint it and Sweep keep, not an index, which
 	// a snapshot leaves at 0 so that the claim is looked at afresh.
 	trimAfter int
-	// fpShared and alertedShared say a snapshot shares Footprint or Alerted
-	// and may still be reading it, so the map must not be changed in place:
-	// putTouch and alert copy it first, and setFootprint replaces it.
-	fpShared, alertedShared bool
+	// fpShared, alertedShared, toldShared and inboxShared say a snapshot
+	// shares Footprint, Alerted, Told or Inbox and may still be reading it,
+	// so it must not be changed in place: putTouch, alert, setTold and
+	// ownInbox copy it first, and setFootprint replaces it. A snapshot shares
+	// Intents and Dirs too, which are only ever replaced.
+	fpShared, alertedShared, toldShared, inboxShared bool
 }
 
 func claimKey(repo, member, host, worktree string) string {
