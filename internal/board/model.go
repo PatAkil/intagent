@@ -318,7 +318,8 @@ type session struct {
 	// older than the board it was taken from (RestoreDurable): what it did
 	// after the snapshot was not saved, a tool call it went into among it,
 	// so it may stay silent as long as one in a tool may (ToolStallAfter)
-	// until it next reports.
+	// until it next reports, or a claim it keeps live makes a reservation
+	// (Board.believe).
 	Unsure bool `json:"unsure,omitempty"`
 	// Pending is context from before an edit, held for an agent that only
 	// reads context after a tool has run.

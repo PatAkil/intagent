@@ -2222,6 +2222,9 @@ func (b *Board) Declare(now time.Time, r DeclareRequest) (DeclareResult, error) 
 	if len(res.Accepted) > 0 && summary != "" {
 		c.Task = summary
 	}
+	if len(res.Accepted) > 0 && mode == ModeExclusive {
+		b.believe(c)
+	}
 	c.UpdatedAt = now
 
 	for _, in := range res.Accepted {

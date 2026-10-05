@@ -340,6 +340,46 @@ func TestDoubtGoesByWhatTheSnapshotRecorded(t *testing.T) {
 	}
 }
 
+// A claim that comes to hold a reservation lets go of the doubt a restart
+// cast on the sessions that keep it live, its own and one that moved from
+// it: whether its reservation blocks is read from them as without a crash,
+// stall_after after their last hook, not tool_stall_after. A shared intent,
+// which blocks no one, leaves the doubt, which keeps a session that may be
+// in a tool call from being announced stalled.
+func TestAReservationMadeSinceARestartDoesNotInheritItsDoubt(t *testing.T) {
+	h := newHarness(t)
+	h.hook(KindPrompt, "alice", "a1")
+	h.hook(KindPrompt, "alice", "a2")
+	h.at(KindPrompt, "alice", "other", "a2") // a2 moves on, and keeps alice's first worktree live
+	h.hook(KindPrompt, "bob", "b1")
+	h.b.mu.Lock()
+	for _, x := range h.b.sessions {
+		x.Unsure = true // as a restart's doubt leaves them
+	}
+	h.b.mu.Unlock()
+	h.declare("alice", ModeExclusive, "svc", "svc/**")
+	h.declare("bob", ModeShared, "web", "web/**")
+	h.advance(11 * time.Minute)
+	for _, tc := range []struct {
+		member, id string
+		state      State
+	}{
+		{"alice", "a1", StateStalled},
+		{"alice", "a2", StateStalled},
+		{"bob", "b1", StateWorking},
+	} {
+		x := h.b.sessions[sessionKey(tc.member, AgentClaudeCode, tc.id)]
+		if st := h.b.state(h.now, x); st != tc.state {
+			t.Errorf("%s's session %s, unsure %t, is %s 11 minutes after its last hook, want %s", tc.member, tc.id,
+				x.Unsure, st, tc.state)
+		}
+	}
+	h.hook(KindPreEdit, "carol", "c1", "svc/a.go") // bumped
+	if res := h.hook(KindPreEdit, "carol", "c1", "svc/a.go"); res.Decision != DecisionAllow {
+		t.Errorf("carol's retry of an edit inside the reservation of alice's silent agents: %s", res.Decision)
+	}
+}
+
 // What the durable part says ended or left the board since the last whole
 // save is bounded, should those saves fail for long: the earliest go first.
 func TestNotedEndsAreBounded(t *testing.T) {

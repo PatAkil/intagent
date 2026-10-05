@@ -432,6 +432,22 @@ func (b *Board) doubt(sessions []*session) {
 	}
 }
 
+// believe clears the doubt (session.Unsure) of the sessions that keep claim
+// c live, now that it holds a reservation: whether that blocks teammates is
+// read from them, as it is of the claims that held one at the restart, which
+// doubt left alone. Unsure is a guess made at a restart that a session
+// silent since may be in a tool call; its price was to be a stall announced
+// late, not a reservation made since, whose agent may have died with the
+// server, keeping teammates out for tool_stall_after. A session in a tool
+// call since before the crash is then announced stalled, and its
+// reservation lets teammates through after a bump, stall_after after its last
+// hook, as one is that the board does not know to be in a tool call.
+func (b *Board) believe(c *claim) {
+	for x := range b.sessionsOf(c.ID) {
+		x.Unsure = false
+	}
+}
+
 // noteEnded notes, for the durable part, that session s ended, if it did
 // (end), or that it reports again, if it ended since the oldest snapshot a
 // restore may read.

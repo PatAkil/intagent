@@ -310,6 +310,38 @@ func TestACrashKeepsAnAgentSilentAtTheSaveFromLookingStalled(t *testing.T) {
 	}
 }
 
+// A reservation made after a crash, without a hook, does not inherit the
+// doubt the restart cast on the agent of its claim. Here alice's agent
+// prompts once and dies, the server crashing a minute later; after the
+// restart alice reserves svc/** from her worktree (intagent declare -x).
+// Without the crash her agent is stalled 10 minutes after its last hook,
+// and bob's edit inside the reservation is bumped once and goes through on
+// his retry. Before, the restart left the agent unsure, which keeps it live
+// for tool_stall_after: bob and his retry were refused for 45 minutes.
+func TestACrashDoesNotKeepAReservationMadeSinceBlocking(t *testing.T) {
+	for _, crash := range []bool{false, true} {
+		t.Run(map[bool]string{false: "no crash", true: "crash"}[crash], func(t *testing.T) {
+			r := newCrashRun(t)
+			r.run(time.Second)
+			r.hook(board.KindPrompt, "alice", "a1", where("alice")) // its last hook
+			r.busy(time.Minute)
+			b := r.ts.Board()
+			if crash {
+				b = r.crash(30 * time.Second)
+			}
+			if _, err := b.Declare(r.ts.now(), board.DeclareRequest{Member: "alice", Where: where("alice"),
+				Patterns: []string{"svc/**"}, Mode: board.ModeExclusive}); err != nil {
+				t.Fatal(err)
+			}
+			r.sweep(b, 15*time.Minute)
+			if got := r.edits(b, "b1", "svc/a.go"); !slices.Equal(got, []board.Decision{board.DecisionRefuse,
+				board.DecisionAllow}) {
+				t.Errorf("bob's edit inside a reservation whose agent has been silent 16 minutes, and his retry: %v", got)
+			}
+		})
+	}
+}
+
 // A session that ended in the minutes before a crash stays ended, and the
 // claim its end released stays released: the durable part records both
 // until the whole board is saved again. Before, the session came back as
