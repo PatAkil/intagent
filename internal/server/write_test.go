@@ -31,8 +31,9 @@ func slowConns(ctx context.Context, c net.Conn) context.Context {
 // reads slowly but steadily gets everything, though the whole answer takes
 // several times writeTimeout. Each 64 KB piece reaches the slow client in
 // 20 to 60 ms, a fifth of writeTimeout or less; the whole answer takes at
-// least 3 MB at trickle's 3.2 MB/s, about 0.9 s. Both a writeJSON answer and
-// the shared board answer, written by writeBoard, are checked.
+// least 3 MB at trickle's 3.2 MB/s, about 0.9 s. A writeJSON answer, the
+// shared board answer, written by writeBoard, and a dashboard file, written
+// by a handler of the dashboard's own, are checked.
 func TestAnswersNeedProgressNotSpeed(t *testing.T) {
 	defer func(d time.Duration) { writeTimeout = d }(writeTimeout)
 	writeTimeout = 300 * time.Millisecond
@@ -53,6 +54,11 @@ func TestAnswersNeedProgressNotSpeed(t *testing.T) {
 			writeJSON(w, http.StatusOK, map[string]string{"x": big})
 		})},
 		{"board", "/v1/board?repo=" + repo, ts.Handler()},
+		{"dashboard", "/app.js", newTestServer(t, func(o *Options) {
+			o.Dashboard = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = io.WriteString(w, `"`+big+`"`) // as http.FileServer writes a file
+			})
+		}).Handler()},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			returned := make(chan struct{}, 2)

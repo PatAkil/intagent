@@ -345,7 +345,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /ui/login", s.handleLogin)
 	mux.HandleFunc("POST /ui/logout", s.handleLogout)
 	if s.dashboard != nil {
-		mux.Handle("GET /", s.dashboard)
+		mux.Handle("GET /", withProgress(s.dashboard))
 	}
 	return s.logRequests(mux)
 }
@@ -1016,6 +1016,28 @@ type progressWriter struct {
 func progress(w http.ResponseWriter) progressWriter {
 	return progressWriter{w: w, rc: http.NewResponseController(w)}
 }
+
+// withProgress gives what h writes the deadline the server's own answers
+// have (progressWriter): the dashboard's files are written by
+// http.FileServer, which knows nothing of it, and a client that requested
+// one and stopped reading held its handler and its connection, busy, for as
+// long as TCP kept the connection up.
+func withProgress(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h.ServeHTTP(progressResponse{ResponseWriter: w, p: progress(w)}, r)
+	})
+}
+
+// progressResponse writes through a progressWriter.
+type progressResponse struct {
+	http.ResponseWriter
+	p progressWriter
+}
+
+func (r progressResponse) Write(b []byte) (int, error) { return r.p.Write(b) }
+
+// Unwrap lets http.ResponseController reach the connection's writer.
+func (r progressResponse) Unwrap() http.ResponseWriter { return r.ResponseWriter }
 
 func (p progressWriter) Write(b []byte) (int, error) {
 	n := 0
