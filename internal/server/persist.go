@@ -24,21 +24,26 @@ import (
 // files at its next scan, a session at its next hook, and what a session was
 // told or a claim alerted of only keeps it from being told twice. What they
 // cannot send again (the claims' intents, the notes in their inboxes and in
-// members' mailboxes, the feed and the stats: board.Durable) is a small part
-// of it, saved soon after it changes, in board.json.durable. The whole board
-// is saved in board.json at most every bulkSaveEvery while it changes, and at
-// a clean stop. So a crash loses up to bulkSaveEvery of files, liveness and
-// what agents were told, which they send again or which at worst tells them
-// something again, and about a second of intents and notes. Both files are
-// compressed with gzip, and a restart restores the board from board.json and
-// then the durable part, if it was saved after it.
+// members' mailboxes, the feed and the stats), and what reservations need
+// before they do (the sessions keeping them live, and which sessions ended
+// and which claims went since the last whole save): board.Durable, a small
+// part of it, saved soon after it changes, in board.json.durable. The whole
+// board is saved in board.json at most every bulkSaveEvery while it changes,
+// and at a clean stop. So a crash loses up to bulkSaveEvery of files, of
+// other sessions and of what agents were told, which they send again or
+// which at worst tells them something again, and about a second of the
+// rest (docs/design.md says exactly what). Both files are compressed with
+// gzip, and a restart restores the board from board.json and then the
+// durable part, if it was saved after it.
 
 const (
 	// The whole board is saved at most every bulkSaveEvery while it changes.
 	bulkSaveEvery = 5 * time.Minute
-	// The durable part is saved within durableSoon of a change to an intent,
-	// a note or the mail, and within durableEvery of any other change to it:
-	// the feed, the stats and the seq, which every hook moves on.
+	// The durable part is saved within durableSoon of a change to what its
+	// digest covers (board.Durable.Kept: intents, notes, mail, ends, and the
+	// sessions keeping reservations live), and within durableEvery of any
+	// other change to it: the feed, the stats, the seq and when sessions were
+	// last heard from, which every hook moves on.
 	durableSoon  = time.Second
 	durableEvery = 30 * time.Second
 	// Either is saved no sooner than saveCost times its last save's duration
@@ -234,10 +239,11 @@ func (s *Server) load() error {
 		return nil
 	}
 	s.removeTemps()
-	if err := s.loadBoard(s.lastAlive()); err != nil {
+	stopped := s.lastAlive()
+	if err := s.loadBoard(stopped); err != nil {
 		return err
 	}
-	return s.loadDurable()
+	return s.loadDurable(stopped)
 }
 
 // loadBoard restores the board from its snapshot, or the one saved before
@@ -283,11 +289,12 @@ func (s *Server) loadBoard(stopped time.Time) error {
 }
 
 // loadDurable restores the durable part of the board saved after its
-// snapshot, if there is one. A damaged one is set aside as
-// board.json.durable.corrupt-<unix time>: what it held of the changes to
-// intents and notes since the snapshot is lost, which is logged. One that
-// cannot be read, or of a newer format, stops the server.
-func (s *Server) loadDurable() error {
+// snapshot, if there is one, by a server that ran until stopped, if that is
+// known. A damaged one is set aside as board.json.durable.corrupt-<unix
+// time>: what it held of the changes to intents and notes since the snapshot
+// is lost, which is logged. One that cannot be read, or of a newer format,
+// stops the server.
+func (s *Server) loadDurable(stopped time.Time) error {
 	path := s.durablePath()
 	f, err := os.Open(path)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -296,12 +303,13 @@ func (s *Server) loadDurable() error {
 	if err != nil {
 		return fmt.Errorf("%s: %w", path, err)
 	}
-	applied, err := s.board.RestoreDurable(f)
+	applied, err := s.board.RestoreDurable(f, s.now(), stopped)
 	_ = f.Close()
 	switch {
 	case err == nil:
 		if applied {
-			s.log.Info("restored the intents and notes saved after the board's snapshot", "file", path)
+			s.log.Warn("the server did not stop cleanly: restored the board's last whole save and what was saved of it since; "+
+				"files changed since the whole save come back at agents' next scans", "file", path)
 		}
 		s.durable.version = s.board.Version()
 		return nil
@@ -393,6 +401,9 @@ func (s *Server) save(stop <-chan struct{}) error {
 		return err
 	}
 	s.saves.finished(start, s.clock(), version, err, s.log)
+	if err == nil {
+		s.board.SnapshotSaved(version)
+	}
 	return err
 }
 

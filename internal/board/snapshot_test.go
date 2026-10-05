@@ -87,6 +87,15 @@ func shareFootprintsUnderLoad(t *testing.T, forget string) {
 						Patterns: []string{"p/**"}, Mode: ModeShared})
 				case 5:
 					_, _ = h.b.Release(now, ReleaseRequest{Member: m, Where: whereOf(m)})
+				case 6: // a reservation, whose sessions the durable part copies
+					_, _ = h.b.Declare(now, DeclareRequest{Member: m, Where: whereOf(m), Patterns: []string{fmt.Sprintf("r%d/**", g)},
+						Mode: ModeExclusive})
+					_, _ = h.b.Hook(now, HookEvent{Kind: KindToolStart, Member: m, Agent: AgentCodex, SessionID: "s",
+						Where: whereOf(m), Tool: "Bash"})
+				case 7: // which ends
+					_, _ = h.b.Release(now, ReleaseRequest{Member: m, Where: whereOf(m)})
+					_, _ = h.b.Hook(now, HookEvent{Kind: KindSessionEnd, Member: m, Agent: AgentCodex, SessionID: "s",
+						Where: whereOf(m)})
 				}
 			}
 		}()
@@ -124,8 +133,14 @@ func shareFootprintsUnderLoad(t *testing.T, forget string) {
 		}()
 	}
 	for i := range 60 {
-		data, _, err := h.b.Snapshot(t0)
+		data, version, err := h.b.Snapshot(t0)
 		if err != nil {
+			t.Fatal(err)
+		}
+		h.b.SnapshotSaved(version)
+		d := h.b.Durable(t0) // which shares the sessions' Heard
+		_ = d.Kept()
+		if _, err := d.WriteTo(io.Discard); err != nil {
 			t.Fatal(err)
 		}
 		if i%10 == 9 {

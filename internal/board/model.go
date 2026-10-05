@@ -308,6 +308,12 @@ type session struct {
 	Heard map[string]uint64 `json:"heard,omitempty"`
 	// Reported is the last derived state announced as an activity.
 	Reported State `json:"reported,omitempty"`
+	// Unsure marks a working session restored after a crash from a snapshot
+	// older than the board it was taken from (RestoreDurable): what it did
+	// after the snapshot was not saved, a tool call it went into among it,
+	// so it may stay silent as long as one in a tool may (ToolStallAfter)
+	// until it next reports.
+	Unsure bool `json:"unsure,omitempty"`
 	// Pending is context from before an edit, held for an agent that only
 	// reads context after a tool has run.
 	Pending string `json:"pending,omitempty"`

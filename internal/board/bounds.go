@@ -224,11 +224,12 @@ func (b *Board) forgetDormant(now time.Time, dormant int, quiet []*claim) bool {
 	return true
 }
 
-// forget takes claim c off the board to keep it within a bound, which a
-// sweep announces for many claims at once.
+// forget takes claim c off the board, released or forgotten, which its
+// caller announces, and notes that it did for the durable part (noteRemoved).
 func (b *Board) forget(c *claim) {
 	b.removeClaim(c)
 	b.unpruned[c.Repo] = true
+	b.noteRemoved(c)
 }
 
 // fitMembers forgets, of the claims among idle, which have no live session

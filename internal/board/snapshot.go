@@ -314,6 +314,7 @@ func (b *Board) RestoreAfter(r io.Reader, now, stopped time.Time) error {
 	b.alsoSessions = map[string]map[string]*session{}
 	b.memberBytes = map[string]int{}
 	b.unpruned = map[string]bool{}
+	b.ended, b.removed = map[string]uint64{}, map[string]uint64{}
 	for _, c := range s.Claims {
 		if c == nil || c.ID == "" {
 			continue
@@ -658,15 +659,17 @@ func readDelim(dec *json.Decoder, want json.Delim) error {
 	return nil
 }
 
-// creditDowntime moves the times sessions were last heard from, and went
-// into tools, on by the time the server was down: since it stopped, or
-// since the snapshot was saved if that is later, but never past now. When
-// neither is known, or the clock went back, it moves nothing.
+// creditDowntime moves the times the snapshot's sessions were last heard
+// from, and went into tools, on by the time the server was down: since it
+// stopped, or since the snapshot was saved if that is later.
 func (s *snapshot) creditDowntime(now, stopped time.Time) {
-	since := s.Saved
-	if stopped.After(since) {
-		since = stopped
-	}
+	creditDowntime(s.Sessions, now, laterOf(s.Saved, stopped))
+}
+
+// creditDowntime moves the times sessions were last heard from, and went
+// into tools, on by the time from since to now, but never past now. When
+// since is not known, or the clock went back, it moves nothing.
+func creditDowntime(sessions []*session, now, since time.Time) {
 	down := now.Sub(since)
 	if since.IsZero() || down <= 0 {
 		return
@@ -680,7 +683,7 @@ func (s *snapshot) creditDowntime(now, stopped time.Time) {
 		}
 		return t
 	}
-	for _, x := range s.Sessions {
+	for _, x := range sessions {
 		if x != nil {
 			x.LastSeen, x.ToolSince = later(x.LastSeen), later(x.ToolSince)
 		}

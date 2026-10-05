@@ -214,6 +214,12 @@ type Board struct {
 	// mail holds the notes waiting for members, by repository and member
 	// (mail.go).
 	mail map[string]*mailbox
+
+	// ended holds the sessions that ended, by key, and removed the claims
+	// taken off the board, by ID, since the board was last saved whole
+	// (SnapshotSaved), each with the board's version when it was: the
+	// durable part says so, as the snapshot does not (durable.go).
+	ended, removed map[string]uint64
 }
 
 // Option configures a Board.
@@ -253,6 +259,8 @@ func New(cfg Config, opts ...Option) *Board {
 		dropped:       map[string]uint64{},
 		unpruned:      map[string]bool{},
 		mail:          map[string]*mailbox{},
+		ended:         map[string]uint64{},
+		removed:       map[string]uint64{},
 		newID:         randomID,
 		log:           slog.New(slog.DiscardHandler),
 	}
@@ -513,7 +521,7 @@ func (b *Board) state(now time.Time, s *session) State {
 	}
 	if s.Phase == phaseWorking {
 		limit := b.cfg.StallAfter
-		if s.Tool != "" {
+		if s.Tool != "" || s.Unsure {
 			limit = b.cfg.ToolStallAfter
 		}
 		if silent > limit {
@@ -638,12 +646,13 @@ func (b *Board) Hook(now time.Time, ev HookEvent) (HookResult, error) {
 	}
 
 	res.Partial = b.work.Short()
-	s.LastSeen = now
+	s.LastSeen, s.Unsure = now, false
 	c.UpdatedAt = now
 	if is := b.state(now, s); is != was && (was == StateStalled || was == StateGone) {
 		b.record(Activity{At: now, Kind: ActivitySessionRecovered, Repo: c.Repo, Member: c.Member, ClaimID: c.ID, Session: s.ID, Agent: s.Agent})
 	}
 	s.Reported = b.state(now, s)
+	b.noteEnded(s, ev.Kind == KindSessionEnd)
 	if ev.Kind == KindSessionEnd {
 		b.releaseIfDone(now, c)
 		// And the claims it kept live from elsewhere, in ID order.
@@ -1421,8 +1430,7 @@ func (b *Board) releaseIfDone(now time.Time, c *claim) {
 }
 
 func (b *Board) deleteClaim(now time.Time, c *claim, kind ActivityKind) {
-	b.removeClaim(c)
-	b.unpruned[c.Repo] = true
+	b.forget(c)
 	b.record(Activity{At: now, Kind: kind, Repo: c.Repo, Member: c.Member, ClaimID: c.ID, Text: c.Branch})
 }
 
