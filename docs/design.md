@@ -239,22 +239,23 @@ internal/web           the dashboard, embedded
 
 The server keeps the board in memory behind one mutex. Each mutation marks the board dirty, and a goroutine of its own
 saves an atomic snapshot (write, fsync, rename) of a changed board, spaced by what the last save cost: nine times its
-duration after it started, between 1 and 30 seconds. An unclean stop loses what changed since the last save began, which
-on a large board is a few seconds' work. Go's soft memory limit is set to 85% of the memory limit of the server's cgroup
-(`serve --memory-limit` sets another, or `off` none; `GOMEMLIMIT`, if set, wins), so a large board's saves collect
-garbage harder rather than run the container out of memory. A snapshot shares the claims' footprints and alerts with the
-board, which copies one before it next changes it, so the lock is held only to copy the claims and sessions, and it is
-written to disk a claim at a time. Saves that fail are tried again after 1, 2, 4, 8 and 16 seconds, then every 30; the
-server logs the first failure, then one a minute, then the recovery, and `/healthz` says so. Stalled sessions are looked
-for on a goroutine of their own, so a slow or stuck disk does not delay the news. A clean stop abandons a save in
-flight, waits for the requests in flight, and saves once more; `serve` exits non-zero if that save fails. Each save
-keeps the snapshot it replaces as `board.json.prev`, a hard link made before the new one is renamed in. At start, the
-temporary files of saves that were killed halfway are removed, and a snapshot that is cut short or damaged is set aside
-as `board.json.corrupt-<unix time>` and `board.json.prev` put in its place and restored, or nothing: a server that will
-not start leaves every agent unchecked, and one stopped before its next save restores the same again. A snapshot of a
-newer format, or one that cannot be read, still stops it. The port opens once the board is restored: the server counts a
-hook's wait from when it reads it, so one that waited in the kernel's queue meanwhile could be decided after its client
-had gone ahead without the answer, while one refused tries again for as long as its time allows (below).
+duration after it started, between 1 and 30 seconds. An unclean stop loses what changed since the last completed save
+began, which on a large board is a few seconds' work, and more while saves fail. Go's soft memory limit is set to 85% of
+the memory limit of the server's cgroup (`serve --memory-limit` sets another, or `off` none; `GOMEMLIMIT`, if set,
+wins), so a large board's saves collect garbage harder rather than run the container out of memory. A snapshot shares
+the claims' footprints and alerts with the board, which copies one before it next changes it, so the lock is held only
+to copy the claims and sessions, and it is written to disk a claim at a time. Saves that fail are tried again after 1,
+2, 4, 8 and 16 seconds, then every 30; the server logs the first failure, then one a minute, then the recovery, and
+`/healthz` says so. Stalled sessions are looked for on a goroutine of their own, so a slow or stuck disk does not delay
+the news. A clean stop abandons a save in flight, waits for the requests in flight, and saves once more; `serve` exits
+non-zero if that save fails. Each save keeps the snapshot it replaces as `board.json.prev`, a hard link made before the
+new one is renamed in. At start, the temporary files of saves that were killed halfway are removed, and a snapshot that
+is cut short or damaged is set aside as `board.json.corrupt-<unix time>` and `board.json.prev` put in its place and
+restored, or nothing: a server that will not start leaves every agent unchecked, and one stopped before its next save
+restores the same again. A snapshot of a newer format, or one that cannot be read, still stops it. The port opens once
+the board is restored: the server counts a hook's wait from when it reads it, so one that waited in the kernel's queue
+meanwhile could be decided after its client had gone ahead without the answer, while one refused tries again for as long
+as its time allows (below).
 
 Beside its maps the board keeps indexes, rebuilt from the snapshot on a restart: each repository's claims, each claim's
 sessions and those that moved from it, and for each claim the latest change in each area it changed files in and its

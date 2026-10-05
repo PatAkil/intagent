@@ -276,19 +276,20 @@ server logs a warning when it starts and another when it ends, webhooks can send
 answers 503, with `"ok": false`, while degraded, for monitors that alert.
 
 The board lives in memory and is saved to `--data` a few seconds after it changes: each save waits nine times as long as
-the last one took, between 1 and 30 seconds, so a crash loses what changed since the last save began, a few seconds'
-work on a large board; a clean stop saves once more. When saves fail (a full disk, say), the server logs it at once and
-then once a minute, keeps every change in memory, tries again with a growing pause, and `/healthz` carries `"snapshot":
-{"ok": false, "failing_since": ..., "attempts": ..., "error": "write: no space left on device"}`, which `?strict=1`
-answers with 503 too. `serve` exits non-zero when its final save fails. Each save keeps the snapshot it replaces as
-`board.json.prev`, so the snapshot takes twice its size on disk. A `board.json` that is cut short or damaged is set
-aside as `board.json.corrupt-<unix time>`, and the server puts `board.json.prev` in its place and starts from it, or
-empty, and logs an error; one of a newer version of intagent, or one it cannot read, still stops it, so that it is not
-overwritten.
+the last one took, between 1 and 30 seconds, so a crash loses what changed since the last completed save began, a few
+seconds' work on a large board, and more while saves fail; a clean stop saves once more. When saves fail (a full disk,
+say), the server logs it at once and then once a minute, keeps every change in memory, tries again with a growing pause,
+and `/healthz` carries `"snapshot": {"ok": false, "failing_since": ..., "attempts": ..., "error": "write: no space left
+on device"}`, which `?strict=1` answers with 503 too. `serve` exits non-zero when its final save fails. Each save keeps
+the snapshot it replaces as `board.json.prev`, so the snapshot takes twice its size on disk. A `board.json` that is cut
+short or damaged is set aside as `board.json.corrupt-<unix time>`, and the server puts `board.json.prev` in its place
+and starts from it, or empty, and logs an error; one of a newer version of intagent, or one it cannot read, still stops
+it, so that it is not overwritten.
 
 A restart does not count the time the server was down as its agents' silence: agents still at work are not announced
 stalled when it comes back, and their reservations keep refusing teammates' edits. The server opens its port once the
-board is restored; hooks refused meanwhile try again while their time allows, and fail open after it.
+board is restored; hooks refused meanwhile try again while their time allows, and then let the edit go ahead unchecked,
+or refuse it under `INTAGENT_FAIL=closed`.
 
 ## Commands
 
