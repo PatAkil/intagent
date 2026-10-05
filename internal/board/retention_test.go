@@ -229,6 +229,38 @@ func TestSweepPrunesAlertsOfRemovedClaims(t *testing.T) {
 	want(b.claims[bob.ID], alice.ID)
 }
 
+// A claim forgotten to keep within a bound is pruned from the alerts other
+// claims remember, as one released is.
+func TestClaimsForgottenForABoundArePruned(t *testing.T) {
+	h := newHarness(t, func(c *Config) { c.MaxDormantClaims = 1 })
+	h.hook(KindPostEdit, "alice", "a1", "go.mod")
+	h.advance(time.Minute)
+	h.at(KindPostEdit, "bob", "w", "b1", "go.mod")
+	h.at(KindSessionEnd, "bob", "w", "b1")
+	h.advance(time.Minute)
+	h.at(KindPostEdit, "carol", "w", "c1", "x.go")
+	h.at(KindSessionEnd, "carol", "w", "c1")
+	bob := h.claimIn("bob", "w").ID
+	alice := h.b.findClaim("alice", whereOf("alice"))
+	if alice.Told[bob] != 1 {
+		t.Fatalf("alice's claim was not told of bob's change: %v", alice.Told)
+	}
+	h.advance(h.b.cfg.DormantFor + time.Hour)
+	h.hook(KindPrompt, "alice", "a1")
+	h.b.Sweep(h.now)
+	if h.b.claims[bob] != nil {
+		t.Fatal("bob's claim, quiet longest, was not forgotten")
+	}
+	for k := range alice.Alerted {
+		if alertedClaim(k) == bob {
+			t.Errorf("alice's claim still remembers %s", k)
+		}
+	}
+	if _, ok := alice.Told[bob]; ok {
+		t.Errorf("alice's claim still counts what it was told of bob's")
+	}
+}
+
 // Over a month of short-lived worktrees touching the files of claims that
 // live on, what the long-lived claims remember stays as it was after a
 // week: the alerts of claims since removed go with them. Before, they grew

@@ -81,3 +81,29 @@ func TestEditAnswersListBoundedConflicts(t *testing.T) {
 		t.Error("the conflicts listed are not in the order of the paths they are about")
 	}
 }
+
+// An answer past its bound lists every conflict that blocks before those
+// that overlap: a reservation on the last path an edit names is listed,
+// whatever came before it.
+func TestBlocksAreListedBeforeOverlaps(t *testing.T) {
+	h := newHarness(t)
+	files := make([]string, 150)
+	for i := range files {
+		files[i] = fmt.Sprintf("svc/f%03d.go", i)
+	}
+	for i := range 2 {
+		h.at(KindPostEdit, fmt.Sprintf("dev%d", i), "w", "d", files...)
+	}
+	h.hook(KindPrompt, "carol", "c1")
+	h.declare("carol", ModeExclusive, "Rework zz", "zz/**")
+	res := h.hook(KindPreEdit, "alice", "a1", append(files, "zz/x.go")...)
+	blocks := 0
+	for _, cf := range res.Conflicts {
+		if cf.Severity == SeverityBlock {
+			blocks++
+		}
+	}
+	if res.Decision != DecisionRefuse || blocks != 1 || len(res.Conflicts) != maxAnswerConflicts || res.MoreConflicts != 101 {
+		t.Fatalf("%s; listed %d conflicts, %d of them blocks, and counted %d more", res.Decision, len(res.Conflicts), blocks, res.MoreConflicts)
+	}
+}

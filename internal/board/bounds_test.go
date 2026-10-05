@@ -1,6 +1,7 @@
 package board
 
 import (
+	"bytes"
 	"fmt"
 	"maps"
 	"slices"
@@ -494,6 +495,33 @@ func TestStatsAreKeptForBoundedRepositories(t *testing.T) {
 	}
 }
 
+// Past the bound, the stats that go are those of the repository counted in
+// longest ago, not the one first counted: a repository the team still
+// works in keeps its stats, though it was the first.
+func TestStatsGoForTheRepositoryCountedInLongestAgo(t *testing.T) {
+	h := newHarness(t)
+	count := func(r string) {
+		t.Helper()
+		h.advance(time.Second)
+		w := Where{Repo: r, Host: "h", Worktree: "/w"}
+		for _, kind := range []Kind{KindPreEdit, KindSessionEnd} {
+			if _, err := h.b.Hook(h.now, HookEvent{Kind: kind, Member: "m", Agent: AgentCodex, SessionID: "s", Where: w, Tool: "Edit", Paths: refs("a.go")}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	for i := range maxStatsRepos {
+		count(fmt.Sprintf("github.com/acme/r%04d", i))
+	}
+	count("github.com/acme/r0000")
+	count("github.com/acme/new")
+	_, first := h.b.stats["github.com/acme/r0000"]
+	_, second := h.b.stats["github.com/acme/r0001"]
+	if !first || second {
+		t.Fatalf("kept the first repository's stats %v, the second's %v; want the first's, counted in since", first, second)
+	}
+}
+
 // A flood of live sessions into one worktree, a client that sends each hook
 // with a fresh session id, costs each new session a few looks at the claim's
 // sessions, not a look at all of them: none of them can be dropped, and
@@ -622,6 +650,95 @@ func TestDirectoriesCountAgainstTheByteBudgets(t *testing.T) {
 		t.Fatalf("the member's claims hold %d bytes, the largest %d; want at most %d and %d", held, most, memberBytes, claimBytes)
 	}
 	mustIndex(t, h.b, "the footprints")
+}
+
+// When the changes hooks reported are more than a footprint's bounds take,
+// as in a footprint restored under a lower max_footprint, a scan cut short
+// keeps the newest of them: those an agent made last.
+func TestAScanKeepsTheNewestHookChanges(t *testing.T) {
+	h := newHarness(t)
+	for i := range 10 {
+		h.advance(time.Second)
+		h.hook(KindPostEdit, "alice", "a1", fmt.Sprintf("x/f%02d.go", i))
+	}
+	data, _, err := h.b.Snapshot(h.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := New(Config{MaxFootprint: 4})
+	if err := b.Restore(bytes.NewReader(data), h.now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Hook(h.now, HookEvent{Kind: KindHeartbeat, Member: "alice", Agent: AgentClaudeCode, SessionID: "a1", Where: whereOf("alice"),
+		Footprint: &Footprint{Files: refs("y.go"), Truncated: true}}); err != nil {
+		t.Fatal(err)
+	}
+	got := slices.Sorted(maps.Keys(b.findClaim("alice", whereOf("alice")).Footprint))
+	if want := []string{"x/f05.go", "x/f06.go", "x/f07.go", "x/f08.go", "x/f09.go"}; !slices.Equal(got, want) {
+		t.Fatalf("the footprint keeps %v, want the five changes made last, %v", got, want)
+	}
+}
+
+// A directory a worktree added whole keeps when the board first heard of
+// it, scan after scan, as a change to a file does. A teammate's edits under
+// two such directories, of files the client found no area for, are each
+// warned of, once per directory.
+func TestDirectoriesAddedWholeKeepWhenTheyWereFirstHeardOf(t *testing.T) {
+	h := newHarness(t)
+	scan := func() {
+		t.Helper()
+		if _, err := h.b.Hook(h.now, HookEvent{Kind: KindHeartbeat, Member: "alice", Agent: AgentClaudeCode, SessionID: "a1", Where: whereOf("alice"),
+			Footprint: &Footprint{Files: refs("web/app.ts"), Truncated: true, Dirs: []PathRef{{Path: ".venv"}, {Path: "gen"}}}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	scan()
+	first := h.now
+	h.advance(time.Hour)
+	scan()
+	if at := h.b.findClaim("alice", whereOf("alice")).Dirs[".venv"].At; !at.Equal(first) {
+		t.Fatalf("the directory was first heard of at %s, and now says %s", first, at)
+	}
+	edit := func(path string) HookResult {
+		t.Helper()
+		res, err := h.b.Hook(h.now, HookEvent{Kind: KindPreEdit, Member: "bob", Agent: AgentClaudeCode, SessionID: "b1", Where: whereOf("bob"),
+			Tool: "Edit", Paths: []PathRef{{Path: path}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+	if res := edit(".venv/lib/a.py"); len(res.Conflicts) != 1 || !res.Conflicts[0].Since.Equal(first) || !strings.Contains(res.Context, ".venv") {
+		t.Fatalf("bob's edit under .venv: %q, %+v", res.Context, res.Conflicts)
+	}
+	if res := edit("gen/x.go"); !strings.Contains(res.Context, "added the directory gen whole") {
+		t.Fatalf("bob's edit under gen was told %q", res.Context)
+	}
+	if res := edit(".venv/bin/b.py"); res.Context != "" {
+		t.Fatalf("bob was warned of .venv again: %q", res.Context)
+	}
+}
+
+// A session that joins a claim holding as many that ended as it keeps
+// stays on the board, though it was heard from before all of them: it is
+// the one reporting, an agent that resumes its session in another worktree.
+func TestASessionJoiningAClaimFullOfEndedOnesStays(t *testing.T) {
+	h := newHarness(t)
+	h.at(KindPrompt, "bob", "old", "b-old")
+	h.at(KindSessionEnd, "bob", "old", "b-old")
+	h.advance(time.Minute)
+	h.at(KindPostEdit, "bob", "w", "e0", "x.go")
+	for i := range 2 * maxEndedSessions {
+		h.at(KindHeartbeat, "bob", "w", fmt.Sprint("e", i))
+		h.at(KindSessionEnd, "bob", "w", fmt.Sprint("e", i))
+	}
+	h.at(KindSessionStart, "bob", "w", "b-old")
+	if h.b.sessions[sessionKey("bob", AgentClaudeCode, "b-old")] == nil {
+		t.Fatal("the session that joined was dropped to make room")
+	}
+	if n := len(h.b.claimSessions[h.claimIn("bob", "w").ID]); n != maxEndedSessions+1 {
+		t.Fatalf("the claim keeps %d sessions, want %d that ended and the one that joined", n, maxEndedSessions)
+	}
 }
 
 // A hook that reports changes to files a full footprint holds, from git,

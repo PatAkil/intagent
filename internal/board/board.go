@@ -1396,7 +1396,8 @@ func (b *Board) conflictWith(live liveness, o *claim, p PathRef) (Conflict, bool
 	case changed:
 		cf.Severity, cf.Why, cf.Since = SeverityOverlap, "has unmerged changes to this file", t.At
 	case dir != "":
-		// It is warned of once per directory, as nearby work is once per area.
+		// It is warned of once per area, as other nearby work is, and a
+		// file the client found no area for once per directory.
 		cf.Severity, cf.Why, cf.Since = SeverityNearby, "added the directory "+dir+" whole, without listing its files", near
 		if cf.Area == "" {
 			cf.Area = dir

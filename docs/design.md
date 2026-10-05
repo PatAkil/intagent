@@ -175,7 +175,7 @@ goes in path order, and the client sends them in that order, since the server ke
 added whole whose files do not all fit goes in `dirs`, one entry for the files it leaves out. The server keeps the
 valid, distinct ones among the first 200 that its byte budgets leave room for once its files are kept, until a scan no
 longer names them, and a teammate's edit of a file under one is nearby work ("added the directory ... whole"), warned of
-once per directory, when nothing closer is.
+once per area, or once per directory for files with no area, when nothing closer is.
 
 The server replaces the claim's git-derived footprint with this list, but never loses for it, or for its bounds, a
 change a hook reported: a footprint says how long before its event was sent its scan began (`age_ms`, read up to 8

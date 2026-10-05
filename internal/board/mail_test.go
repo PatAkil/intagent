@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -25,6 +26,9 @@ func TestNoteWaitsForAMembersNextSession(t *testing.T) {
 	}
 	if acts := h.activities(ActivityNoteSent); len(acts) != 1 || !strings.Contains(acts[0].Text, "to bob, for their next session") {
 		t.Fatalf("announced %+v", acts)
+	}
+	if n := h.b.statsFor(repo).Notes; n != 1 {
+		t.Fatalf("the note held counted as %d notes", n)
 	}
 	// Saved and restored with the board, as a restart does.
 	data, _, err := h.b.Snapshot(h.now)
@@ -63,6 +67,37 @@ func TestNoteReachesAMembersFreshWorktree(t *testing.T) {
 	h.advance(time.Hour)
 	if ctx := h.at(KindSessionStart, "bob", "task2", "b2").Context; !strings.Contains(ctx, "go.mod is mine today") {
 		t.Fatalf("bob's next session, in a fresh worktree, was told:\n%s", ctx)
+	}
+}
+
+// Notes collected from a mailbox join the inbox in time order with what it
+// holds, which tidy relies on to find the oldest first; and one past
+// inboxTTL, which no session can be shown, is left out, though no sweep has
+// dropped it yet.
+func TestCollectedNotesKeepTheInboxInOrder(t *testing.T) {
+	h := newHarness(t)
+	h.at(KindPostEdit, "bob", "w", "b1", "go.mod")
+	h.at(KindSessionEnd, "bob", "w", "b1")
+	send := func(text string) {
+		t.Helper()
+		if _, err := h.b.Note(h.now, NoteRequest{Member: "alice", Where: whereOf("alice"), To: "bob", Text: text, ToMember: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	send("stale")
+	h.advance(inboxTTL - time.Hour)
+	send("fresh")
+	h.advance(time.Minute)
+	h.hook(KindPostEdit, "alice", "a1", "go.mod") // an alert, queued in bob's inbox after the notes
+	h.advance(time.Hour)
+	h.at(KindPrompt, "bob", "w", "b2")
+	var got []string
+	for _, it := range h.claimIn("bob", "w").Inbox {
+		got = append(got, it.Kind+":"+it.Text)
+	}
+	want := []string{`note:Note from alice's agent: "fresh"`, "overlap:alice's agent also changed go.mod on branch feat/alice."}
+	if !slices.Equal(got, want) {
+		t.Fatalf("bob's inbox holds %q, want %q", got, want)
 	}
 }
 
