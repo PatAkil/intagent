@@ -87,8 +87,10 @@ type Server struct {
 	// epoch names this process to readers. A dashboard that sees it change
 	// knows the server restarted, and its event numbers may have started over.
 	epoch string
-	// boards shares board answers among the requests that ask at once.
+	// boards shares board answers among the requests that ask at once, and
+	// plain bounds those sent uncompressed.
 	boards *boardBuilds
+	plain  *plainAnswers
 	// clock measures how long requests wait. It is not the board's time,
 	// which Options.Now may replace; tests replace this one too.
 	clock func() time.Time
@@ -195,7 +197,8 @@ func New(o Options) (*Server, error) {
 		return nil, err
 	}
 	s.epoch = hex.EncodeToString(epoch[:8])
-	s.boards = newBoardBuilds(s.boardView, s.boardLoad, s.log)
+	s.boards = newBoardBuilds(s.boardView, s.board.Shows, s.repoList, s.boardLoad, s.log)
+	s.plain = newPlainAnswers(plainBudget, plainSmall)
 	return s, nil
 }
 
@@ -701,7 +704,7 @@ func (s *Server) handleBoard(w http.ResponseWriter, r *http.Request) {
 		writeText(w, b.view.Text()+"\n")
 		return
 	}
-	writeBoard(w, r, b)
+	s.writeBoard(w, r, b)
 }
 
 // boardView is the view a board build reads.
@@ -730,8 +733,10 @@ func (s *Server) boardLoad() *LoadStatus {
 }
 
 // writeBoard sends a shared board answer, compressed when the client takes
-// gzip, or 304 when the client already holds an equivalent one.
-func writeBoard(w http.ResponseWriter, r *http.Request, b *boardBuild) {
+// gzip, or 304 when the client already holds an equivalent one. A large
+// answer sent uncompressed must fit the budget for those (plainAnswers), or
+// is answered 503 with Retry-After.
+func (s *Server) writeBoard(w http.ResponseWriter, r *http.Request, b *boardBuild) {
 	h := w.Header()
 	h.Set("Content-Type", "application/json")
 	h.Set("Vary", "Accept-Encoding")
@@ -744,9 +749,19 @@ func writeBoard(w http.ResponseWriter, r *http.Request, b *boardBuild) {
 		}
 	}
 	body := b.json
-	if acceptsGzip(r.Header.Get("Accept-Encoding")) {
+	if b.gz != nil && acceptsGzip(r.Header.Get("Accept-Encoding")) {
 		body = b.gz
 		h.Set("Content-Encoding", "gzip")
+	} else {
+		release, ok := s.plain.take(body)
+		if !ok {
+			h.Del("ETag")
+			h.Set("Retry-After", strconv.Itoa(plainRetry))
+			writeError(w, http.StatusServiceUnavailable,
+				"too many large board answers are being sent uncompressed: ask with Accept-Encoding: gzip, or try again in a few seconds")
+			return
+		}
+		defer release()
 	}
 	h.Set("Content-Length", strconv.Itoa(len(body)))
 	w.WriteHeader(http.StatusOK)
@@ -763,15 +778,40 @@ func (s *Server) handleAgentBoard(w http.ResponseWriter, r *http.Request, repo s
 		return
 	}
 	where := board.Where{Repo: repo, Host: q.Get("host"), Worktree: q.Get("worktree")}
-	writeText(w, s.board.AgentText(s.now(), where, memberFrom(r), limit)+"\n")
+	// It ranks the repository's claims under the board's lock, as a build
+	// reads them, and takes the builds' slot: agents asking at once then
+	// keep at most one such read ahead of a hook.
+	var text string
+	s.boards.reading(func() { text = s.board.AgentText(s.now(), where, memberFrom(r), limit) })
+	writeText(w, text+"\n")
 }
 
-func (s *Server) handleRepos(w http.ResponseWriter, _ *http.Request) {
+// handleRepos answers with the repository list, read once for all who ask at
+// once and at most a few times a second (boardBuilds).
+func (s *Server) handleRepos(w http.ResponseWriter, r *http.Request) {
+	b, err := s.boards.repoList(r.Context())
+	if err != nil {
+		if r.Context().Err() == nil {
+			s.log.Error("repository list failed", "err", err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+		}
+		return
+	}
+	h := w.Header()
+	h.Set("Content-Type", "application/json")
+	h.Set("Content-Length", strconv.Itoa(len(b.json)))
+	w.WriteHeader(http.StatusOK)
+	_, _ = progress(w).Write(b.json)
+}
+
+// repoList is the repository list a build reads: every repository with
+// claims, each with the server's epoch.
+func (s *Server) repoList() []board.RepoSummary {
 	repos := s.board.Repos(s.now())
 	for i := range repos {
 		repos[i].Epoch = s.epoch
 	}
-	writeJSON(w, http.StatusOK, repos)
+	return repos
 }
 
 // acceptsGzip reports whether an Accept-Encoding header allows gzip: named

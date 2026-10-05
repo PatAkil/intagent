@@ -224,6 +224,25 @@ func (b *Board) Repos(now time.Time) []RepoSummary {
 	return out
 }
 
+// Shows reports whether the board has anything to show of a repository:
+// claims, counts, or activities in the feed. The view of a name it has none
+// of, one a client made up say, is empty. It walks the feed only for a name
+// with neither claims nor counts.
+func (b *Board) Shows(repo string) bool {
+	repo = RepoID(repo)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.byRepo[repo] != nil || b.stats[repo] != nil {
+		return true
+	}
+	for _, a := range b.recent {
+		if a.Repo == repo {
+			return true
+		}
+	}
+	return false
+}
+
 // sessionViews shows a claim's sessions, the most recently seen first, and
 // those seen at the same moment by key.
 func sessionViews(ss []sessionCopy) []SessionView {

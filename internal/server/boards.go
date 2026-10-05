@@ -23,6 +23,13 @@ import (
 // builds. A request joins the build that has not read the board yet, so no
 // answer is older than its request, and builds of one repository are spaced
 // out, so a repository costs a few builds a second however many read it.
+// ?repo= is anyone's input, so only repositories the board has something of
+// have builds of their own. Every name it has nothing of shares one paced
+// build of the empty view, which each request's answer then names: made-up
+// names take no repository's place, and cost no more however many there are.
+// The repository list, which every dashboard asks for on the same timer and
+// which walks every claim and session on the board, is shared and paced the
+// same way.
 
 const (
 	// boardSpacing is the least time between the starts of two builds of one
@@ -30,9 +37,16 @@ const (
 	// next one further: twice as long as its read, so a repository's builds
 	// hold the board's lock at most half the time.
 	boardSpacing = 250 * time.Millisecond
-	// maxBoardEntries bounds the repositories whose builds are paced at once:
-	// ?repo= is anyone's input. Past it, a request builds alone.
+	// maxBoardEntries bounds the repositories whose builds are paced at once.
+	// Only repositories on the board take one, so made-up names cannot use
+	// them up; past it, a request builds alone.
 	maxBoardEntries = 256
+	// nowhere is the repository the shared build of the empty view reads: a
+	// request names none, since the server refuses one without a name.
+	nowhere = ""
+	// allRepos keys the builds of the repository list. No repository's name
+	// holds a space (board.RepoID).
+	allRepos = "all repositories"
 )
 
 // errBoardBuild is what the requests sharing a build get when it failed.
@@ -47,7 +61,7 @@ type boardBuild struct {
 	requests int
 	view     board.View
 	json     []byte // the answer, as writeJSON would write it
-	gz       []byte // json compressed with gzip.BestSpeed
+	gz       []byte // json compressed with gzip.BestSpeed; nil to send json as it is
 	etag     string // a weak validator; empty when none could be made
 	err      error
 	// load is the server's load status, read after the view, while degraded.
@@ -70,6 +84,11 @@ func (e *boardEntry) gap() time.Duration { return max(boardSpacing, 2*e.took) }
 // boardBuilds coalesces reads of the board, per repository.
 type boardBuilds struct {
 	view func(repo string) board.View
+	// shows reports whether the board has anything of a repository to show;
+	// the others share the builds of the empty view, paced by empty.
+	shows func(repo string) bool
+	// list reads the repository list, for the builds paced by all.
+	list func() []board.RepoSummary
 	// load reports the server's load status for answers to carry.
 	load func() *LoadStatus
 	// clock and sleep pace builds. They are the process's own clock, not the
@@ -80,18 +99,26 @@ type boardBuilds struct {
 	// encode makes a build's answer from its view; a field for tests.
 	encode func(b *boardBuild, v board.View)
 	// slot lets one build read a board at a time across the server, so a
-	// hook waits behind at most one read. Encoding takes no lock and runs
-	// outside it. Encodings stay few all the same: each repository encodes
-	// one build at a time, and builds start no faster than they can read.
+	// hook waits behind at most one read; other reads of a whole repository
+	// or of the whole board take it too (reading). Encoding takes no lock
+	// and runs outside it. Encodings stay few all the same: each repository
+	// encodes one build at a time, and builds start no faster than they can
+	// read.
 	slot chan struct{}
 
 	mu    sync.Mutex
 	repos map[string]*boardEntry
+	empty *boardEntry // paces the builds of nowhere, kept apart from repos
+	all   *boardEntry // paces the builds of the repository list
 }
 
-func newBoardBuilds(view func(repo string) board.View, load func() *LoadStatus, log *slog.Logger) *boardBuilds {
+func newBoardBuilds(view func(repo string) board.View, shows func(repo string) bool, list func() []board.RepoSummary,
+	load func() *LoadStatus, log *slog.Logger,
+) *boardBuilds {
 	return &boardBuilds{
 		view:   view,
+		shows:  shows,
+		list:   list,
 		load:   load,
 		encode: encodeBoard,
 		clock:  time.Now,
@@ -99,12 +126,44 @@ func newBoardBuilds(view func(repo string) board.View, load func() *LoadStatus, 
 		log:    log,
 		slot:   make(chan struct{}, 1),
 		repos:  map[string]*boardEntry{},
+		empty:  &boardEntry{turn: make(chan struct{}, 1)},
+		all:    &boardEntry{turn: make(chan struct{}, 1)},
 	}
 }
 
 // get returns a build of repo's board that read the board after get was
-// called. Requests that arrive while a build waits for its turn share it.
+// called. Requests that arrive while a build waits for its turn share it. A
+// repository the board has nothing of is answered from the shared build of
+// the empty view, under its own name.
 func (c *boardBuilds) get(ctx context.Context, repo string) (*boardBuild, error) {
+	if c.shows(repo) {
+		return c.join(ctx, repo)
+	}
+	b, err := c.join(ctx, nowhere)
+	if err != nil {
+		return nil, err
+	}
+	return named(b, repo)
+}
+
+// repoList returns a build of the repository list that read the board after
+// repoList was called, shared as a repository's builds are.
+func (c *boardBuilds) repoList(ctx context.Context) (*boardBuild, error) {
+	return c.join(ctx, allRepos)
+}
+
+// reading runs read, a read of a whole repository or of the whole board under
+// its lock, once no build or other such read is reading.
+func (c *boardBuilds) reading(read func()) {
+	c.slot <- struct{}{}
+	defer func() { <-c.slot }()
+	read()
+}
+
+// join returns a build of repo's board, or of the list for allRepos, that
+// read the board after join was called, shared with the requests that join
+// it.
+func (c *boardBuilds) join(ctx context.Context, repo string) (*boardBuild, error) {
 	c.mu.Lock()
 	e := c.entry(repo)
 	if b := e.next; b != nil {
@@ -130,6 +189,12 @@ func (c *boardBuilds) get(ctx context.Context, repo string) (*boardBuild, error)
 // entry returns repo's entry, first dropping entries with nothing left to
 // pace. When every slot is taken it returns an entry that is not kept.
 func (c *boardBuilds) entry(repo string) *boardEntry {
+	switch repo {
+	case nowhere:
+		return c.empty
+	case allRepos:
+		return c.all
+	}
 	if e := c.repos[repo]; e != nil {
 		return e
 	}
@@ -146,8 +211,21 @@ func (c *boardBuilds) entry(repo string) *boardEntry {
 	return e
 }
 
-// run makes build b of repo once the build before it has finished and its
-// gap has passed.
+// named answers a request for repo, a repository the board has nothing of,
+// from b, a build of nowhere: the same empty view under repo's name, encoded
+// for this request alone. It is a few hundred bytes, sent as they are.
+func named(b *boardBuild, repo string) (*boardBuild, error) {
+	v := b.view
+	v.Repo = repo
+	body, err := answerJSON(v, b.load)
+	if err != nil {
+		return nil, err
+	}
+	return &boardBuild{requests: 1, view: v, json: body, etag: boardETag(body), load: b.load}, nil
+}
+
+// run makes build b of repo, or of the list for allRepos, once the build
+// before it has finished and its gap has passed.
 func (c *boardBuilds) run(repo string, e *boardEntry, b *boardBuild) {
 	b.err = errBoardBuild // kept if the build panics: its requests then fail, not hang
 	defer func() {
@@ -164,7 +242,16 @@ func (c *boardBuilds) run(repo string, e *boardEntry, b *boardBuild) {
 	if wait > 0 {
 		c.sleep(wait)
 	}
-	v, requests, read := c.read(repo, e, b)
+	if repo == allRepos {
+		var list []board.RepoSummary
+		requests, read := c.read(e, b, func() { list = c.list() })
+		b.json, b.err = listJSON(list)
+		c.log.Debug("repository list built", "requests", requests, "read", read.Round(time.Microsecond),
+			"bytes", len(b.json))
+		return
+	}
+	var v board.View
+	requests, read := c.read(e, b, func() { v = c.view(repo) })
 	b.load = c.load()
 	start := c.clock()
 	c.encode(b, v)
@@ -172,11 +259,11 @@ func (c *boardBuilds) run(repo string, e *boardEntry, b *boardBuild) {
 		"encoded", c.clock().Sub(start).Round(time.Microsecond), "bytes", len(b.json), "gzip_bytes", len(b.gz))
 }
 
-// read reads repo's board for build b once no other build is reading one,
-// and notes in e when it started and how long it took. b stops taking
-// requests just before. It returns the view, the requests sharing it and the
-// time it took.
-func (c *boardBuilds) read(repo string, e *boardEntry, b *boardBuild) (board.View, int, time.Duration) {
+// read runs fn, which reads the board for build b, once no other build is
+// reading, and notes in e when it started and how long it took. b stops
+// taking requests just before. It returns the requests sharing b and the
+// time the read took.
+func (c *boardBuilds) read(e *boardEntry, b *boardBuild, fn func()) (int, time.Duration) {
 	c.slot <- struct{}{}
 	defer func() { <-c.slot }()
 	c.mu.Lock()
@@ -186,29 +273,109 @@ func (c *boardBuilds) read(repo string, e *boardEntry, b *boardBuild) (board.Vie
 	requests := b.requests
 	c.mu.Unlock()
 
-	v := c.view(repo)
+	fn()
 	took := c.clock().Sub(start)
 	c.mu.Lock()
 	e.took = took
 	c.mu.Unlock()
-	return v, requests, took
+	return requests, took
+}
+
+// listJSON is the repository list as writeJSON would write it.
+func listJSON(list []board.RepoSummary) ([]byte, error) {
+	body, err := json.Marshal(list)
+	if err != nil {
+		return nil, err
+	}
+	return append(body, '\n'), nil
 }
 
 // encodeBoard makes b's answer from v and b.load: the JSON writeJSON would
 // write, the same compressed, and a validator.
 func encodeBoard(b *boardBuild, v board.View) {
-	body, err := json.Marshal(boardAnswer{View: v, Server: b.load})
+	body, err := answerJSON(v, b.load)
 	if err != nil {
 		b.err = err
 		return
 	}
-	body = append(body, '\n')
 	gz, err := gzipped(body)
 	if err != nil {
 		b.err = err
 		return
 	}
 	b.view, b.json, b.gz, b.etag, b.err = v, body, gz, boardETag(body), nil
+}
+
+// answerJSON is the answer for v and the load status it carries, as writeJSON
+// would write it.
+func answerJSON(v board.View, load *LoadStatus) ([]byte, error) {
+	body, err := json.Marshal(boardAnswer{View: v, Server: load})
+	if err != nil {
+		return nil, err
+	}
+	return append(body, '\n'), nil
+}
+
+// A client that does not take gzip and reads slowly keeps the JSON of the
+// build it was sent for as long as it reads: the write deadline bounds each
+// piece of an answer, not the whole, so at a few kilobytes a second an 18 MB
+// board stays for over half an hour, and a hundred such readers took the
+// server past 2 GB. Browsers and intagent's own clients take gzip, a
+// twentieth of the size; for the others, the builds being sent uncompressed
+// are bounded by the memory they keep, and past the bound a large answer is
+// refused with 503 and Retry-After.
+const (
+	// plainBudget bounds the JSON of the builds being sent uncompressed at
+	// once, each counted once however many requests send it.
+	plainBudget = 32 << 20
+	// plainSmall is the size under which an answer is sent uncompressed
+	// without being counted: a typical repository's board is far larger.
+	plainSmall = 256 << 10
+	// plainRetry is the Retry-After, in seconds, of an answer refused.
+	plainRetry = 5
+)
+
+// plainAnswers counts the builds being sent uncompressed.
+type plainAnswers struct {
+	budget, small int
+	mu            sync.Mutex
+	// sending counts the requests sending each build's JSON, by its first
+	// byte: the map keeps the JSON for no longer than they do, and nothing
+	// else of the build.
+	sending map[*byte]int
+	bytes   int // the JSON of the builds in sending
+}
+
+func newPlainAnswers(budget, small int) *plainAnswers {
+	return &plainAnswers{budget: budget, small: small, sending: map[*byte]int{}}
+}
+
+// take counts a request that sends body, a build's JSON, uncompressed, and
+// reports whether there is room for it: it is small, or being sent already,
+// or fits the budget with the others, or nothing else is being sent.
+// release uncounts it once it is sent.
+func (p *plainAnswers) take(body []byte) (release func(), ok bool) {
+	if len(body) < p.small {
+		return func() {}, true
+	}
+	key := &body[0]
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.sending[key] == 0 {
+		if p.bytes > 0 && p.bytes+len(body) > p.budget {
+			return nil, false
+		}
+		p.bytes += len(body)
+	}
+	p.sending[key]++
+	return func() {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		if p.sending[key]--; p.sending[key] == 0 {
+			delete(p.sending, key)
+			p.bytes -= len(body)
+		}
+	}, true
 }
 
 // gzipWriters keeps compressors for reuse: each holds most of a megabyte of

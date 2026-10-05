@@ -73,3 +73,42 @@ func TestViewWhileHooksRun(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// The board shows a repository while it has claims in it, counts for it or
+// activities of it in the feed, and a name it has none of not at all.
+func TestShows(t *testing.T) {
+	h := newHarness(t, func(c *Config) { c.KeepActivities = 2 })
+	if h.b.Shows(repo) {
+		t.Fatal("an empty board shows a repository")
+	}
+	h.hook(KindPostEdit, "bob", "b1", "a/x.go")
+	if !h.b.Shows(repo) || h.b.Shows("github.com/acme/other") {
+		t.Fatal("a claim's repository is not shown, or another is")
+	}
+	// The claim goes; its activities are still in the feed.
+	h.b.mu.Lock()
+	for _, c := range h.b.claims {
+		h.b.removeClaim(c)
+	}
+	h.b.mu.Unlock()
+	if !h.b.Shows(repo) {
+		t.Fatal("a repository with activities in the feed is not shown")
+	}
+	// The feed lets go of them, for another repository's.
+	other := HookEvent{Kind: KindPostEdit, Member: "carol", Agent: AgentCodex, SessionID: "c1",
+		Where: Where{Repo: "github.com/acme/other", Host: "h", Worktree: "/w"}, Paths: refs("b/y.go")}
+	for range 2 {
+		if _, err := h.b.Hook(h.now, other); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if h.b.Shows(repo) {
+		t.Fatal("a repository the board has nothing of any more is shown")
+	}
+	h.b.mu.Lock()
+	h.b.statsOf(repo, h.now).Checks++
+	h.b.mu.Unlock()
+	if !h.b.Shows(repo) {
+		t.Fatal("a repository with counts is not shown")
+	}
+}

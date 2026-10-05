@@ -296,7 +296,14 @@ one repository start at least 250 ms apart, or twice as long as the last one too
 reads at a time across the server, so a hook waits behind at most one read. A read holds the board's lock only while
 it copies the claims, files and sessions it shows; it orders the files and caps them once it has let go (on a
 repository of 300 claims at 2000 files each, 13 ms of a 310 ms read). Encoding takes no lock and runs outside that
-limit.
+limit. Up to 256 repositories are paced at once, and only those the board has something of: claims, counts, or
+activities in its feed. Anyone can name any repository in `?repo=`; every name the board has nothing of shares one
+paced build of the empty view, which each answer then names. Made-up names, however many, then cost a few builds a
+second, and cannot take the places of real repositories and leave their dashboards each building their own. The
+repository list (`/v1/repos`), which every dashboard asks for on the same 15-second timer and which walks every claim
+and session on the board under its lock, is shared and paced the same way, so tabs opened together cost one read of it
+rather than one each. An agent's text (`team_board`) is the caller's own, so it is not shared, but it waits for the
+same turn as builds: agents asking at once keep at most one such read ahead of a hook.
 
 The dashboard follows a repository through a server-sent event stream. Each activity is encoded once, and the server
 keeps the last 1024 publishes, up to 16 MB of them, in one ring that every stream reads at its own pace, so publishing
@@ -327,7 +334,7 @@ All endpoints take and return JSON and require `Authorization: Bearer <token>`, 
 | `POST /v1/check` | MCP, CLI, guard | Who else claims or touched these paths, the first 200 of them (`unchecked` counts the rest, and `text` says so; intagent's CLI, MCP tool and guard send more in several checks). Read-only. |
 | `POST /v1/notes` | MCP, CLI | Send a note to a claim, a member or whoever changed a path. A note to a member with no agent running in the repository waits for their next session there (`held_for`). |
 | `GET /v1/board` | CLI, dashboard | Every claim and session in a repo, with derived states. Gzip when the client takes it, and a weak `ETag` for `If-None-Match`. Its `epoch` changes when the server restarts, and `server` is there while agents' edits go ahead unchecked (below). With `format=text`, the board as text; adding `limit`, `host` and `worktree` gives an agent at most `limit` claims (16 KB), those sharing files or areas with its own first, as the MCP `team_board` tool shows them. |
-| `GET /v1/repos` | dashboard | The repositories with claims, each with the server's `epoch`. |
+| `GET /v1/repos` | dashboard | The repositories with claims, each with the server's `epoch`. Read once for all who ask at once, at most every 250 ms. |
 | `GET /v1/stream` | dashboard | Server-sent events. |
 | `GET /v1/whoami` | CLI | The member a token belongs to. |
 | `GET /healthz` | monitors | Up, and whether agents' edits go ahead unchecked: `ok`, `version`, `degraded`, `since`, `pre_edits_60s` and `unchecked_60s`; with a data directory, `snapshot`: `ok`, `saved_at` (the whole board), `durable_saved_at` (its durable part), and while saves of either fail `failing_since`, `attempts` and `error` (the operation and the system's error, no paths). Always 200, except with `?strict=1`: 503 while degraded or while saves fail. |
@@ -434,7 +441,12 @@ while degraded), in its log and, if asked, by webhook.
   opens many connections, with a token or without, cannot use up the server's file descriptors and memory. A hook
   turned away fails open at once instead of waiting out its timeout.
 - An answer that makes no progress for 15 seconds is cut off, so a client that stops reading mid-answer (a laptop
-  put to sleep) does not hold the server's memory; a slow client that keeps reading gets all of it.
+  put to sleep) does not hold the server's memory; a slow client that keeps reading gets all of it. That bounds each
+  piece of an answer, not the whole: a client reading a board at a few kilobytes a second keeps its answer for as long
+  as it reads, over half an hour for the 18 MB of a large board. Browsers and intagent's clients take gzip, a
+  twentieth of that. Board answers sent uncompressed are bounded by the memory they keep: the builds being sent so,
+  each counted once however many clients read it, may hold 32 MB of JSON, or one build larger than that; past it a
+  board answer over 256 KB is refused with 503 and `Retry-After`, and the client can ask again, or take gzip.
 - The hook fails open with a short timeout. Only a refused connection is tried again, after 100, 200 and then every
   400 ms while more than half a second of the request's time is left: a server restarting closes its port for a
   moment, and nothing of the request reached it, while a request reset or timed out may have been decided, and an

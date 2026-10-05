@@ -114,11 +114,13 @@ runs on another machine.
 | `--log-level` | `info` | `debug`, `info`, `warn` or `error`. |
 
 A client has 15 seconds to send a request and 16 KB for its headers, and an answer that makes no progress for 15
-seconds is cut off. A dashboard over its stream cap is answered 429 and tries again later. A path has at most 64
-segments of 255 bytes, and an intent's pattern at most 32 segments, 4 of them `**`, with wildcard segments of at most
-64 bytes. A hook, check or declaration may compare paths with teammates' patterns only so much; one that would take
-longer lets through what it did not compare (but refuses an exclusive intent it could not compare with every
-reservation), its agent is told, and the dashboard counts it. These are not settings.
+seconds is cut off. Board answers sent to clients that do not take gzip may hold 32 MB at once; past that a large one
+is answered 503 with `Retry-After` (browsers and intagent's clients take gzip; for `curl`, add `--compressed`). A
+dashboard over its stream cap is answered 429 and tries again later. A path has at most 64 segments of 255 bytes, and
+an intent's pattern at most 32 segments, 4 of them `**`, with wildcard segments of at most 64 bytes. A hook, check or
+declaration may compare paths with teammates' patterns only so much; one that would take longer lets through what it
+did not compare (but refuses an exclusive intent it could not compare with every reservation), its agent is told, and
+the dashboard counts it. These are not settings.
 
 **Each repository, once** (one person; then commit the files it writes):
 
