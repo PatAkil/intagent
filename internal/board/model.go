@@ -241,7 +241,7 @@ type claim struct {
 	// index skips until it drops it.
 	removed bool
 	// trimAfter is how many sessions the claim may hold before trimSessions
-	// looks at them again: a hint it and trimEnded keep, not an index, which
+	// looks at them again: a hint it and Sweep keep, not an index, which
 	// a snapshot leaves at 0 so that the claim is looked at afresh.
 	trimAfter int
 	// fpShared and alertedShared say a snapshot shares Footprint or Alerted

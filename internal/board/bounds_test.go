@@ -2,6 +2,8 @@ package board
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -31,48 +33,74 @@ func TestEndedSessionsPerClaimAreBounded(t *testing.T) {
 	}
 }
 
-// A session the board has no room for is checked but not stored: its edits
-// are judged against teammates' work, a reservation still refuses them, and
-// what would refuse once warns, since nothing remembers the warning was
-// said. Its start says so. A sweep makes room by dropping the sessions not
-// live that went silent longest.
-func TestSessionsPastTheCapAreCheckedNotStored(t *testing.T) {
+// A new session that finds the board full is stored all the same: the
+// board makes room, down to nine tenths of MaxSessions, from the sessions
+// silent longest. A flood of fresh session ids, each heard from once and
+// live for two hours, otherwise kept every new session off the board for
+// that long: bob's edit was never recorded, and alice was not warned of it.
+func TestAFloodOfSessionsLeavesRoomForNewOnes(t *testing.T) {
+	h := newHarness(t, func(c *Config) { c.MaxSessions = 100 })
+	for i := range 100 {
+		h.at(KindSessionStart, "mallory", "w", fmt.Sprint("flood", i))
+		h.advance(time.Second)
+	}
+	for range 6 {
+		h.advance(10 * time.Minute)
+		h.b.Sweep(h.now)
+	}
+	// An hour on, the flood's sessions are still live, waiting.
+	h.hook(KindSessionStart, "bob", "b1")
+	h.hook(KindPostEdit, "bob", "b1", "svc/x.go")
+	if res := h.hook(KindPreEdit, "alice", "a1", "svc/x.go"); len(res.Conflicts) != 1 || res.Conflicts[0].Member != "bob" {
+		t.Fatalf("alice's edit of the file bob changed met %+v", res.Conflicts)
+	}
+	for i, kept := range []bool{false, false, true} {
+		k := sessionKey("mallory", AgentClaudeCode, fmt.Sprint("flood", []int{0, 9, 10}[i]))
+		if (h.b.sessions[k] != nil) != kept {
+			t.Errorf("session %s kept: %v", k, !kept)
+		}
+	}
+	if len(h.b.sessions) != 92 || h.b.statsFor(repo).Evicted != 10 {
+		t.Fatalf("the board holds %d sessions, %d counted evicted; want 90 and bob's and alice's, and 10",
+			len(h.b.sessions), h.b.statsFor(repo).Evicted)
+	}
+}
+
+// A board makes room for a new session from those that ended or went gone
+// first, then those that stalled, then live ones, each the longest silent
+// first, as each new session arrives: which session goes depends on its
+// state before when it was last heard from.
+func TestAFullBoardMakesRoomInOrder(t *testing.T) {
 	h := newHarness(t, func(c *Config) { c.MaxSessions = 10 })
-	h.hook(KindPrompt, "alice", "a1")
-	h.declare("alice", ModeExclusive, "Rework retries", "retry/**")
-	h.at(KindPostEdit, "bob", "w", "b1", "shared.go")
+	for i := range 4 { // waiting for their people, heard from first
+		h.at(KindSessionStart, "w", fmt.Sprint("w", i), fmt.Sprint("w", i))
+	}
+	h.advance(time.Minute)
+	for i := range 4 { // at work, until they stall
+		h.at(KindPrompt, "s", fmt.Sprint("s", i), fmt.Sprint("s", i))
+		h.advance(time.Second)
+	}
+	h.advance(time.Minute)
+	for i := range 2 { // ended, heard from last
+		h.at(KindPrompt, "e", fmt.Sprint("e", i), fmt.Sprint("e", i))
+		h.at(KindSessionEnd, "e", fmt.Sprint("e", i), fmt.Sprint("e", i))
+	}
+	h.advance(h.b.cfg.StallAfter)
+	var gone []string
 	for i := range 8 {
-		h.at(KindPrompt, "fleet", fmt.Sprint("w", i), fmt.Sprint("f", i))
+		before := maps.Clone(h.b.sessions)
+		h.at(KindPrompt, "n", fmt.Sprint("n", i), fmt.Sprint("n", i))
+		for k, s := range before {
+			if h.b.sessions[k] == nil {
+				gone = append(gone, s.ID)
+			}
+		}
 	}
-	claims, acts := len(h.b.claims), len(h.acts)
-	start := h.hook(KindSessionStart, "carol", "c1")
-	if !strings.Contains(start.Context, "has no room for this one") {
-		t.Errorf("carol's session start was told %q", start.Context)
+	if want := []string{"e0", "e1", "s0", "s1", "s2", "s3", "w0", "w1"}; !slices.Equal(gone, want) {
+		t.Fatalf("new sessions made room from %v, want %v", gone, want)
 	}
-	if res := h.hook(KindPreEdit, "carol", "c1", "retry/r.go"); res.Decision != DecisionRefuse {
-		t.Errorf("carol's edit in alice's reservation: %s", res.Decision)
-	}
-	res := h.hook(KindPreEdit, "carol", "c1", "shared.go")
-	if res.Decision != DecisionAllow || !strings.Contains(res.Context, "bob's agent") {
-		t.Errorf("carol's edit of bob's file: %s, %q; want a warning", res.Decision, res.Context)
-	}
-	if again := h.hook(KindPreEdit, "carol", "c1", "shared.go"); again.Decision != DecisionAllow {
-		t.Errorf("carol's next edit of it: %s", again.Decision)
-	}
-	h.hook(KindPostEdit, "carol", "c1", "shared.go")
-	if len(h.b.sessions) != 10 || len(h.b.claims) != claims || len(h.acts) != acts {
-		t.Fatalf("the board stored %d sessions, %d claims and %d activities more", len(h.b.sessions)-10, len(h.b.claims)-claims, len(h.acts)-acts)
-	}
-	if n := h.b.statsFor(repo).Unstored; n != 5 {
-		t.Errorf("%d hooks counted unstored, want 5", n)
-	}
-	// Two of the fleet's sessions end; the next sweep makes room.
-	h.at(KindSessionEnd, "fleet", "w0", "f0")
-	h.at(KindSessionEnd, "fleet", "w1", "f1")
-	h.b.Sweep(h.now)
-	h.hook(KindSessionStart, "carol", "c1")
-	if h.b.sessions[sessionKey("carol", AgentClaudeCode, "c1")] == nil {
-		t.Fatalf("carol's session was not stored after the sweep: %d sessions", len(h.b.sessions))
+	if n := h.b.statsFor(repo).Evicted; n != 2 {
+		t.Errorf("%d live sessions counted evicted, want 2", n)
 	}
 }
 
@@ -390,8 +418,9 @@ func TestSweepBoundsTheSessionsAClaimKeeps(t *testing.T) {
 	if w.sessionVisits > maxEndedSessions+1 {
 		t.Fatalf("alice's edit read %d sessions to learn whether bot's claim is live", w.sessionVisits)
 	}
-	// Sessions that stalled are kept, however many: the dashboard shows
-	// them, and one that comes back is announced as recovered.
+	// Sessions that stalled are kept, up to maxStalledSessions: the
+	// dashboard shows them, and one that comes back is announced as
+	// recovered.
 	for i := range 30 {
 		h.at(KindPrompt, "fleet", "w", fmt.Sprint("f", i))
 	}
@@ -399,6 +428,47 @@ func TestSweepBoundsTheSessionsAClaimKeeps(t *testing.T) {
 	h.b.Sweep(h.now)
 	if n := len(h.b.claimSessions[h.claimIn("fleet", "w").ID]); n != 30 {
 		t.Fatalf("the fleet's claim keeps %d of its 30 stalled sessions", n)
+	}
+}
+
+// A flood of sessions into one worktree that stall together costs a
+// teammate's edit one read of the claim's sessions, not one for each path
+// the edit names; and the next sweep keeps the maxStalledSessions heard from
+// last. Before, each of 17,000 stalled sessions stayed on the claim for two
+// hours, and a 200-file edit read 3.4 million sessions under the board's
+// lock, about 170 ms.
+func TestAStalledFloodCostsATeammateLittle(t *testing.T) {
+	h := newHarness(t)
+	h.b.notify = nil
+	files := make([]string, 200)
+	for i := range files {
+		files[i] = fmt.Sprintf("svc/f%03d.go", i)
+	}
+	h.scanAt("bot", "w", "s-first", files...)
+	h.at(KindSessionEnd, "bot", "w", "s-first")
+	const flood = 2000
+	for i := range flood {
+		h.at(KindPrompt, "bot", "w", fmt.Sprint("s", i))
+		h.advance(time.Millisecond)
+	}
+	h.advance(h.b.cfg.StallAfter + time.Minute)
+	c := h.claimIn("bot", "w")
+	w := counted(t, func() { h.hook(KindPreEdit, "alice", "a1", files...) })
+	if w.sessionVisits > flood+1+len(files) {
+		t.Fatalf("alice's %d-file edit read %d sessions of a claim that holds %d", len(files), w.sessionVisits, flood+1)
+	}
+	h.b.Sweep(h.now)
+	if n := len(h.b.claimSessions[c.ID]); n != maxStalledSessions+1 {
+		t.Fatalf("after a sweep, bot's claim keeps %d sessions; want %d stalled and the one that ended", n, maxStalledSessions)
+	}
+	for i := flood - maxStalledSessions; i < flood; i++ {
+		if h.b.sessions[sessionKey("bot", AgentClaudeCode, fmt.Sprint("s", i))] == nil {
+			t.Fatalf("session s%d, one of the last to stall, was dropped", i)
+		}
+	}
+	w = counted(t, func() { h.hook(KindPreEdit, "carol", "c1", files...) })
+	if w.sessionVisits > maxStalledSessions+maxEndedSessions+len(files) {
+		t.Fatalf("carol's edit read %d sessions", w.sessionVisits)
 	}
 }
 

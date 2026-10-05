@@ -319,27 +319,42 @@ func sharesArea(a, b *claim) bool {
 // only the sessions it is asked about, and the sessions of the claims it is
 // asked about, so it costs nothing for the rest of the board; and it is
 // derived from the time it is asked for, not from when Sweep last ran.
+//
+// It remembers what it found of each claim, which an edit of many paths
+// asks again for each: a claim may hold hundreds of sessions that are not
+// live (maxStalledSessions), and thousands until a sweep trims them. So a
+// liveness is for one call, during which no session is added, moved or
+// heard from.
 type liveness struct {
-	b   *Board
-	now time.Time
+	b      *Board
+	now    time.Time
+	claims map[string]bool // what claim found, by claim ID
 }
 
-func (b *Board) liveAt(now time.Time) liveness { return liveness{b: b, now: now} }
+func (b *Board) liveAt(now time.Time) liveness {
+	return liveness{b: b, now: now, claims: map[string]bool{}}
+}
 
 // claim reports whether claim id has a live session.
 func (l liveness) claim(id string) bool {
 	if trace != nil {
 		trace.liveClaims++
 	}
+	if live, ok := l.claims[id]; ok {
+		return live
+	}
+	live := false
 	for _, s := range l.b.claimSessions[id] {
 		if trace != nil {
 			trace.sessionVisits++
 		}
 		if l.b.state(l.now, s).Live() {
-			return true
+			live = true
+			break
 		}
 	}
-	return false
+	l.claims[id] = live
+	return live
 }
 
 // session reports whether the session with key k is live.

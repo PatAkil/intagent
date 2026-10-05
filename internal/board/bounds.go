@@ -11,15 +11,23 @@ import (
 // The board's bounds on what it keeps, whatever its clients send: sessions,
 // claims nobody works in, and the files claims changed. Each keeps what an
 // agent still needs, and lets go of the rest in an order that does not
-// depend on the order of a map. None refuses a hook: an event the board
-// cannot store is still answered, and an edit still checked.
+// depend on the order of a map. None refuses a hook.
 
-// maxEndedSessions bounds the sessions that ended, or went silent for good,
-// a claim keeps; only the dashboard shows them, and a client that starts a
-// session for every event would otherwise leave thousands on one claim for
-// liveness to read through. A claim may hold up to twice as many between
-// trims (trimSessions), and each sweep trims every claim to it (trimEnded).
-const maxEndedSessions = 20
+// Bounds on the sessions a claim keeps that are not live, which only the
+// dashboard shows, and which liveness reads through to learn whether the
+// claim is live: a client that starts a session for every event would
+// otherwise leave thousands on one claim. A claim keeps the
+// maxEndedSessions that ended or are gone heard from last, and the
+// maxStalledSessions that stalled: more of those, as a fleet working in one
+// worktree may stall together on a network blip, and each that comes back
+// is announced as recovered rather than as a new session. Each sweep trims
+// every claim to both (trimQuiet); between sweeps, a claim may hold up to
+// twice as many that ended or are gone (trimSessions), and any number that
+// stalled since.
+const (
+	maxEndedSessions   = 20
+	maxStalledSessions = 200
+)
 
 // trimSessions drops the sessions of claim c that ended or are gone, past
 // the maxEndedSessions heard from last, ties going by key; but not keep, the
@@ -57,111 +65,82 @@ func (b *Board) trimSessions(now time.Time, c *claim, keep *session) {
 	}
 }
 
-// trimEnded drops, of each claim's sessions that ended or are gone, all but
-// the maxEndedSessions heard from last: those of a flood that went gone
-// together with none joining after them, which trimSessions never sees. done
-// are the sessions the sweep keeps that ended or are gone, in the order they
-// were last heard from; one that stalled is kept, as the dashboard shows it. Since the claims are trimmed, each looks afresh when the next
-// session joins it. It reports whether it dropped any.
-func (b *Board) trimEnded(done []*session) bool {
+// trimQuiet drops, of the sessions in quiet, all but the keep of each claim
+// heard from last: those of a flood that stalled or went gone together with
+// none joining after them, which trimSessions never sees. quiet are the
+// sessions a sweep keeps that ended or are gone, or those that stalled, in
+// the order they were last heard from. It reports whether it dropped any.
+func (b *Board) trimQuiet(quiet []*session, keep int) bool {
 	kept := map[string]int{}
 	dropped := false
-	for _, s := range slices.Backward(done) {
+	for _, s := range slices.Backward(quiet) {
 		kept[s.ClaimID]++
-		if kept[s.ClaimID] > maxEndedSessions {
+		if kept[s.ClaimID] > keep {
 			b.detachSession(s)
 			dropped = true
 		}
 	}
-	for _, c := range b.claims {
-		c.trimAfter = 0
-	}
 	return dropped
+}
+
+// sessionRoom is how many sessions the board keeps once it has made room for
+// more (evictSessions): nine tenths of MaxSessions, so that it makes room
+// once for every tenth, not for every session.
+func (b *Board) sessionRoom() int { return b.cfg.MaxSessions - max(1, b.cfg.MaxSessions/10) }
+
+// evictSessions drops, when the board holds more than sessionRoom sessions,
+// those that went silent longest (by when each was last heard from, then
+// key) until it holds sessionRoom: first those that ended or are gone, then
+// those that stalled, which the dashboard shows and whose agents may yet
+// come back, and only then live ones. A flood of fresh session ids fills the
+// board with live sessions, each heard from once; were they kept, no new
+// session would find room until they went gone, two hours on. An agent whose
+// session was dropped while live starts a new one when it next reports, and
+// may be told again what it was told; each is counted in its repository's
+// stats (Stats.Evicted). Hook calls it when a new session finds the board
+// full, and Sweep when the board is past sessionRoom. It reports whether it
+// dropped any.
+func (b *Board) evictSessions(now time.Time) bool {
+	keep := b.sessionRoom()
+	if len(b.sessions) <= keep {
+		return false
+	}
+	var tiers [3][]*session // ended or gone, stalled, live
+	for _, s := range b.sessions {
+		switch st := b.state(now, s); {
+		case st.Live():
+			tiers[2] = append(tiers[2], s)
+		case st == StateStalled:
+			tiers[1] = append(tiers[1], s)
+		default:
+			tiers[0] = append(tiers[0], s)
+		}
+	}
+	for i, tier := range tiers {
+		slices.SortFunc(tier, func(x, y *session) int {
+			if c := x.LastSeen.Compare(y.LastSeen); c != 0 {
+				return c
+			}
+			return strings.Compare(x.Key, y.Key)
+		})
+		for _, s := range tier {
+			if len(b.sessions) <= keep {
+				return true
+			}
+			if c := b.claims[s.ClaimID]; i == 2 && c != nil {
+				b.statsOf(c.Repo, now).Evicted++
+			}
+			b.detachSession(s)
+		}
+	}
+	return true
 }
 
 // full reports whether ev comes from a session the board does not have and
-// has no room for: it holds MaxSessions. Sweep makes room by dropping the
-// sessions longest silent of those not live (evictSessions).
+// has no room for: it holds MaxSessions. Hook then makes room
+// (evictSessions).
 func (b *Board) full(ev HookEvent) bool {
 	return len(b.sessions) >= b.cfg.MaxSessions && b.sessions[sessionKey(ev.Member, ev.Agent, ev.SessionID)] == nil
-}
-
-// unstored answers an event from a session the board has no room for,
-// storing nothing: the board's sessions are a flood's, most likely, and a
-// legitimate agent caught behind it is still checked. An edit is judged as
-// a check judges it, against the claim of its worktree if there is one;
-// with no session to remember an acknowledgement, what would refuse it once
-// (a bump, or a question to an agent that cannot ask) warns instead, so
-// that the agent is never refused for good. Its session start says what
-// its teammates will not hear.
-func (b *Board) unstored(now time.Time, ev HookEvent) HookResult {
-	b.statsOf(ev.Where.Repo, now).Unstored++
-	res := HookResult{Decision: DecisionAllow}
-	switch ev.Kind {
-	case KindPreEdit:
-		self := b.findClaim(ev.Member, ev.Where)
-		if self == nil {
-			self = &claim{Repo: ev.Where.Repo, Member: ev.Member}
-		}
-		probe := &session{Key: sessionKey(ev.Member, ev.Agent, ev.SessionID), Acked: map[string]bool{}}
-		v := b.judge(now, self, probe, ev.Paths[:min(len(ev.Paths), maxCheckPaths)], ev.NoAsk)
-		res = b.answer(now, probe, b.warnOnce(v, ev.NoAsk))
-		res.ClaimID = self.ID
-	case KindSessionStart:
-		res.Context = fmt.Sprintf("%s The team's intagent server keeps at most %d agent sessions and has no room for "+
-			"this one, so your teammates' agents will not hear of the files this session changes; intagent still "+
-			"checks your edits against their work. Tell your user, so they can let whoever runs the server know.",
-			prefix, b.cfg.MaxSessions)
-	}
-	return res
-}
-
-// warnOnce turns what a verdict refuses or asks only once, which a session
-// would remember was said, into warnings: a bump, and a question to an
-// agent that cannot ask. A deny still refuses, and a question to an agent
-// that can ask is still its person's to answer.
-func (b *Board) warnOnce(v verdict, noAsk bool) verdict {
-	refused := v.refused[:0:0]
-	for _, cf := range v.refused {
-		if b.cfg.Policy.action(cf.Severity) == ActionDeny {
-			refused = append(refused, cf)
-		} else {
-			v.warned = append(v.warned, cf)
-		}
-	}
-	v.refused, v.bumpKeys = refused, nil
-	if noAsk {
-		v.warned, v.asked, v.askKeys = append(v.warned, v.asked...), nil, nil
-	}
-	return v
-}
-
-// evictSessions drops, when the board holds more than nine tenths of
-// MaxSessions, the sessions not live that went silent longest, in keys'
-// order (by when each was last heard from), until it holds nine tenths:
-// so that a new agent finds room until the next sweep. Those that ended or
-// are gone go first, and only then those that stalled, which the dashboard
-// shows and whose agents may yet come back. It reports whether it dropped
-// any.
-func (b *Board) evictSessions(now time.Time, keys []string) bool {
-	keep := b.cfg.MaxSessions - b.cfg.MaxSessions/10
-	dropped := false
-	for _, stalled := range []bool{false, true} {
-		for _, k := range keys {
-			if len(b.sessions) <= keep {
-				return dropped
-			}
-			s := b.sessions[k]
-			if s == nil {
-				continue
-			}
-			if st := b.state(now, s); !st.Live() && (st == StateStalled) == stalled {
-				b.detachSession(s)
-				dropped = true
-			}
-		}
-	}
-	return dropped
 }
 
 // maxForgetPerSweep bounds the claims one sweep forgets to keep under

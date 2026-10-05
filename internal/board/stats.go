@@ -25,10 +25,11 @@ type Stats struct {
 	// Unheard counts edits the board did not check because their agent had
 	// stopped waiting for the answer, and gone ahead, before it got to them.
 	Unheard int `json:"unheard,omitempty"`
-	// Unstored counts hooks from new sessions the board had no room for
-	// (Config.MaxSessions): their edits were checked, but nothing of them was
-	// kept for their teammates to hear.
-	Unstored int `json:"unstored,omitempty"`
+	// Evicted counts sessions the board let go of while their agents were
+	// still running, to make room for new ones (Config.MaxSessions): an
+	// agent that reports again starts a new session, which may be told
+	// again what the old one was.
+	Evicted int `json:"evicted,omitempty"`
 	// Partial counts hooks, declarations and notes the board stopped
 	// comparing with teammates' patterns before it had compared them all, as
 	// one call may match only so much: what they did not compare went

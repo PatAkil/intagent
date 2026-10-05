@@ -538,10 +538,10 @@ func (b *Board) Hook(now time.Time, ev HookEvent) (HookResult, error) {
 	if late && ev.Kind == KindPreEdit {
 		return b.abandon(now, ev), ErrAbandoned
 	}
-	if b.full(ev) {
-		return b.unstored(now, ev), nil
-	}
 	b.changed()
+	if b.full(ev) {
+		b.evictSessions(now)
+	}
 	b.unheard = late
 	defer func() { b.unheard = false }()
 	defer b.countPartial(now, w.Repo)
@@ -2384,7 +2384,7 @@ func (b *Board) Sweep(now time.Time) {
 	// sessions are dropped: gathered in this pass, not by a search of every
 	// session for every claim.
 	live, held := map[string]bool{}, make(map[string]bool, len(b.claims))
-	var done []*session // those kept that ended or are gone, in the order of keys
+	var ended, stalled []*session // those kept that are not live, in the order of keys
 	for _, k := range keys {
 		s := b.sessions[k]
 		if trace != nil {
@@ -2421,12 +2421,20 @@ func (b *Board) Sweep(now time.Time) {
 		switch {
 		case st.Live():
 			live[s.ClaimID] = true
-		case st == StateEnded || st == StateGone:
-			done = append(done, s)
+		case st == StateStalled:
+			stalled = append(stalled, s)
+		default:
+			ended = append(ended, s)
 		}
 	}
-	changed = b.trimEnded(done) || changed
-	changed = b.evictSessions(now, keys) || changed
+	changed = b.trimQuiet(ended, maxEndedSessions) || changed
+	changed = b.trimQuiet(stalled, maxStalledSessions) || changed
+	// The claims were trimmed, so each looks afresh when the next session
+	// joins it (trimSessions).
+	for _, c := range b.claims {
+		c.trimAfter = 0
+	}
+	changed = b.evictSessions(now) || changed
 	ids := make([]string, 0, len(b.claims))
 	for id := range b.claims {
 		ids = append(ids, id)
