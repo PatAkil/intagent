@@ -312,10 +312,13 @@ temporary files of saves that were killed halfway are removed, and a snapshot th
 as `board.json.corrupt-<unix time>` and `board.json.prev` put in its place and restored, or nothing: a server that will
 not start leaves every agent unchecked, and one stopped before its next save restores the same again. What changed
 between the two whole saves is then lost but for what the durable part holds. A damaged `board.json.durable` is set
-aside as `board.json.durable.corrupt-<unix time>`, and what it held since `board.json` lost. A snapshot of a newer
-format, or one that cannot be read, still stops it. The port opens once the board is restored: the server counts a
-hook's wait from when it reads it, so one that waited in the kernel's queue meanwhile could be decided after its client
-had gone ahead without the answer, while one refused tries again for as long as its time allows (below).
+aside as `board.json.durable.corrupt-<unix time>`, and what it held since `board.json` lost. One older than the snapshot
+of an older server, which records no version of the board, is set aside as `board.json.durable.stale-<unix time>`, and a
+warning logged: a rollback to that server and an upgrade again leave one, and it would undo what was done under the
+older server. A snapshot of a newer format, or one that cannot be read, still stops it. The port opens once the board is
+restored: the server counts a hook's wait from when it reads it, so one that waited in the kernel's queue meanwhile
+could be decided after its client had gone ahead without the answer, while one refused tries again for as long as its
+time allows (below).
 
 Beside its maps the board keeps indexes, rebuilt from the snapshot on a restart: each repository's claims, each claim's
 sessions and those that moved from it, and for each claim the latest change in each area it changed files in and its

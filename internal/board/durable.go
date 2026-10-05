@@ -196,6 +196,11 @@ func (c *countingWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
+// ErrStaleDurable reports a durable part found beside the snapshot of an
+// older server, which records no version of the board, saved after it: the
+// durable part is left from before the older server ran, and is not applied.
+var ErrStaleDurable = errors.New("the durable part was saved before the snapshot of an older server")
+
 // RestoreDurable applies a durable part read from r, as Durable.WriteTo
 // wrote it or compressed with gzip, to a board restored from a snapshot at
 // now, if it holds a later version of the board than the snapshot did: the
@@ -205,8 +210,9 @@ func (c *countingWriter) Write(p []byte) (int, error) {
 // sessions' silence is credited with the downtime as Restore credits the
 // snapshot's, from when the durable part was saved or the server stopped,
 // if that is later (RestoreAfter). It reports whether it applied it. A
-// durable part that is damaged is reported as ErrCorruptSnapshot, and one of
-// a newer format as an error that is not.
+// durable part that is damaged is reported as ErrCorruptSnapshot, one of a
+// newer format as an error that is not, and one older than the versionless
+// snapshot of an older server as ErrStaleDurable.
 func (b *Board) RestoreDurable(r io.Reader, now, stopped time.Time) (bool, error) {
 	d, err := readDurable(r)
 	if err != nil {
@@ -214,8 +220,13 @@ func (b *Board) RestoreDurable(r io.Reader, now, stopped time.Time) (bool, error
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if d.Version <= b.version {
+	switch {
+	case d.Version <= b.version:
 		return false, nil // the snapshot was saved after it
+	case b.restored != nil && !b.restored.versioned && !d.Saved.After(b.restored.saved):
+		// An older server's versions are not this one's: the snapshot holds
+		// none, and board versions count again from 0 after it.
+		return false, ErrStaleDurable
 	}
 	b.applyDurable(d, now, stopped)
 	return true, nil

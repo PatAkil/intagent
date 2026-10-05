@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"slices"
 	"testing"
 	"time"
@@ -361,4 +362,82 @@ func durableIn(t *testing.T, ts *testServer) savedDurable {
 		t.Fatal(err)
 	}
 	return d
+}
+
+// A durable part saved before an older server's snapshot, which records no
+// version of the board, is set aside: a rollback to that server and an
+// upgrade again left it, and it would take away the reservations made under
+// the older server and bring back those released. One saved after such a
+// snapshot is applied: the first save of a server upgraded from it writes
+// the durable part before the whole board.
+func TestADurablePartOlderThanAnOlderServersSnapshotIsSetAside(t *testing.T) {
+	// olderSnapshot writes, as the board's snapshot, one an older server
+	// saved at saved, in which bob holds new/** exclusively.
+	olderSnapshot := func(t *testing.T, ts *testServer, saved time.Time) {
+		t.Helper()
+		older := board.New(board.DefaultConfig())
+		if _, err := older.Declare(saved, board.DeclareRequest{Member: "bob", Where: where("bob"), Patterns: []string{"new/**"},
+			Mode: board.ModeExclusive}); err != nil {
+			t.Fatal(err)
+		}
+		data, _, err := older.Snapshot(saved)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(data, &fields); err != nil {
+			t.Fatal(err)
+		}
+		delete(fields, "version") // which an older server does not write
+		if data, err = json.Marshal(fields); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(ts.snapshotPath(), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	intents := func(s *Server, now time.Time) []string {
+		var out []string
+		for _, c := range s.Board().View(now, repo).Claims {
+			for _, in := range c.Intents {
+				out = append(out, c.Member+":"+in.Pattern)
+			}
+		}
+		slices.Sort(out)
+		return out
+	}
+	for _, tc := range []struct {
+		name    string
+		olderAt time.Duration // when the older server saved, after the durable part
+		// upgraded is whether the server that saved the durable part ran on
+		// from the older server's snapshot, or before it.
+		upgraded bool
+		want     []string
+		aside    bool
+	}{
+		{name: "rolled back and upgraded again", olderAt: time.Hour, want: []string{"bob:new/**"}, aside: true},
+		{name: "upgraded and killed between the first two saves", olderAt: -time.Minute, upgraded: true,
+			want: []string{"alice:old/**", "bob:new/**"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newCrashRun(t)
+			r.hook(board.KindPrompt, "bob", "b1", where("bob"))
+			if tc.upgraded {
+				r.reserve("bob", where("bob"), "new/**")
+			}
+			r.hook(board.KindPrompt, "alice", "a1", where("alice"))
+			r.reserve("alice", where("alice"), "old/**")
+			r.run(time.Second) // both saved, the durable part first
+			olderSnapshot(t, r.ts, r.ts.now().Add(tc.olderAt))
+			r.pass(tc.olderAt)
+			s := r.restart(time.Minute)
+			if got := intents(s, r.ts.now()); !slices.Equal(got, tc.want) {
+				t.Errorf("the intents restored are %v, want %v", got, tc.want)
+			}
+			stale, _ := filepath.Glob(s.durablePath() + ".stale-*")
+			if _, err := os.Stat(s.durablePath()); (len(stale) == 1) != tc.aside || (err == nil) == tc.aside {
+				t.Errorf("set aside: %v (%v), want %t", stale, err, tc.aside)
+			}
+		})
+	}
 }

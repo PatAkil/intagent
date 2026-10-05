@@ -292,8 +292,11 @@ func (s *Server) loadBoard(stopped time.Time) error {
 // snapshot, if there is one, by a server that ran until stopped, if that is
 // known. A damaged one is set aside as board.json.durable.corrupt-<unix
 // time>: what it held of the changes to intents and notes since the snapshot
-// is lost, which is logged. One that cannot be read, or of a newer format,
-// stops the server.
+// is lost, which is logged. One saved before the snapshot of an older
+// server, which records no version of the board, is set aside as
+// board.json.durable.stale-<unix time>: a rollback to that server and an
+// upgrade again left it, and it would undo what was done under the older
+// server. One that cannot be read, or of a newer format, stops the server.
 func (s *Server) loadDurable(stopped time.Time) error {
 	path := s.durablePath()
 	f, err := os.Open(path)
@@ -311,6 +314,14 @@ func (s *Server) loadDurable(stopped time.Time) error {
 			s.log.Warn("the server did not stop cleanly: restored the board's last whole save and what was saved of it since; "+
 				"files changed since the whole save come back at agents' next scans", "file", path)
 		}
+		s.durable.version = s.board.Version()
+		return nil
+	case errors.Is(err, board.ErrStaleDurable):
+		aside := fmt.Sprintf("%s.stale-%d", path, s.clock().Unix())
+		if rerr := os.Rename(path, aside); rerr != nil {
+			return fmt.Errorf("%s: %w, and it could not be set aside: %w", path, err, rerr)
+		}
+		s.log.Warn("set aside the durable part saved before the snapshot an older server wrote", "file", aside)
 		s.durable.version = s.board.Version()
 		return nil
 	case errors.Is(err, board.ErrCorruptSnapshot):

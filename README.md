@@ -294,14 +294,17 @@ minutes of changed files, which agents at work send again, and of what agents we
 [docs/design.md](docs/design.md#components) lists all it can lose. A restart restores `board.json` and then
 `board.json.durable`, if it was saved after it. On a board under steady load that is about 0.4 GB written an hour, where
 saving the whole board every few seconds wrote tens of gigabytes. A `board.json` an older intagent saved, as plain JSON,
-restores as well; an older intagent cannot read the compressed one. When saves fail (a full disk, say), the server logs
-it at once and then once a minute, keeps every change in memory, tries again with a growing pause, and `/healthz`
-carries `"snapshot": {"ok": false, "failing_since": ..., "attempts": ..., "error": "write: no space left on device"}`,
-which `?strict=1` answers with 503 too. `serve` exits non-zero when its final save fails. Each save of the whole board
-keeps the one it replaces as `board.json.prev`, so it takes twice its size on disk. A `board.json` that is cut short or
-damaged is set aside as `board.json.corrupt-<unix time>`, and the server puts `board.json.prev` in its place and starts
-from it, or empty, and logs an error; a damaged `board.json.durable` is set aside too, and what it held since
-`board.json` is lost. One of a newer version of intagent, or one it cannot read, still stops it, so that it is not
+restores as well; an older intagent cannot read the compressed one, and sets it aside as damaged and starts empty. To go
+back to one, unpack both snapshots first (`gunzip -c board.json > plain && mv plain board.json`, and the same for
+`board.json.prev`); upgrading again afterwards sets aside the `board.json.durable` left from before, as
+`board.json.durable.stale-<unix time>`, rather than undo what changed under the older one. When saves fail (a full disk,
+say), the server logs it at once and then once a minute, keeps every change in memory, tries again with a growing pause,
+and `/healthz` carries `"snapshot": {"ok": false, "failing_since": ..., "attempts": ..., "error": "write: no space left
+on device"}`, which `?strict=1` answers with 503 too. `serve` exits non-zero when its final save fails. Each save of the
+whole board keeps the one it replaces as `board.json.prev`, so it takes twice its size on disk. A `board.json` that is
+cut short or damaged is set aside as `board.json.corrupt-<unix time>`, and the server puts `board.json.prev` in its
+place and starts from it, or empty, and logs an error; a damaged `board.json.durable` is set aside too, and what it held
+since `board.json` is lost. One of a newer version of intagent, or one it cannot read, still stops it, so that it is not
 overwritten.
 
 A restart does not count the time the server was down as its agents' silence: agents still at work are not announced

@@ -220,6 +220,16 @@ type Board struct {
 	// (SnapshotSaved), each with the board's version when it was: the
 	// durable part says so, as the snapshot does not (durable.go).
 	ended, removed map[string]uint64
+	// restored is the snapshot the board was restored from, if any.
+	restored *restoredFrom
+}
+
+// restoredFrom is what RestoreDurable needs to know of the snapshot a
+// board was restored from: when it was saved, and whether it recorded the
+// board's version, as an older server's does not.
+type restoredFrom struct {
+	saved     time.Time
+	versioned bool
 }
 
 // Option configures a Board.

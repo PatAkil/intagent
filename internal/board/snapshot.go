@@ -315,6 +315,7 @@ func (b *Board) RestoreAfter(r io.Reader, now, stopped time.Time) error {
 	b.memberBytes = map[string]int{}
 	b.unpruned = map[string]bool{}
 	b.ended, b.removed = map[string]uint64{}, map[string]uint64{}
+	b.restored = &restoredFrom{saved: s.Saved, versioned: s.Version != 0}
 	for _, c := range s.Claims {
 		if c == nil || c.ID == "" {
 			continue
