@@ -405,3 +405,7 @@ Pushing a tag `vX.Y.Z` runs the release workflow: it tests, publishes a GitHub r
 pushes the server image to `ghcr.io/<owner>/intagent` for amd64 and arm64.
 
 The design is in [docs/design.md](docs/design.md).
+
+## License
+
+intagent is licensed under the [Apache License 2.0](LICENSE). Copyright 2026 Patrick Akil; see [NOTICE](NOTICE).
