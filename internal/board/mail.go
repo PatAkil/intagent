@@ -154,9 +154,10 @@ func (b *Board) collectMail(now time.Time, c *claim) {
 	delete(b.mail, k)
 	c.ownInbox()
 	for _, it := range m.Items {
-		if now.Sub(it.At) < inboxTTL {
+		if now.Sub(it.since()) < inboxTTL {
 			c.InboxSeq++
-			it.Seq = c.InboxSeq // put in the inbox now, after what it holds
+			// Put in the inbox now, after what it holds, it waits a day there.
+			it.Seq, it.Queued = c.InboxSeq, now
 			c.Inbox = append(c.Inbox, it)
 		}
 	}
@@ -171,11 +172,12 @@ func (b *Board) collectMail(now time.Time, c *claim) {
 // mailboxes left empty, and reports whether it dropped any.
 func (b *Board) tidyMail(now time.Time) bool {
 	tidied := false
+	expired := func(it InboxItem) bool { return now.Sub(it.since()) >= inboxTTL }
 	for k, m := range b.mail {
-		if len(m.Items) > 0 && now.Sub(m.Items[0].At) < inboxTTL {
+		if len(m.Items) > 0 && (now.Sub(m.Items[0].At) < inboxTTL || !slices.ContainsFunc(m.Items, expired)) {
 			continue
 		}
-		m.Items = slices.DeleteFunc(m.Items, func(it InboxItem) bool { return now.Sub(it.At) >= inboxTTL })
+		m.Items = slices.DeleteFunc(m.Items, expired)
 		if len(m.Items) == 0 {
 			delete(b.mail, k)
 		}

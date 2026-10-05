@@ -203,6 +203,11 @@ type InboxItem struct {
 	Paths     []string  `json:"paths,omitempty"`
 	// Shown is set once a session has been shown the item.
 	Shown bool `json:"shown,omitempty"`
+	// Queued is when a note held in a mailbox joined the claim's inbox
+	// (collectMail), from which it waits a day to be heard as an item put
+	// there then does (since), though it still says when it was sent (At).
+	// Zero for any other item.
+	Queued time.Time `json:"queued,omitzero"`
 	// DeliveredTo held the keys of the sessions that had been shown the
 	// item, in snapshots of older servers: Restore reads it into Shown and
 	// the sessions' Heard, and nothing sets it.

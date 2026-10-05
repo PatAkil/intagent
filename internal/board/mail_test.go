@@ -101,6 +101,36 @@ func TestCollectedNotesKeepTheInboxInOrder(t *testing.T) {
 	}
 }
 
+// A note held in a mailbox for most of its day joins the inbox after the
+// alerts queued there while its reader was away, and is told after them, a
+// few at a time; it then has a day in the inbox, as an item put there then
+// does, rather than what was left of its day in the mailbox, which ran out
+// before its turn. It still says when it was sent.
+func TestHeldNoteHasADayInTheInbox(t *testing.T) {
+	h := newHarness(t)
+	h.edit("bob", "b1", "f0.go", "f1.go", "f2.go", "f3.go", "f4.go", "f5.go", "f6.go", "f7.go", "f8.go", "f9.go")
+	h.hook(KindPostEdit, "bob", "b1", "f0.go", "f1.go", "f2.go", "f3.go", "f4.go", "f5.go", "f6.go", "f7.go", "f8.go", "f9.go")
+	h.hook(KindSessionEnd, "bob", "b1")
+	h.advance(time.Minute)
+	if res, err := h.b.Note(h.now, NoteRequest{Member: "alice", Where: whereOf("alice"), To: "bob", Text: "held for you",
+		ToMember: true}); err != nil || res.HeldFor != "bob" {
+		t.Fatalf("note: %+v %v", res, err)
+	}
+	for i := range 10 { // while bob is away, ten teammates' worktrees change his files
+		h.advance(time.Hour)
+		h.at(KindPostEdit, "carol", fmt.Sprint("wt", i), fmt.Sprint("c", i), fmt.Sprintf("f%d.go", i))
+	}
+	h.advance(inboxTTL - 10*time.Hour - 2*time.Minute) // the note has two minutes of its day left
+	var told string
+	for range 3 {
+		told += h.hook(KindPrompt, "bob", "b2").Context
+		h.advance(time.Minute)
+	}
+	if !strings.Contains(told, `24h ago: Note from alice's agent: "held for you"`) {
+		t.Errorf("bob was not told the note held for him a day ago:\n%s", told)
+	}
+}
+
 // A note to a member of the team who has no claim in the repository yet
 // waits for their first session there; one to a name the team does not
 // know, and nothing on the board answers to, finds no one.

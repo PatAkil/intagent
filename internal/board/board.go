@@ -1992,7 +1992,7 @@ func (b *Board) enqueue(now time.Time, c *claim, it InboxItem) {
 	it.Text = Clean(it.Text, maxNoteLen)
 	keep := c.Inbox[:0:0]
 	for _, old := range c.Inbox {
-		if now.Sub(old.At) < inboxTTL {
+		if now.Sub(old.since()) < inboxTTL {
 			keep = append(keep, old)
 		}
 	}
@@ -2003,6 +2003,10 @@ func (b *Board) enqueue(now time.Time, c *claim, it InboxItem) {
 	}
 	c.Inbox, c.inboxShared = keep, false // a new slice, which no snapshot shares
 }
+
+// since is when an inbox item's day to be heard began: when it was put in
+// the inbox, or, for a note held in a mailbox, when it joined it.
+func (it *InboxItem) since() time.Time { return laterOf(it.At, it.Queued) }
 
 // evictIndex picks the item a full inbox lets go of: the oldest one some
 // session was already shown; else the oldest of the sender with the most
@@ -2055,7 +2059,7 @@ func (b *Board) deliverInbox(now time.Time, c *claim, s *session) string {
 	heard := s.Heard[c.ID]
 	var next []int // positions of the items to tell
 	for i := range c.Inbox {
-		if it := &c.Inbox[i]; it.Seq > heard && now.Sub(it.At) < inboxTTL {
+		if it := &c.Inbox[i]; it.Seq > heard && now.Sub(it.since()) < inboxTTL {
 			next = append(next, i)
 		}
 	}
@@ -2799,9 +2803,10 @@ func (b *Board) Sweep(now time.Time) {
 // order, so only the oldest is looked at when none has expired.
 func (b *Board) tidy(now time.Time, c *claim, live bool) bool {
 	tidied := false
-	if len(c.Inbox) > 0 && now.Sub(c.Inbox[0].At) >= inboxTTL {
+	expired := func(it InboxItem) bool { return now.Sub(it.since()) >= inboxTTL }
+	if len(c.Inbox) > 0 && now.Sub(c.Inbox[0].At) >= inboxTTL && slices.ContainsFunc(c.Inbox, expired) {
 		c.ownInbox()
-		c.Inbox = slices.DeleteFunc(c.Inbox, func(it InboxItem) bool { return now.Sub(it.At) >= inboxTTL })
+		c.Inbox = slices.DeleteFunc(c.Inbox, expired)
 		if len(c.Inbox) == 0 {
 			c.Inbox = nil
 		}
