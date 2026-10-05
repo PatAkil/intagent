@@ -65,10 +65,10 @@ func (b *Board) unansweredEdit(now time.Time, c *claim, s *session, ev HookEvent
 		s.unack(func(k string) bool { return slices.Contains(spent, k) })
 		s.refused = slices.Delete(s.refused, i, i+1)
 	}
-	// Judged as its pre_edit would have been, on the first maxCheckPaths
-	// paths: a post_edit keeps up to MaxFootprint, and each path judged costs
-	// a pass over the repository's claims under the lock.
-	told := b.wouldTell(now, c, s, ev.Paths[:min(len(ev.Paths), maxCheckPaths)], ev.Worker)
+	// Judged as its pre_edit would have been: its first maxCheckPaths paths
+	// against all of teammates' work, and the rest, up to the MaxFootprint
+	// a post_edit keeps, against their reservations.
+	told := b.wouldTell(now, c, s, ev.Paths, ev.Worker)
 	if len(told) == 0 {
 		return
 	}

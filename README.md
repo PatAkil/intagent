@@ -117,10 +117,11 @@ A client has 15 seconds to send a request and 16 KB for its headers, and an answ
 seconds is cut off. Board answers sent to clients that do not take gzip may hold 32 MB at once; past that a large one
 is answered 503 with `Retry-After` (browsers and intagent's clients take gzip; for `curl`, add `--compressed`). A
 dashboard over its stream cap is answered 429 and tries again later. A path has at most 64 segments of 255 bytes, and
-an intent's pattern at most 32 segments, 4 of them `**`, with wildcard segments of at most 64 bytes. A hook, check or
-declaration may compare paths with teammates' patterns only so much; one that would take longer lets through what it
-did not compare (but refuses an exclusive intent it could not compare with every reservation), its agent is told, and
-the dashboard counts it. These are not settings.
+an intent's pattern at most 32 segments, 4 of them `**`, with wildcard segments of at most 64 bytes. An edit or a check
+is compared with all of teammates' work on its first 200 paths, and with their reservations on all of them up to 2000;
+past 2000 its agent is told what was not checked. A hook, check or declaration may compare paths with teammates'
+patterns only so much; one that would take longer lets through what it did not compare (but refuses an exclusive intent
+it could not compare with every reservation), its agent is told, and the dashboard counts it. These are not settings.
 
 **Each repository, once** (one person; then commit the files it writes):
 
@@ -329,9 +330,11 @@ bounds each request (default `2s`). A whole hook run, git included, takes at mos
 for Claude Code, Gemini CLI and Cursor and 2 for other agents (less if `CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS` asks),
 under the timeouts `intagent init` gives the agents, so a longer `INTAGENT_TIMEOUT` is cut short there.
 `intagent check`, the MCP `check_paths` tool and `intagent guard` send more than 200 paths in several checks. A check is
-answered on its first 200 paths, and says how many it did not check: an older client's guard, which sends a whole commit
-in one check, has the commit's first 200 files checked, as before. Under `INTAGENT_FAIL=closed`, a hook older than this
-release lets an edit the server is too busy to check go ahead, with a note to its agent.
+answered in full on its first 200 paths and against teammates' reservations on the rest, and says how many it did not
+check in full: an older client's guard, which sends a whole commit in one check, has the commit's first 200 files
+checked in full, as before, and the rest against reservations, so that it refuses a commit into one. Under
+`INTAGENT_FAIL=closed`, a hook older than this release lets an edit the server is too busy to check go ahead, with a
+note to its agent.
 
 ## Security model
 

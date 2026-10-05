@@ -337,7 +337,7 @@ All endpoints take and return JSON and require `Authorization: Bearer <token>`, 
 | `POST /v1/hook` | hooks | One normalised lifecycle event in, with the worker it comes from where the agent names one, a decision and context out. The conflicts an edit's answer lists are those that block or overlap, up to 200, and the 20 newest nearby; `more_conflicts` counts the rest. |
 | `POST /v1/intents` | MCP, CLI | Declare intents for a claim. Returns overlaps. |
 | `POST /v1/intents/release` | MCP, CLI | Release some or all intents. |
-| `POST /v1/check` | MCP, CLI, guard | Who else claims or touched these paths, the first 200 of them (`unchecked` counts the rest, and `text` says so; intagent's CLI, MCP tool and guard send more in several checks). Read-only. |
+| `POST /v1/check` | MCP, CLI, guard | Who else claims or touched these paths: all of teammates' work for the first 200 of them, and their reservations for the rest, up to 2000 (`unchecked` counts the paths past 200, and `text` says so; intagent's CLI, MCP tool and guard send more in several checks of 200). Read-only. |
 | `POST /v1/notes` | MCP, CLI | Send a note to a claim, a member or whoever changed a path. A note to a member with no agent running in the repository waits for their next session there (`held_for`). |
 | `GET /v1/board` | CLI, dashboard | Every claim and session in a repo, with derived states. Gzip when the client takes it, and a weak `ETag` for `If-None-Match`. Its `epoch` changes when the server restarts, and `server` is there while agents' edits go ahead unchecked (below). With `format=text`, the board as text; adding `limit`, `host` and `worktree` gives an agent at most `limit` claims (16 KB), those sharing files or areas with its own first, as the MCP `team_board` tool shows them. |
 | `GET /v1/repos` | dashboard | The repositories with claims, each with the server's `epoch`. Read once for all who ask at once, at most every 250 ms. |
@@ -430,18 +430,25 @@ while degraded), in its log and, if asked, by webhook.
   body that starts so and turns out to be another kind. Clients send only a prompt's first line, which is all the
   board reads. Footprints and prompts are cut to size before the board's lock is taken: a footprint to its first 2000
   entries, duplicates and invalid paths included.
-- An edit is checked on the first 200 paths it names, and past that its agent is told how many were not checked. A
-  check is too: its answer counts the paths past the first 200 in `unchecked`, and its text says so.
+- An edit is compared with all of teammates' work on the first 200 paths it names, and with their reservations on every
+  path the board reads of it, up to 2000: one tool call (an `apply_patch`, a `MultiEdit`) is one pre_edit, which the
+  hook sends whole, and a file a teammate holds exclusively is refused wherever the call names it, from older clients
+  too. Past 200 paths its agent is told what was checked of them, and past 2000 that the rest was not checked. A check
+  is answered the same way: its answer counts the paths past the first 200 in `unchecked`, and its text says so.
   `intagent check`, the MCP `check_paths` tool and `intagent guard` send more in checks of 200. Older clients send a
-  whole commit in one check and read only its conflicts, so they get what older servers gave them: the first 200
-  paths checked and the rest let through unsaid (a refusal would let the whole commit through, or under
-  `INTAGENT_FAIL=closed` refuse every large one). Each path costs a look at each of the repository's claims under
-  the board's lock: 200 paths on a repository of 300 claims of 50 files, every twentieth at 2000, hold it for about
-  25 ms. A post_edit's paths, which only join the claim's files, are kept up to 2000, and an activity lists 200 of them
-  and counts the rest. Checks and declarations are paced per member and worktree, one at a time and five a second with
-  a burst of 20 (429 past that), since each holds the board's lock for as long as its paths and patterns take; an
-  orchestrator's agents, each in its own worktree, are paced apart. Hooks are never paced, since a fleet's agents
-  share one token.
+  whole commit in one check and read only its conflicts: they get its first 200 paths checked in full, as older servers
+  gave them, and a teammate's reservation among the rest refuses the commit (refusing the check itself would let the
+  whole commit through, or under `INTAGENT_FAIL=closed` refuse every large one). Each path compared in full costs a look
+  at each of the repository's claims under the board's lock: 200 paths on a repository of 300 claims of 50 files, every
+  twentieth at 2000, hold it for about 25 ms. The rest cost a look at the reservations alone, of the live claims that
+  hold one: a reservation rooted in a directory is matched only against the paths under it, found by a binary search of
+  the paths in name order, so 1800 more paths against a hundred teammates' reserved directories cost about 2 ms more,
+  and a pattern rooted nowhere, such as `**/*.sql`, is matched against each of them, about 20,000 units of the call's
+  matching (a claim with 50 such exclusive patterns uses about half of it, about 20 ms). A post_edit's paths, which only
+  join the claim's files, are kept up to 2000, and an activity lists 200 of them and counts the rest. Checks and
+  declarations are paced per member and worktree, one at a time and five a second with a burst of 20 (429 past that),
+  since each holds the board's lock for as long as its paths and patterns take; an orchestrator's agents, each in its
+  own worktree, are paced apart. Hooks are never paced, since a fleet's agents share one token.
 - A client has 15 seconds to send a whole request and 16 KB for its headers, and past 4096 open connections
   (`serve --max-connections`) the server closes new ones as soon as it accepts them, so a client that sends slowly, or
   opens many connections, with a token or without, cannot use up the server's file descriptors and memory. A hook

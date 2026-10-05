@@ -147,3 +147,35 @@ func TestCheckTakesMorePathsThanOneCheck(t *testing.T) {
 		t.Errorf("check_paths: %d checks in all, want 4", n)
 	}
 }
+
+// One tool call that changes many files is one pre_edit, which the hook
+// sends whole: a file a teammate holds exclusively is refused wherever the
+// patch names it, also past the first 200 paths, which are all the server
+// compares with the rest of teammates' work. The server judged only those
+// 200, and let the patch into alice's reservation with a note.
+func TestLargePatchIntoAReservationIsRefused(t *testing.T) {
+	for _, n := range []int{150, 250, 1999} {
+		t.Run(fmt.Sprint(n), func(t *testing.T) {
+			tm := newTeam(t, "alice", "bob")
+			a, b := tm.clone("alice"), tm.clone("bob")
+			tm.enrol(map[string]string{"alice": a, "bob": b})
+			tm.as("alice", a, claudeEvent("a1", a, "SessionStart", map[string]any{"source": "startup"}), "hook")
+			if out, errOut, code := tm.as("alice", a, "", "declare", "-x", "-m", "Rework payment retries", "svc/pay/**"); code != 0 {
+				t.Fatalf("declare: %s %s", out, errOut)
+			}
+			var patch strings.Builder
+			patch.WriteString("*** Begin Patch\n")
+			for i := range n {
+				fmt.Fprintf(&patch, "*** Add File: docs/p%04d.md\n+x\n", i)
+			}
+			patch.WriteString("*** Update File: svc/pay/retry.go\n@@\n-package pay\n+package pay // bob\n*** End Patch\n")
+			ev, _ := json.Marshal(map[string]any{"session_id": "b1", "cwd": b, "hook_event_name": "PreToolUse", "tool_name": "apply_patch",
+				"tool_use_id": "u1", "tool_input": map[string]any{"command": patch.String()}})
+			tm.as("bob", b, claudeEvent("b1", b, "SessionStart", map[string]any{"source": "startup"}), "hook", "codex")
+			out, _, _ := tm.as("bob", b, string(ev), "hook", "codex")
+			if dec, reason, _ := decision(t, out); dec != "deny" || !strings.Contains(reason, "svc/pay/retry.go") {
+				t.Fatalf("a patch of %d documents and svc/pay/retry.go, which alice holds exclusively: %.300q", n, out)
+			}
+		})
+	}
+}

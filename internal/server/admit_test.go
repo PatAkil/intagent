@@ -454,12 +454,12 @@ func TestPacingForgetsIdleWorktrees(t *testing.T) {
 	}
 }
 
-// A check of more than 200 paths is checked on its first 200, and its answer
-// counts the rest and says so. intagent's guard, check and check_paths send
-// checks of 200; older ones send a whole commit in one and read only the
-// conflicts, so a refusal would let a commit that touches a teammate's
-// reserved file through unchecked, or under INTAGENT_FAIL=closed refuse
-// every large commit.
+// A check of more than 200 paths is checked in full on its first 200, and
+// on the rest against teammates' reservations; its answer counts the rest
+// and says so. intagent's guard, check and check_paths send checks of 200;
+// older ones send a whole commit in one and read only the conflicts, so a
+// refusal would let a commit that touches a teammate's reserved file through
+// unchecked, or under INTAGENT_FAIL=closed refuse every large commit.
 func TestOversizedCheckIsCheckedOnItsFirstPaths(t *testing.T) {
 	ts := newTestServer(t)
 	ts.do(t, "POST", "/v1/hook", "alice", hookEv(board.KindPrompt, "alice", "a1"), nil)
@@ -467,9 +467,9 @@ func TestOversizedCheckIsCheckedOnItsFirstPaths(t *testing.T) {
 	if code := ts.do(t, "POST", "/v1/intents", "alice", dec, nil); code != http.StatusOK {
 		t.Fatalf("declare: %d", code)
 	}
-	for _, tc := range []struct{ n, unchecked int }{{200, 0}, {250, 50}} {
+	for _, tc := range []struct{ n, at, unchecked int }{{200, 10, 0}, {250, 10, 50}, {250, 240, 50}} {
 		req := checkReq("bob", "/w/b", tc.n)
-		req.Paths[10].Path = "svc/pay/retry.go"
+		req.Paths[tc.at].Path = "svc/pay/retry.go"
 		var res board.CheckResult
 		code := ts.do(t, "POST", "/v1/check", "bob", req, &res)
 		if code != http.StatusOK || len(res.Conflicts) != 1 || res.Conflicts[0].Severity != board.SeverityBlock || res.Unchecked != tc.unchecked {

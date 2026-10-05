@@ -157,10 +157,11 @@ const maxShownPaths = 200
 // member's checks, at the 5 a second the server allows, would then hold it
 // for more than half of every second. Answers are bounded (boundConflicts),
 // but that cost is why it stays below MaxFootprint.
-// Past it, an edit's agent is told what was not checked, and a check's
-// answer counts and names what it did not check. It may exceed
-// maxShownPaths: an edit's activity lists the paths that decided its answer
-// first.
+// Past it, an edit's or a check's paths, up to MaxFootprint, are compared
+// with teammates' reservations alone (reservedAmong), which costs little; an
+// edit's agent is told what was not checked in full, and a check's answer
+// counts and names it. It may exceed maxShownPaths: an edit's activity lists
+// the paths that decided its answer first.
 const maxCheckPaths = 200
 
 // Board holds every claim and session the server knows about.
@@ -589,9 +590,7 @@ func (b *Board) Hook(now time.Time, ev HookEvent) (HookResult, error) {
 		res, spent = b.decide(now, c, s, ev.Paths, ev.NoAsk, ev.Worker)
 		res.ClaimID = c.ID
 		if len(ev.Paths) > maxCheckPaths || named > b.cfg.MaxFootprint {
-			res.Context = joinBlocks(res.Context, fmt.Sprintf("[intagent] This edit names %d files; intagent checked only "+
-				"the first %d against teammates' work. Check the others with the intagent check_paths tool, %d at a time, "+
-				"or tell your user.", named, min(len(ev.Paths), maxCheckPaths), maxCheckPaths))
+			res.Context = joinBlocks(res.Context, b.largeEditNote(named))
 		}
 		if b.work.Short() {
 			res.Context = joinBlocks(res.Context, prefix+" "+partialNote+" It let this edit through on what it had not "+
@@ -654,6 +653,20 @@ func (b *Board) Hook(now time.Time, ev HookEvent) (HookResult, error) {
 	return res, nil
 }
 
+// largeEditNote tells the agent of an edit that names more than
+// maxCheckPaths files what was checked of them: every file the board read,
+// up to MaxFootprint, against teammates' reservations, and the first
+// maxCheckPaths against the rest of their work.
+func (b *Board) largeEditNote(named int) string {
+	reserved := "them all"
+	if named > b.cfg.MaxFootprint {
+		reserved = fmt.Sprintf("only the first %d", b.cfg.MaxFootprint)
+	}
+	return fmt.Sprintf("[intagent] This edit names %d files; intagent checked %s against teammates' reservations, "+
+		"but only the first %d against the rest of their work. Check the others with the intagent check_paths tool, "+
+		"%d at a time, or tell your user.", named, reserved, maxCheckPaths, maxCheckPaths)
+}
+
 // clean validates an event, before anything is created for it, and bounds
 // its fields. It runs before the board's lock is taken, so that how much a
 // client sends does not decide how long others wait for the lock.
@@ -692,7 +705,8 @@ func (ev HookEvent) clean(maxFootprint int) (HookEvent, error) {
 	}
 	ev.Prompt = PromptLine(ev.Prompt)
 	// A post_edit's paths join the claim's files, as many as it keeps; a
-	// pre_edit's first maxCheckPaths are checked.
+	// pre_edit's are all checked against reservations, and its first
+	// maxCheckPaths against the rest of teammates' work.
 	ev.Paths, err = cleanPaths(ev.Paths, maxFootprint)
 	return ev, err
 }
@@ -1197,7 +1211,7 @@ func (b *Board) reportUnchecked(now time.Time, c *claim, s *session, added []Pat
 	if action == ActionOff {
 		return
 	}
-	holders := b.reservationHolders(now, c)
+	holders := b.reservationHolders(b.liveAt(now), c)
 	if len(holders) == 0 {
 		return
 	}
@@ -1257,9 +1271,8 @@ func (b *Board) tellUnchecked(now time.Time, c *claim, s *session, lines []strin
 // reservationHolders lists the claims whose exclusive intents can block a
 // change in c's worktree: the live ones in its repository, other than c and
 // those c's sessions carry, that hold one. They are in ID order.
-func (b *Board) reservationHolders(now time.Time, c *claim) []*claim {
+func (b *Board) reservationHolders(live liveness, c *claim) []*claim {
 	var holders []*claim
-	live := b.liveAt(now)
 	for o := range b.claimsIn(c.Repo) {
 		if o.ID != c.ID && slices.ContainsFunc(o.Intents, func(in Intent) bool { return in.Mode == ModeExclusive }) &&
 			live.claim(o.ID) && !live.carried(o.ID, c.ID) {
@@ -1297,6 +1310,63 @@ func (b *Board) blockerOf(p PathRef, holders []*claim) (Conflict, bool) {
 	}
 	best.Why = intentWhy(*by)
 	return best, true
+}
+
+// reservedAmong lists the block conflicts on paths, as conflictsFor lists
+// them for each path in turn: of each live teammate's claim that holds one
+// exclusively, its first exclusive intent that covers it. It looks at
+// reservations alone, which are few, and matches each pattern rooted in a
+// directory only against the paths under it (namesUnder), so that it costs
+// little however many paths an edit names. Like comparing, it stops when
+// the call runs out of matching.
+func (b *Board) reservedAmong(live liveness, self *claim, paths []PathRef) []Conflict {
+	if len(paths) == 0 {
+		return nil
+	}
+	holders := b.reservationHolders(live, self)
+	if len(holders) == 0 {
+		return nil
+	}
+	byName := orderByName(paths)
+	found := map[int][]Conflict{} // by position in paths
+	for _, o := range holders {
+		blocked := map[int]bool{} // the paths an earlier intent of o's covers
+		for i := range o.Intents {
+			in := &o.Intents[i]
+			if in.Mode != ModeExclusive {
+				continue
+			}
+			some := byName
+			if dir := glob.LiteralDir(in.Pattern); dir != "" {
+				some = namesUnder(byName, paths, dir)
+			}
+			for _, k := range some {
+				if b.work.Short() {
+					return conflictsByPosition(found)
+				}
+				if blocked[k] || !b.match(in.Pattern, paths[k].Path) {
+					continue
+				}
+				blocked[k] = true
+				p := paths[k]
+				found[k] = append(found[k], Conflict{Path: p.Path, Area: p.Area, Severity: SeverityBlock, ClaimID: o.ID,
+					Member: o.Member, Branch: o.Branch, Task: o.Task, Pattern: in.Pattern, Since: in.DeclaredAt, Active: true,
+					Why: intentWhy(*in)})
+			}
+		}
+	}
+	return conflictsByPosition(found)
+}
+
+// conflictsByPosition lists the conflicts found for each path, in the order
+// of the paths, each path's sorted as conflictsFor sorts them.
+func conflictsByPosition(found map[int][]Conflict) []Conflict {
+	var out []Conflict
+	for _, k := range slices.Sorted(maps.Keys(found)) {
+		sortConflicts(found[k])
+		out = append(out, found[k]...)
+	}
+	return out
 }
 
 func taskOf(cf Conflict) string {
@@ -1623,12 +1693,12 @@ func (v verdict) acted() []Conflict {
 
 // decide answers an agent about to write, and counts and announces the edit
 // if it runs into a collision this session has not been told about. It checks
-// the first maxCheckPaths paths, and the announcement names them all. It also
+// the paths as judge does, and the announcement names them all. It also
 // returns the one-time answers the check spent, the bumps it showed and the
 // questions an agent that cannot ask is told to put, which a refusal the
 // agent never hears gives back.
 func (b *Board) decide(now time.Time, c *claim, s *session, paths []PathRef, noAsk bool, worker string) (HookResult, []string) {
-	v := b.judge(now, c, s, paths[:min(len(paths), maxCheckPaths)], noAsk, worker)
+	v := b.judge(now, c, s, paths, noAsk, worker)
 	res := b.answer(now, s, v)
 	spent := v.bumpKeys
 	if res.Decision == DecisionAsk {
@@ -1728,40 +1798,52 @@ func decidedFirst(paths []PathRef, acted []Conflict) []string {
 }
 
 // judge applies the policy to the conflicts on every path being written by
-// the session's worker. A bump counts as acknowledged as soon as it is met:
-// its retry goes through.
+// the session's worker. The first maxCheckPaths paths are compared with all
+// of teammates' work, and the rest with their reservations alone
+// (reservedAmong): those cost little, and a file a teammate holds
+// exclusively must not get through for being named late in a large edit. A
+// bump counts as acknowledged as soon as it is met: its retry goes through.
 func (b *Board) judge(now time.Time, c *claim, s *session, paths []PathRef, noAsk bool, worker string) verdict {
 	live := b.liveAt(now)
 	var v verdict
-	for _, p := range paths {
+	first := min(len(paths), maxCheckPaths)
+	for _, p := range paths[:first] {
 		for _, cf := range b.conflictsFor(live, c, s.Key, p) {
-			v.all = append(v.all, cf)
-			key := workerKey(ackKey(cf), worker)
-			action := b.cfg.Policy.action(cf.Severity)
-			if action == ActionBump && b.breachedReservation(c, cf) {
-				// A teammate changed a file inside this claim's reservation
-				// after it was made: the owner is told, not stopped.
-				action = ActionWarn
-			}
-			switch {
-			case action == ActionDeny:
-				v.refused = append(v.refused, cf)
-			case action == ActionAsk && !noAsk:
-				v.asked = append(v.asked, cf)
-			case action == ActionAsk && !s.Acked[key]:
-				v.asked = append(v.asked, cf)
-				v.askKeys = append(v.askKeys, key)
-			case action == ActionBump && !s.Acked[key]:
-				s.ack(key)
-				v.refused = append(v.refused, cf)
-				v.bumpKeys = append(v.bumpKeys, key)
-			case action == ActionWarn && !s.Acked[key]:
-				v.warned = append(v.warned, cf)
-				v.warnKeys = append(v.warnKeys, key)
-			}
+			b.weigh(&v, c, s, cf, noAsk, worker)
 		}
 	}
+	for _, cf := range b.reservedAmong(live, c, paths[first:]) {
+		b.weigh(&v, c, s, cf, noAsk, worker)
+	}
 	return v
+}
+
+// weigh sorts one conflict into the verdict by what the policy does about it.
+func (b *Board) weigh(v *verdict, c *claim, s *session, cf Conflict, noAsk bool, worker string) {
+	v.all = append(v.all, cf)
+	key := workerKey(ackKey(cf), worker)
+	action := b.cfg.Policy.action(cf.Severity)
+	if action == ActionBump && b.breachedReservation(c, cf) {
+		// A teammate changed a file inside this claim's reservation
+		// after it was made: the owner is told, not stopped.
+		action = ActionWarn
+	}
+	switch {
+	case action == ActionDeny:
+		v.refused = append(v.refused, cf)
+	case action == ActionAsk && !noAsk:
+		v.asked = append(v.asked, cf)
+	case action == ActionAsk && !s.Acked[key]:
+		v.asked = append(v.asked, cf)
+		v.askKeys = append(v.askKeys, key)
+	case action == ActionBump && !s.Acked[key]:
+		s.ack(key)
+		v.refused = append(v.refused, cf)
+		v.bumpKeys = append(v.bumpKeys, key)
+	case action == ActionWarn && !s.Acked[key]:
+		v.warned = append(v.warned, cf)
+		v.warnKeys = append(v.warnKeys, key)
+	}
 }
 
 // answer turns a verdict into what the hook says, and acknowledges the
@@ -2285,8 +2367,9 @@ type CheckRequest struct {
 type CheckResult struct {
 	Conflicts []Conflict `json:"conflicts"`
 	Text      string     `json:"text"`
-	// Unchecked counts the paths past the first maxCheckPaths, which were not
-	// checked; Text says so too.
+	// Unchecked counts the paths past the first maxCheckPaths, which were
+	// checked against teammates' reservations alone, up to MaxFootprint
+	// paths, and not at all past that; Text says so too.
 	Unchecked int `json:"unchecked,omitempty"`
 	// Partial says the board stopped comparing the paths with teammates'
 	// patterns before it had compared them all; Text says so too.
@@ -2308,25 +2391,34 @@ type Whoami struct {
 	Demo bool `json:"demo,omitempty"`
 }
 
-// Check lists conflicts for paths without changing anything. It checks the
-// first maxCheckPaths of them, and its answer counts the rest and says how
-// to check them. intagent's clients send checks of maxCheckPaths; older ones
-// send every path in one and read only the conflicts, as they did when the
-// rest went unsaid, and a refusal would pass a whole commit unchecked.
+// Check lists conflicts for paths without changing anything. It checks them
+// as an edit's are checked (judge): the first maxCheckPaths against all of
+// teammates' work, and the rest, up to MaxFootprint, against their
+// reservations alone. Its answer counts the paths past maxCheckPaths and says
+// how to check them in full. intagent's clients send checks of
+// maxCheckPaths; older ones send every path in one and read only the
+// conflicts, as they did when the rest went unsaid: a refusal would pass a
+// whole commit unchecked, while a teammate's reservation among the rest
+// stops it.
 func (b *Board) Check(now time.Time, r CheckRequest) (CheckResult, error) {
 	w, err := cleanWhere(r.Where)
 	if err != nil {
 		return CheckResult{}, err
 	}
-	paths, err := cleanPaths(r.Paths, maxCheckPaths)
+	paths, err := cleanPaths(r.Paths, b.cfg.MaxFootprint)
 	if err != nil {
 		return CheckResult{}, err
 	}
 	cs, partial := b.check(now, r.Member, w, paths)
 	res := CheckResult{Conflicts: cs, Text: RenderConflicts(now, cs), Unchecked: max(0, len(r.Paths)-maxCheckPaths), Partial: partial}
 	if res.Unchecked > 0 {
-		res.Text += fmt.Sprintf("\nintagent checked only the first %d of these %d paths. Check the other %d in other "+
-			"checks, %d at a time.", maxCheckPaths, len(r.Paths), res.Unchecked, maxCheckPaths)
+		rest := "the rest"
+		if len(r.Paths) > b.cfg.MaxFootprint {
+			rest = fmt.Sprintf("the rest up to the first %d", b.cfg.MaxFootprint)
+		}
+		res.Text += fmt.Sprintf("\nintagent checked only the first %d of these %d paths against all of teammates' work, "+
+			"and %s against their reservations alone. Check the other %d in other checks, %d at a time.",
+			maxCheckPaths, len(r.Paths), rest, res.Unchecked, maxCheckPaths)
 	}
 	if partial {
 		res.Text += "\n" + partialNote + " What it had not compared is not listed."
@@ -2334,8 +2426,8 @@ func (b *Board) Check(now time.Time, r CheckRequest) (CheckResult, error) {
 	return res, nil
 }
 
-// check lists the conflicts of paths, cleaned, for member's claim in w, and
-// whether it stopped matching for want of work.
+// check lists the conflicts of paths, cleaned, for member's claim in w, as
+// judge finds them, and whether it stopped matching for want of work.
 func (b *Board) check(now time.Time, member string, w Where, paths []PathRef) ([]Conflict, bool) {
 	b.lock()
 	defer b.unlock()
@@ -2345,10 +2437,11 @@ func (b *Board) check(now time.Time, member string, w Where, paths []PathRef) ([
 	}
 	live := b.liveAt(now)
 	var out []Conflict
-	for _, p := range paths {
+	first := min(len(paths), maxCheckPaths)
+	for _, p := range paths[:first] {
 		out = append(out, b.conflictsFor(live, self, "", p)...)
 	}
-	return out, b.work.Short()
+	return append(out, b.reservedAmong(live, self, paths[first:])...), b.work.Short()
 }
 
 // NoteRequest sends a short note to another claim's agents.
