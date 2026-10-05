@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Builds the release archives for a version into dist/: one per platform,
-# each holding the binary, README.md and docs, plus SHA256SUMS.
+# each holding the binary, README.md, LICENSE, NOTICE and docs, plus
+# SHA256SUMS. The license asks that whoever passes the binary on gives the
+# license and the notice with it, and README.md links to both.
 #
 # Usage: scripts/release.sh v1.2.3
 set -euo pipefail
@@ -22,7 +24,7 @@ for p in $PLATFORMS; do
   [ "$os" = windows ] && bin=intagent.exe
   CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
     go build -trimpath -ldflags "-s -w -X main.version=$VERSION" -o "$stage/$bin" ./cmd/intagent
-  cp -r README.md docs "$stage/"
+  cp -r README.md LICENSE NOTICE docs "$stage/"
   if [ "$os" = windows ]; then
     (cd "$DIST" && zip -qr "$name.zip" "$name")
   else

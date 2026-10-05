@@ -36,7 +36,10 @@ const raceControl = "INTAGENT_TEST_RACE_CONTROL"
 // session what it was told, and so changed it in place as a missed copy on
 // write would, must make the race detector report it. Otherwise the test
 // above could not fail. The control runs in a process of its own, which must
-// fail.
+// fail. The detector sees only the races a run's schedule produces, and one
+// run in about thirty never has a writer change a shared told or alerted
+// while a snapshot still reads it, so each control has three runs to be
+// reported in.
 func TestSnapshotSharingControl(t *testing.T) {
 	if forget := os.Getenv(raceControl); forget != "" {
 		shareFootprintsUnderLoad(t, forget)
@@ -47,11 +50,20 @@ func TestSnapshotSharingControl(t *testing.T) {
 	}
 	for forget, writer := range map[string]string{"footprint": "(*claim).putTouch", "alerted": "(*claim).alert",
 		"told": "(*claim).setTold", "inbox": "(*Board).deliverInbox", "acked": "(*session).ack"} {
-		cmd := exec.Command(os.Args[0], "-test.run=^TestSnapshotSharingControl$", "-test.count=1")
-		cmd.Env = append(os.Environ(), raceControl+"="+forget)
-		out, err := cmd.CombinedOutput()
-		if err == nil || !bytes.Contains(out, []byte("WARNING: DATA RACE")) || !bytes.Contains(out, []byte(writer+"(")) {
-			t.Errorf("writing a shared %s in place went unreported (err %v):\n%s", forget, err, out)
+		var out []byte
+		var err error
+		reported := false
+		for range 3 {
+			cmd := exec.Command(os.Args[0], "-test.run=^TestSnapshotSharingControl$", "-test.count=1")
+			cmd.Env = append(os.Environ(), raceControl+"="+forget)
+			out, err = cmd.CombinedOutput()
+			if reported = err != nil && bytes.Contains(out, []byte("WARNING: DATA RACE")) &&
+				bytes.Contains(out, []byte(writer+"(")); reported {
+				break
+			}
+		}
+		if !reported {
+			t.Errorf("writing a shared %s in place went unreported in three runs (err %v):\n%s", forget, err, out)
 		}
 	}
 }

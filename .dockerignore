@@ -3,3 +3,5 @@
 intagent
 intagent-data
 *.bundle
+# release.sh's archives, which the release workflow builds before the image
+dist

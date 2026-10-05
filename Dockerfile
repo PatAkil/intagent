@@ -19,6 +19,7 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
 
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/intagent /usr/local/bin/intagent
+COPY LICENSE NOTICE /usr/share/doc/intagent/
 COPY --from=build --chown=nonroot:nonroot /out/data /data
 VOLUME /data
 EXPOSE 7400
