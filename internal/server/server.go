@@ -193,7 +193,7 @@ func New(o Options) (*Server, error) {
 		return nil, err
 	}
 	s.epoch = hex.EncodeToString(epoch[:8])
-	s.boards = newBoardBuilds(s.boardView, s.boardLoad, s.log)
+	s.boards = newBoardBuilds(s.boardView, s.board.Shows, s.boardLoad, s.log)
 	return s, nil
 }
 
@@ -740,7 +740,7 @@ func writeBoard(w http.ResponseWriter, r *http.Request, b *boardBuild) {
 		}
 	}
 	body := b.json
-	if acceptsGzip(r.Header.Get("Accept-Encoding")) {
+	if b.gz != nil && acceptsGzip(r.Header.Get("Accept-Encoding")) {
 		body = b.gz
 		h.Set("Content-Encoding", "gzip")
 	}

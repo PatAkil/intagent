@@ -82,7 +82,11 @@ func (c *boardBuilds) entries() int {
 func (c *boardBuilds) waiting(repo string) int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if e := c.repos[repo]; e != nil && e.next != nil {
+	e := c.repos[repo]
+	if repo == nowhere {
+		e = c.empty
+	}
+	if e != nil && e.next != nil {
 		return e.next.requests
 	}
 	return -1
@@ -106,12 +110,31 @@ func hasFile(v board.View, path string) bool {
 	return false
 }
 
+// claimIn puts a claim of bob's, from session, in r: the board then has
+// something of r to show, and builds of it are paced.
+func (ts *testServer) claimIn(t *testing.T, r, session string) {
+	t.Helper()
+	ev := hookEv(board.KindPostEdit, "bob", session, "z.go")
+	ev.Where.Repo = r
+	if code := ts.do(t, "POST", "/v1/hook", "bob", ev, nil); code != http.StatusOK {
+		t.Fatalf("hook in %s: %d", r, code)
+	}
+}
+
 func TestBoardSharesBuilds(t *testing.T) {
 	ts := newTestServer(t)
 	ts.do(t, "POST", "/v1/hook", "alice", hookEv(board.KindPostEdit, "alice", "a1", "x/y.go"), nil)
-	held := holdViews(t, ts.Server)
+	if n := readTogether(t, ts, 100); n > 2 {
+		t.Fatalf("100 readers made %d builds, want at most 2", n)
+	}
+}
 
-	const readers = 100
+// readTogether has readers ask for repo's board while the first one's build
+// is held, once it has read the board, and returns how many builds they
+// made. Each must see alice's x/y.go.
+func readTogether(t *testing.T, ts *testServer, readers int) int64 {
+	t.Helper()
+	held := holdViews(t, ts.Server)
 	var wg sync.WaitGroup
 	views := make([]board.View, readers)
 	codes := make([]int, readers)
@@ -141,13 +164,86 @@ func TestBoardSharesBuilds(t *testing.T) {
 	waitFor(t, "the readers to queue", func() bool { return ts.boards.waiting(repo) == readers-1 })
 	held.release()
 	wg.Wait()
-	if n := held.calls.Load(); n > 2 {
-		t.Fatalf("%d readers made %d builds, want at most 2", readers, n)
-	}
 	for i := range readers {
 		if codes[i] != http.StatusOK || !hasFile(views[i], "x/y.go") {
 			t.Fatalf("reader %d: %d %+v", i, codes[i], views[i])
 		}
+	}
+	return held.calls.Load()
+}
+
+// A name the board has nothing of is answered at once with its empty view,
+// and takes none of the entries builds are paced by. Made-up ?repo= values
+// once took every entry, each kept busy by its own requests, and a real
+// repository's readers then made a build each.
+func TestBoardUnknownReposTakeNoEntries(t *testing.T) {
+	ts := newTestServer(t)
+	var p fakePacing
+	p.install(ts.boards) // no time passes: an entry, once taken, stays
+	ts.do(t, "POST", "/v1/hook", "alice", hookEv(board.KindPostEdit, "alice", "a1", "x/y.go"), nil)
+	for i := range maxBoardEntries + 40 {
+		junk := fmt.Sprintf("github.com/junk/r%d", i)
+		var v board.View
+		if code := ts.do(t, http.MethodGet, "/v1/board?repo="+junk, "bob", nil, &v); code != http.StatusOK ||
+			v.Repo != junk || len(v.Claims) != 0 || len(v.Recent) != 0 || v.Epoch != ts.epoch {
+			t.Fatalf("%s: %d %+v", junk, code, v)
+		}
+	}
+	if n := ts.boards.entries(); n != 0 {
+		t.Fatalf("made-up repositories took %d entries", n)
+	}
+	if n := readTogether(t, ts, 50); n > 2 {
+		t.Fatalf("after made-up repositories, 50 readers made %d builds, want at most 2", n)
+	}
+}
+
+// Requests for names the board has nothing of, all different, share builds
+// of the empty view, paced as a repository's are: each answered at once from
+// a read of its own, they would take the board's lock as fast as clients can
+// ask.
+func TestBoardUnknownReposShareBuilds(t *testing.T) {
+	ts := newTestServer(t)
+	ts.do(t, "POST", "/v1/hook", "alice", hookEv(board.KindPostEdit, "alice", "a1", "x/y.go"), nil)
+	held := holdViews(t, ts.Server)
+	const readers = 50
+	var wg sync.WaitGroup
+	got := make([]string, readers)
+	get := func(i int) {
+		defer wg.Done()
+		junk := fmt.Sprintf("github.com/junk/r%d", i)
+		req, _ := http.NewRequest(http.MethodGet, ts.url+"/v1/board?repo="+junk, nil)
+		req.Header.Set("Authorization", "Bearer "+ts.tokens["bob"])
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer func() { _ = resp.Body.Close() }()
+		var v board.View
+		if err := json.NewDecoder(resp.Body).Decode(&v); err != nil || resp.StatusCode != http.StatusOK ||
+			v.Repo != junk || len(v.Claims) != 0 || !strings.HasPrefix(resp.Header.Get("ETag"), `W/"`) {
+			t.Errorf("%s: %d %v %+v", junk, resp.StatusCode, err, v)
+		}
+		got[i] = resp.Header.Get("ETag")
+	}
+	wg.Add(1)
+	go get(0)
+	<-held.read
+	for i := 1; i < readers; i++ {
+		wg.Add(1)
+		go get(i)
+	}
+	waitFor(t, "the readers to queue", func() bool { return ts.boards.waiting(nowhere) == readers-1 })
+	held.release()
+	wg.Wait()
+	if n := held.calls.Load(); n > 2 {
+		t.Fatalf("%d requests for made-up repositories made %d builds, want at most 2", readers, n)
+	}
+	if ts.boards.entries() != 0 {
+		t.Fatalf("made-up repositories took %d entries", ts.boards.entries())
+	}
+	if got[1] == got[2] {
+		t.Fatal("two repositories' answers share a validator")
 	}
 }
 
@@ -212,6 +308,7 @@ func (p *fakePacing) sleeps() string { p.mu.Lock(); defer p.mu.Unlock(); return 
 
 func TestBoardBuildsAreSpaced(t *testing.T) {
 	ts := newTestServer(t)
+	ts.claimIn(t, repo, "b1")
 	var p fakePacing
 	p.install(ts.boards)
 	var took atomic.Int64
@@ -239,6 +336,7 @@ func TestBoardBuildsAreSpaced(t *testing.T) {
 // and not by how long they then take to encode what they read.
 func TestBoardSpacingCountsTheReadOnly(t *testing.T) {
 	ts := newTestServer(t)
+	ts.claimIn(t, repo, "b1")
 	var p fakePacing
 	p.install(ts.boards)
 	ts.boards.wrapView(func(view func(string) board.View) func(string) board.View {
@@ -258,6 +356,8 @@ func TestBoardSpacingCountsTheReadOnly(t *testing.T) {
 // repository's build reads while one encodes.
 func TestBoardEncodingLeavesTheSlot(t *testing.T) {
 	ts := newTestServer(t)
+	ts.claimIn(t, repo, "b1")
+	ts.claimIn(t, "github.com/acme/other", "b2")
 	encoding, release := make(chan struct{}), make(chan struct{})
 	free := sync.OnceFunc(func() { close(release) })
 	t.Cleanup(free)
@@ -290,6 +390,8 @@ func TestBoardEncodingLeavesTheSlot(t *testing.T) {
 
 func TestBoardBuildsOneAtATime(t *testing.T) {
 	ts := newTestServer(t)
+	ts.claimIn(t, repo, "b1")
+	ts.claimIn(t, "github.com/acme/other", "b2")
 	held := holdViews(t, ts.Server)
 	var other atomic.Int64
 	ts.boards.wrapView(func(view func(string) board.View) func(string) board.View {
@@ -322,6 +424,7 @@ func TestBoardBuildsOneAtATime(t *testing.T) {
 
 func TestBoardBuildPanicFailsItsReadersAndNothingElse(t *testing.T) {
 	ts := newTestServer(t)
+	ts.claimIn(t, repo, "b1")
 	c := ts.boards
 	var calls atomic.Int64
 	c.wrapView(func(view func(string) board.View) func(string) board.View {
@@ -380,6 +483,10 @@ func TestBoardEntriesAreBounded(t *testing.T) {
 	var p fakePacing
 	p.install(ts.boards)
 	for i := range maxBoardEntries + 40 {
+		ts.claimIn(t, fmt.Sprintf("r/%d", i), fmt.Sprintf("b%d", i))
+	}
+	ts.claimIn(t, "r/new", "b-new")
+	for i := range maxBoardEntries + 40 {
 		if code := ts.do(t, http.MethodGet, fmt.Sprintf("/v1/board?repo=r/%d", i), "bob", nil, nil); code != http.StatusOK {
 			t.Fatalf("repo %d: %d", i, code)
 		}
@@ -400,6 +507,8 @@ func TestBoardEntriesAreBounded(t *testing.T) {
 // requests for this one still queue behind the build and keep their spacing.
 func TestBoardEntryStaysWhileItBuilds(t *testing.T) {
 	ts := newTestServer(t)
+	ts.claimIn(t, repo, "b1")
+	ts.claimIn(t, "github.com/acme/other", "b2")
 	var p fakePacing
 	p.install(ts.boards)
 	read, release := make(chan struct{}), make(chan struct{})
