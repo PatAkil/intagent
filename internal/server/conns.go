@@ -264,6 +264,9 @@ func (t *connTable) finish(r *request) {
 	}
 	r.over = true
 	if r.arrived {
+		// The answer goes out from here, and what the connection reads
+		// after it is its next request.
+		r.c.stage.CompareAndSwap(stageHandling, stageAnswered)
 		if r.c.busy--; r.c.busy == 0 {
 			t.wait(r.c)
 		}
@@ -289,6 +292,12 @@ func (t *connTable) state(c net.Conn, st http.ConnState) {
 	}
 	if lc := limited(c); lc != nil {
 		lc.idle.Store(true)
+		// Unless its next request has begun to arrive since it was
+		// answered, as the server's read for a client that hangs up may
+		// read it.
+		if !lc.stage.CompareAndSwap(stageAnswered, stageIdle) {
+			lc.stage.CompareAndSwap(stageHandling, stageIdle)
+		}
 		t.mu.Lock()
 		defer t.mu.Unlock()
 		if lc.busy == 0 {
@@ -321,6 +330,10 @@ func (t *connTable) handler(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+		// http.Server calls a handler only once it has taken the request,
+		// past the check that drops one arriving as it stops: from here
+		// Shutdown waits for the request, and it is answered.
+		lc.stage.Store(stageHandling)
 		req := &request{c: lc}
 		defer t.finish(req)
 		if r.ContentLength == 0 {
@@ -419,6 +432,23 @@ func (l *limitListener) Accept() (net.Conn, error) {
 	}
 }
 
+// A connection's stage, for a stop: how far its request has come.
+const (
+	// stageFresh: accepted, and nothing read from it yet.
+	stageFresh int32 = iota
+	// stageReceiving: the bytes of a request, or of a TLS handshake, have
+	// begun to arrive, and no handler has started on it.
+	stageReceiving
+	// stageHandling: a handler has started on its request.
+	stageHandling
+	// stageAnswered: the handler of a request that arrived whole has
+	// returned, and its answer goes out; what it reads next is the next
+	// request.
+	stageAnswered
+	// stageIdle: answered, and nothing read of its next request.
+	stageIdle
+)
+
 // limitConn is a connection the table holds. It leaves the table when it
 // is closed, once. It notes when it last read something from its client,
 // for freshConns, and when a write began that has not finished.
@@ -435,6 +465,11 @@ type limitConn struct {
 	// idle is set when it goes idle between requests; the first bytes of
 	// its next request clear it, and start its wait again.
 	idle atomic.Bool
+	// stage is how far its request has come, for a stop (settle).
+	stage atomic.Int32
+	// multiplexed is set once its TLS handshake chose HTTP/2, which
+	// carries requests side by side and stops on its own terms.
+	multiplexed atomic.Bool
 
 	// Under t.mu: since is when it began waiting on its client, on t's
 	// clock, or 0 while it is not; prev and next link its source's
@@ -453,6 +488,9 @@ func (c *limitConn) Read(p []byte) (int, error) {
 		c.heard.Store(time.Now().UnixNano())
 		if c.idle.Load() && c.idle.CompareAndSwap(true, false) {
 			c.t.begun(c)
+		}
+		if st := c.stage.Load(); st != stageReceiving && st != stageHandling {
+			c.stage.CompareAndSwap(st, stageReceiving)
 		}
 	}
 	return n, err
@@ -512,7 +550,11 @@ func (l *tlsListener) Accept() (net.Conn, error) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), l.timeout)
 		defer cancel()
-		_ = tc.HandshakeContext(ctx)
+		if tc.HandshakeContext(ctx) == nil && tc.ConnectionState().NegotiatedProtocol == "h2" {
+			if lc := limited(tc); lc != nil {
+				lc.multiplexed.Store(true)
+			}
+		}
 	}()
 	return tc, nil
 }
@@ -527,10 +569,13 @@ const unusedAfter = 500 * time.Millisecond
 // yet. As it stops, http.Server waits for them as for busy ones, up to
 // Serve's five seconds, and then fails: one browser's preconnect, or a
 // client's spare connection, held every restart up that long while hooks
-// went unchecked. So once the server starts to stop, each is closed when it
-// has sent nothing for quiet, unless its request has arrived by then. One
-// whose request is under way, or whose TLS handshake is, is left to be
-// answered: closed, its hook would go ahead unchecked.
+// went unchecked. So once Shutdown begins, each is closed when it has sent
+// nothing for quiet, unless its request has arrived by then. One whose
+// request is under way, or whose TLS handshake is, is left to be answered:
+// closed, its hook would go ahead unchecked. (Before Shutdown, the table's
+// settle has given every such request time to arrive, and closed the
+// connections of those that did not: from Go 1.25, Shutdown would drop
+// them.)
 type freshConns struct {
 	mu    sync.Mutex
 	conns map[net.Conn]struct{}
@@ -595,4 +640,73 @@ func quietFor(c net.Conn) time.Duration {
 		return math.MaxInt64
 	}
 	return time.Since(time.Unix(0, lc.heard.Load()))
+}
+
+// settleEvery is how often settle looks at the connections again.
+const settleEvery = 5 * time.Millisecond
+
+// settle waits, once the server has stopped accepting connections, until
+// each HTTP/1 connection that may have a request under way has its handler
+// started on it, or until within has passed or ctx is done, and then closes
+// those that still have not. It returns how many it closed.
+//
+// From Go 1.25, http.Server drops a request that finishes arriving after
+// Shutdown has begun, closing its connection without an answer: a hook
+// mid-send at a restart got an EOF, and went ahead unchecked. So Serve
+// settles its connections before it calls Shutdown, and Shutdown then waits
+// for handlers alone. A connection may have a request under way when it has
+// read something since it was accepted or last answered, or when it is fresh
+// and has been quiet for less than quiet: a hook that has just connected
+// sends its request at once, and one quiet for longer is taken for unused,
+// as freshConns takes it. One idle between requests, with nothing read, is
+// not: Shutdown closes it. Nor is an HTTP/2 connection, whose requests
+// Shutdown lets finish, and whose new ones it turns away, so that their
+// clients try again.
+//
+// Nothing new arrives meanwhile, so it ends as soon as the requests under
+// way have arrived: within a round trip or two. A request still arriving at
+// the deadline, from a client sending slowly or one that stopped halfway,
+// would be dropped by Shutdown once it arrived, or hold the stop up until it
+// did: its connection is closed instead.
+func (t *connTable) settle(ctx context.Context, quiet, within time.Duration) int {
+	deadline := time.NewTimer(within)
+	defer deadline.Stop()
+	tick := time.NewTicker(settleEvery)
+	defer tick.Stop()
+	for len(t.underWay(quiet)) > 0 {
+		select {
+		case <-tick.C:
+			continue
+		case <-deadline.C:
+		case <-ctx.Done():
+		}
+		left := t.underWay(quiet)
+		for _, c := range left {
+			_ = c.Close()
+		}
+		return len(left)
+	}
+	return 0
+}
+
+// underWay is the connections that may have a request under way whose
+// handler has not started: see settle.
+func (t *connTable) underWay(quiet time.Duration) []*limitConn {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	var under []*limitConn
+	for _, c := range t.open {
+		if c.multiplexed.Load() {
+			continue
+		}
+		switch c.stage.Load() {
+		case stageReceiving:
+			under = append(under, c)
+		case stageFresh:
+			if quietFor(c) < quiet {
+				under = append(under, c)
+			}
+		}
+	}
+	return under
 }

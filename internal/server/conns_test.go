@@ -345,53 +345,183 @@ func TestShutdownClosesUnusedConnections(t *testing.T) {
 }
 
 // A connection whose request is under way as the server starts to stop is
-// answered, over TLS too: here the request's first line has arrived, and
-// the rest comes after the stop began. Every connection that had not sent a
-// whole request was closed, and its hook went ahead unchecked.
+// answered, over TLS too: one whose request's first line has arrived, one
+// that has connected and sent nothing yet, and a kept-alive one whose next
+// request has begun to arrive; the rest of each comes after the stop began,
+// when a new connection is refused, which a hook tries again. Every
+// connection that had not sent a whole request was closed, and its hook went
+// ahead unchecked; then from Go 1.25 Shutdown dropped a request that
+// finished arriving after it began, and before that closed a kept-alive
+// connection whose next request was arriving.
 func TestShutdownAnswersARequestUnderWay(t *testing.T) {
 	cert, pool := ecdsaCert(t)
+	const request = "GET /healthz HTTP/1.1\r\nHost: intagent\r\n\r\n"
 	for _, secure := range []bool{false, true} {
-		ts := newTestServer(t, func(o *Options) {
-			if secure {
-				o.TLS = TLSConfig([]tls.Certificate{cert})
+		for _, tc := range []struct {
+			name   string
+			before string // what is sent of the request before the stop
+			kept   bool   // whether a request was answered on the connection first
+		}{
+			{"first line sent", "GET /healthz HTTP/1.1\r\n", false},
+			{"nothing sent", "", false},
+			{"kept alive", "GET /healthz HTTP/1.1\r\n", true},
+		} {
+			t.Run(fmt.Sprintf("TLS %t, %s", secure, tc.name), func(t *testing.T) {
+				ts := newTestServer(t, func(o *Options) {
+					if secure {
+						o.TLS = TLSConfig([]tls.Certificate{cert})
+					}
+				})
+				ts.unusedAfter = 2 * time.Second
+				stop := serveTest(t, ts)
+				addr := strings.TrimPrefix(ts.url, "http://")
+				var c net.Conn
+				var err error
+				if secure {
+					c, err = tls.Dial("tcp", addr, &tls.Config{RootCAs: pool, ServerName: "127.0.0.1", MinVersion: tls.VersionTLS12})
+				} else {
+					c, err = net.Dial("tcp", addr)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer func() { _ = c.Close() }()
+				_ = c.SetDeadline(time.Now().Add(10 * time.Second))
+				r := bufio.NewReader(c)
+				answered := func(when string) {
+					t.Helper()
+					resp, err := http.ReadResponse(r, nil)
+					if err != nil {
+						t.Fatalf("%s: %v", when, err)
+					}
+					_, _ = io.Copy(io.Discard, resp.Body)
+					_ = resp.Body.Close()
+					if resp.StatusCode != http.StatusOK {
+						t.Fatalf("%s: %d", when, resp.StatusCode)
+					}
+				}
+				if tc.kept {
+					if _, err := io.WriteString(c, request); err != nil {
+						t.Fatal(err)
+					}
+					answered("the first request")
+				}
+				if _, err := io.WriteString(c, tc.before); err != nil {
+					t.Fatal(err)
+				}
+				time.Sleep(50 * time.Millisecond) // the server reads it
+				stopped := make(chan error, 1)
+				go func() { stopped <- stop() }()
+				time.Sleep(100 * time.Millisecond) // the stop has begun
+				if late, err := net.Dial("tcp", addr); err == nil {
+					_ = late.Close()
+					t.Error("a connection made after the stop began was accepted")
+				}
+				if _, err := io.WriteString(c, strings.TrimPrefix(request, tc.before)); err != nil {
+					t.Fatalf("the rest of the request: %v", err)
+				}
+				answered("a request under way as the server stopped")
+				if err := <-stopped; err != nil {
+					t.Fatalf("Serve: %v", err)
+				}
+			})
+		}
+	}
+}
+
+// A request still arriving when the server has waited arriveWithin for it
+// does not hold the stop up: its connection is closed unanswered, and the
+// stop goes on. The server waited for the client to stop sending for
+// unusedAfter, or for Serve's five seconds, and from Go 1.25 would have
+// dropped the request had it arrived.
+func TestShutdownClosesARequestStillArriving(t *testing.T) {
+	logs := &logRecorder{}
+	ts := newTestServer(t, func(o *Options) { o.Logger = slog.New(logs) })
+	ts.unusedAfter, ts.arriveWithin = 2*time.Second, 200*time.Millisecond
+	stop := serveTest(t, ts)
+	c, err := net.Dial("tcp", strings.TrimPrefix(ts.url, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+	if _, err := io.WriteString(c, "GET /healthz HTTP/1.1\r\nX-Slow: "); err != nil {
+		t.Fatal(err)
+	}
+	go func() { // a byte of the header every 50 ms, until the server closes it
+		for {
+			time.Sleep(50 * time.Millisecond)
+			if _, err := io.WriteString(c, "x"); err != nil {
+				return
 			}
-		})
-		ts.unusedAfter = 2 * time.Second
-		stop := serveTest(t, ts)
-		addr := strings.TrimPrefix(ts.url, "http://")
-		var c net.Conn
-		var err error
-		if secure {
-			c, err = tls.Dial("tcp", addr, &tls.Config{RootCAs: pool, ServerName: "127.0.0.1", MinVersion: tls.VersionTLS12})
-		} else {
-			c, err = net.Dial("tcp", addr)
 		}
-		if err != nil {
-			t.Fatal(err)
-		}
+	}()
+	time.Sleep(50 * time.Millisecond)
+	start := time.Now()
+	if err := stop(); err != nil {
+		t.Fatalf("Serve: %v", err)
+	}
+	if took := time.Since(start); took > time.Second {
+		t.Fatalf("stopping took %s with a request still arriving", took)
+	}
+	_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
+	got, err := io.ReadAll(c)
+	if errors.Is(err, os.ErrDeadlineExceeded) || len(got) != 0 {
+		t.Fatalf("the connection of the request still arriving: %q, %v", got, err)
+	}
+	if closed := logs.lines("closed connections whose requests had not arrived"); len(closed) != 1 {
+		t.Fatalf("logged %q", logs.lines(""))
+	}
+}
+
+// An HTTP/2 connection is left to Shutdown, which lets its requests finish
+// and turns new ones away for their clients to try again: one that has sent
+// its preface and settings, and no request, does not hold the stop up for
+// arriveWithin.
+func TestShutdownLeavesHTTP2ToShutdown(t *testing.T) {
+	cert, pool := ecdsaCert(t)
+	ts := newTestServer(t, func(o *Options) { o.TLS = TLSConfig([]tls.Certificate{cert}) })
+	ts.arriveWithin = 3 * time.Second
+	stop := serveTest(t, ts)
+	c, err := tls.Dial("tcp", strings.TrimPrefix(ts.url, "http://"),
+		&tls.Config{RootCAs: pool, ServerName: "127.0.0.1", NextProtos: []string{"h2"}, MinVersion: tls.VersionTLS12})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+	if p := c.ConnectionState().NegotiatedProtocol; p != "h2" {
+		t.Fatalf("negotiated %q", p)
+	}
+	if _, err := io.WriteString(c, "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	// The server reads the preface, and the connection goes idle; then an
+	// empty SETTINGS frame arrives on it.
+	time.Sleep(100 * time.Millisecond)
+	if _, err := c.Write([]byte{0, 0, 0, 0x4, 0, 0, 0, 0, 0}); err != nil {
+		t.Fatal(err)
+	}
+	go func() { // the client hangs up at the server's GOAWAY, as clients do
 		defer func() { _ = c.Close() }()
-		if _, err := io.WriteString(c, "GET /healthz HTTP/1.1\r\nHost: intagent\r\n"); err != nil {
-			t.Fatal(err)
+		head := make([]byte, 9)
+		for {
+			if _, err := io.ReadFull(c, head); err != nil {
+				return
+			}
+			if head[3] == 0x7 {
+				return
+			}
+			if _, err := io.CopyN(io.Discard, c, int64(head[0])<<16|int64(head[1])<<8|int64(head[2])); err != nil {
+				return
+			}
 		}
-		time.Sleep(50 * time.Millisecond) // the server reads it
-		stopped := make(chan error, 1)
-		go func() { stopped <- stop() }()
-		time.Sleep(100 * time.Millisecond) // the stop has begun
-		if _, err := io.WriteString(c, "\r\n"); err != nil {
-			t.Fatalf("TLS %t: the rest of the request: %v", secure, err)
-		}
-		_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
-		resp, err := http.ReadResponse(bufio.NewReader(c), nil)
-		if err != nil {
-			t.Fatalf("TLS %t: a request under way as the server stopped: %v", secure, err)
-		}
-		_ = resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("TLS %t: a request under way as the server stopped: %d", secure, resp.StatusCode)
-		}
-		if err := <-stopped; err != nil {
-			t.Fatalf("TLS %t: Serve: %v", secure, err)
-		}
+	}()
+	time.Sleep(100 * time.Millisecond)
+	start := time.Now()
+	if err := stop(); err != nil {
+		t.Fatalf("Serve: %v", err)
+	}
+	if took := time.Since(start); took > time.Second {
+		t.Fatalf("stopping took %s with an idle HTTP/2 connection", took)
 	}
 }
 

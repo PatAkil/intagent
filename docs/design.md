@@ -317,8 +317,12 @@ what each session was told), which copies or replaces each before it next change
 the claims' and sessions' records themselves: about 5 ms for 2,000 claims and 18,000 sessions. It is written to disk a
 claim at a time. Saves that fail are tried again after 1, 2, 4, 8 and 16 seconds, then every 30; the server logs the
 first failure, then one a minute, then the recovery, and `/healthz` says so. Stalled sessions are looked for on a
-goroutine of their own, so a slow or stuck disk does not delay the news. A clean stop abandons a save in flight, waits
-for the requests in flight, and saves once more; `serve` exits non-zero if that save fails. Each save of the whole board
+goroutine of their own, so a slow or stuck disk does not delay the news. A clean stop first closes the port, which hooks
+take for a restart and try again; gives the requests already arriving, and connections accepted a moment before that may
+be about to send one, up to a second to arrive whole, and closes the connection of any still arriving then, whose hook
+goes ahead unchecked (from Go 1.25 the HTTP server drops a request that arrives once its shutdown has begun, so none may
+be left to it); then it abandons a save in flight, waits for the requests in flight, and saves once more; `serve` exits
+non-zero if that save fails. Each save of the whole board
 keeps the snapshot it replaces as `board.json.prev`, a hard link made before the new one is renamed in. At start, the
 temporary files of saves that were killed halfway are removed, and a snapshot that is cut short or damaged is set aside
 as `board.json.corrupt-<unix time>` and `board.json.prev` put in its place and restored, or nothing: a server that will

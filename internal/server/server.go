@@ -102,11 +102,13 @@ type Server struct {
 	// maxConns, readTimeout and handshakeTimeout bound what clients can
 	// hold: connections, and the time to send a request or finish a TLS
 	// handshake. As the server stops, a connection that has not sent a
-	// whole request is closed once it has sent nothing for unusedAfter.
+	// whole request is closed once it has sent nothing for unusedAfter, and
+	// one whose request has not arrived within arriveWithin is closed.
 	maxConns         int
 	readTimeout      time.Duration
 	handshakeTimeout time.Duration
 	unusedAfter      time.Duration
+	arriveWithin     time.Duration
 	// admit meters what members ask of the server.
 	admit *admission
 	// saves follows the board's snapshots (persist.go), and durable its
@@ -132,6 +134,12 @@ const (
 	// readTimeout is how long a client may take to send a whole request; a
 	// hook's is sent in milliseconds, and its client waits two seconds.
 	readTimeout = 15 * time.Second
+	// arriveWithin is how long, once the server has stopped accepting
+	// connections, the requests under way have to arrive: a hook sends its
+	// own in one write, which takes a round trip or two to arrive.
+	arriveWithin = time.Second
+	// stopWithin bounds a stop: requests arriving, then handlers finishing.
+	stopWithin = 5 * time.Second
 	// maxHeaderBytes is far above what intagent's clients and browsers send.
 	maxHeaderBytes = 16 << 10
 	// maxToken bounds a bearer token, far above the 51 bytes of a real one,
@@ -165,7 +173,7 @@ func New(o Options) (*Server, error) {
 		s.sweepEvery = 15 * time.Second
 	}
 	s.tls, s.maxConns, s.readTimeout, s.handshakeTimeout = o.TLS, o.MaxConnections, readTimeout, handshakeTimeout
-	s.unusedAfter = unusedAfter
+	s.unusedAfter, s.arriveWithin = unusedAfter, arriveWithin
 	if s.maxConns <= 0 {
 		s.maxConns = DefaultMaxConnections
 	}
@@ -413,10 +421,7 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	select {
 	case err = <-errc:
 	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		err = srv.Shutdown(shutdownCtx)
-		cancel()
-		<-errc
+		err = s.stop(ctx, srv, ln, conns, errc)
 	}
 	stopMaintain()
 	<-swept
@@ -440,6 +445,35 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	}
 	<-notified
 	return err
+}
+
+// stop stops srv, which serves on ln, so that every request under way is
+// answered, whichever Go it was built with.
+//
+// It closes ln first: a hook that connects from then on is refused, which it
+// takes for a server restarting, and tries again until the next one listens
+// or its time runs out. Then the connections already accepted settle: a
+// request that has begun to arrive, or may be about to on a connection
+// accepted a moment ago, is given until arriveWithin to arrive whole and
+// reach its handler, and the connection of one that has not by then is
+// closed. Only then does Shutdown begin, which from Go 1.25 drops a request
+// that finishes arriving after it has begun; none is left to it. Shutdown
+// closes the idle connections, tells the streams to end and waits for the
+// handlers; the whole stop takes at most stopWithin.
+func (s *Server) stop(ctx context.Context, srv *http.Server, ln net.Listener, conns *connTable, errc <-chan error) error {
+	stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), stopWithin)
+	defer cancel()
+	_ = ln.Close()
+	// Serve returns once Accept fails; every connection it accepted is in
+	// the table by then.
+	err := <-errc
+	if errors.Is(err, net.ErrClosed) {
+		err = nil
+	}
+	if n := conns.settle(stopCtx, s.unusedAfter, s.arriveWithin); n > 0 {
+		s.log.Warn("closed connections whose requests had not arrived as the server stopped", "connections", n)
+	}
+	return errors.Join(err, srv.Shutdown(stopCtx))
 }
 
 // --- auth ------------------------------------------------------------------
