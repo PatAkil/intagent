@@ -223,6 +223,42 @@ func TestIdleConnectionsMakeRoom(t *testing.T) {
 	}
 }
 
+// An answered connection waits on its client from its answer, not from when
+// the server gets round to marking it idle. Under load the server marked a
+// connection idle only after its client had read the answer and been
+// answered again on a new connection, so the later connection made room
+// first, as if it had waited longer, and TestIdleConnectionsMakeRoom failed 7
+// runs in 100 with three CPU-busy processes beside it.
+func TestAnsweredConnectionsWaitFromTheirAnswer(t *testing.T) {
+	table := newConnTable(2, slog.New(slog.DiscardHandler))
+	admit := func() *limitConn {
+		t.Helper()
+		c, peer := net.Pipe()
+		t.Cleanup(func() { _ = c.Close(); _ = peer.Close() })
+		lc, evicted := table.admit(c)
+		if lc == nil || evicted != nil {
+			t.Fatalf("admitted %v, making room by closing %v", lc, evicted)
+		}
+		return lc
+	}
+	answer := func(lc *limitConn) {
+		r := &request{c: lc}
+		lc.stage.Store(stageHandling)
+		table.arrive(r)
+		table.finish(r)
+	}
+	first, second := admit(), admit()
+	answer(first)
+	answer(second)
+	table.state(second, http.StateIdle)
+	table.state(first, http.StateIdle)
+	c, peer := net.Pipe()
+	defer func() { _ = c.Close(); _ = peer.Close() }()
+	if _, evicted := table.admit(c); evicted != first {
+		t.Fatalf("made room by closing %p, not %p, the first answered", evicted, first)
+	}
+}
+
 // Nor can connections that send their requests slowly, or never: one that
 // has sent nothing, one trickling its headers, one trickling a body without
 // a token, and one trickling a member's body each wait on their client, and

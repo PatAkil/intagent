@@ -285,22 +285,27 @@ func (t *connTable) begun(c *limitConn) {
 }
 
 // state is http.Server's ConnState: a connection that goes idle, answered,
-// waits on its client again, from now.
+// waits on its client again. One whose request arrived whole has waited
+// since its handler returned (finish), before its answer went out, and goes
+// on waiting from then: the server reaches this hook only some time after
+// the answer, and under load after a client that read it has sent another
+// request on a new connection, which then took this one's place as the
+// latest to wait. Any other waits from now, as does one whose next request
+// has begun to arrive since it was answered, as the server's read for a
+// client that hangs up may read it.
 func (t *connTable) state(c net.Conn, st http.ConnState) {
 	if st != http.StateIdle {
 		return
 	}
 	if lc := limited(c); lc != nil {
 		lc.idle.Store(true)
-		// Unless its next request has begun to arrive since it was
-		// answered, as the server's read for a client that hangs up may
-		// read it.
-		if !lc.stage.CompareAndSwap(stageAnswered, stageIdle) {
+		answered := lc.stage.CompareAndSwap(stageAnswered, stageIdle)
+		if !answered {
 			lc.stage.CompareAndSwap(stageHandling, stageIdle)
 		}
 		t.mu.Lock()
 		defer t.mu.Unlock()
-		if lc.busy == 0 {
+		if lc.busy == 0 && (!answered || lc.since == 0) {
 			t.wait(lc)
 		}
 	}
