@@ -379,6 +379,12 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 		// otherwise hold its connection for as long as it keeps sending.
 		ReadTimeout:    s.readTimeout,
 		MaxHeaderBytes: maxHeaderBytes,
+		// 'OPTIONS *' goes to the handler like any other request, which
+		// answers it 400: http.Server would answer it itself, past the
+		// handler that tells the connection table a request was taken, and
+		// a stop would then wait for its connection as for a request still
+		// arriving.
+		DisableGeneralOptionsHandler: true,
 	}
 	// The limit counts TCP connections, below TLS, so that the HTTP server
 	// still sees each TLS connection as one, for HTTP/2. It follows which

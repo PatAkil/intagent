@@ -525,6 +525,113 @@ func TestShutdownLeavesHTTP2ToShutdown(t *testing.T) {
 	}
 }
 
+// An 'OPTIONS *' request goes through the handler like any other, so a stop
+// does not take its connection for one whose request is still arriving.
+// http.Server answered it on its own, past the handler that marks a request
+// taken, and every stop after one waited arriveWithin for that connection and
+// logged it as cut off.
+func TestShutdownAfterOptionsAsterisk(t *testing.T) {
+	cert, pool := ecdsaCert(t)
+	for _, secure := range []bool{false, true} {
+		t.Run(fmt.Sprintf("TLS %t", secure), func(t *testing.T) {
+			logs := &logRecorder{}
+			ts := newTestServer(t, func(o *Options) {
+				o.Logger = slog.New(logs)
+				if secure {
+					o.TLS = TLSConfig([]tls.Certificate{cert})
+				}
+			})
+			ts.arriveWithin = 3 * time.Second
+			stop := serveTest(t, ts)
+			var tlsConfig *tls.Config
+			if secure {
+				tlsConfig = &tls.Config{RootCAs: pool, ServerName: "127.0.0.1", MinVersion: tls.VersionTLS12}
+			}
+			c := dialServer(t, ts, tlsConfig)
+			if _, err := io.WriteString(c, "OPTIONS * HTTP/1.1\r\nHost: intagent\r\n\r\n"); err != nil {
+				t.Fatal(err)
+			}
+			resp, err := http.ReadResponse(bufio.NewReader(c), nil)
+			if err != nil {
+				t.Fatalf("OPTIONS *: %v", err)
+			}
+			_ = resp.Body.Close()
+			time.Sleep(50 * time.Millisecond) // the connection goes idle, or is closed
+			start := time.Now()
+			if err := stop(); err != nil {
+				t.Fatalf("Serve: %v", err)
+			}
+			if took := time.Since(start); took > time.Second {
+				t.Fatalf("stopping took %s after an answered OPTIONS *", took)
+			}
+			if cut := logs.lines("closed connections whose requests had not arrived"); len(cut) != 0 {
+				t.Fatalf("logged %q", cut)
+			}
+		})
+	}
+}
+
+// A TLS connection that chose HTTP/1.1 and has sent no request is taken for
+// unused once it has been quiet for unusedAfter, as a plain one is: the bytes
+// of its handshake are not those of a request. It counted as one whose
+// request was arriving, held every stop up for arriveWithin, and was logged
+// as cut off.
+func TestShutdownClosesAnUnusedTLSConnection(t *testing.T) {
+	cert, pool := ecdsaCert(t)
+	for _, protos := range [][]string{nil, {"http/1.1"}} {
+		t.Run(fmt.Sprintf("ALPN %q", protos), func(t *testing.T) {
+			logs := &logRecorder{}
+			ts := newTestServer(t, func(o *Options) {
+				o.Logger = slog.New(logs)
+				o.TLS = TLSConfig([]tls.Certificate{cert})
+			})
+			ts.unusedAfter, ts.arriveWithin = 100*time.Millisecond, 3*time.Second
+			stop := serveTest(t, ts)
+			c := dialServer(t, ts, &tls.Config{
+				RootCAs: pool, ServerName: "127.0.0.1", NextProtos: protos, MinVersion: tls.VersionTLS12,
+			})
+			if p := c.(*tls.Conn).ConnectionState().NegotiatedProtocol; p == "h2" {
+				t.Fatalf("negotiated %q", p)
+			}
+			time.Sleep(50 * time.Millisecond) // the server finishes its side of the handshake
+			start := time.Now()
+			if err := stop(); err != nil {
+				t.Fatalf("Serve: %v", err)
+			}
+			if took := time.Since(start); took > time.Second {
+				t.Fatalf("stopping took %s with an unused TLS connection", took)
+			}
+			if cut := logs.lines("closed connections whose requests had not arrived"); len(cut) != 0 {
+				t.Fatalf("logged %q", cut)
+			}
+			if _, err := c.Read(make([]byte, 1)); err == nil || errors.Is(err, os.ErrDeadlineExceeded) {
+				t.Fatalf("the unused connection is still open: %v", err)
+			}
+		})
+	}
+}
+
+// dialServer connects to ts's server, over TLS with config unless it is nil.
+// The connection is closed when the test ends, and gives up after ten
+// seconds.
+func dialServer(t *testing.T, ts *testServer, config *tls.Config) net.Conn {
+	t.Helper()
+	addr := strings.TrimPrefix(ts.url, "http://")
+	var c net.Conn
+	var err error
+	if config != nil {
+		c, err = tls.Dial("tcp", addr, config)
+	} else {
+		c, err = net.Dial("tcp", addr)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	_ = c.SetDeadline(time.Now().Add(10 * time.Second))
+	return c
+}
+
 // A connection that arrives once the unused ones are closed is closed as it
 // arrives.
 func TestFreshConnsCloseLateArrivals(t *testing.T) {

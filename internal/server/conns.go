@@ -436,8 +436,9 @@ func (l *limitListener) Accept() (net.Conn, error) {
 const (
 	// stageFresh: accepted, and nothing read from it yet.
 	stageFresh int32 = iota
-	// stageReceiving: the bytes of a request, or of a TLS handshake, have
-	// begun to arrive, and no handler has started on it.
+	// stageReceiving: the bytes of a request, or of a TLS handshake that
+	// has not finished, have begun to arrive, and no handler has started
+	// on it.
 	stageReceiving
 	// stageHandling: a handler has started on its request.
 	stageHandling
@@ -550,11 +551,21 @@ func (l *tlsListener) Accept() (net.Conn, error) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), l.timeout)
 		defer cancel()
-		if tc.HandshakeContext(ctx) == nil && tc.ConnectionState().NegotiatedProtocol == "h2" {
-			if lc := limited(tc); lc != nil {
-				lc.multiplexed.Store(true)
-			}
+		lc := limited(tc)
+		if tc.HandshakeContext(ctx) != nil || lc == nil {
+			return
 		}
+		if tc.ConnectionState().NegotiatedProtocol == "h2" {
+			lc.multiplexed.Store(true)
+			return
+		}
+		// What it has read so far was its handshake, not a request: it is
+		// fresh again, quiet since the handshake's last bytes, and a stop
+		// takes it for unused once it has been quiet for unusedAfter, as it
+		// would a plain connection. (Bytes of the request that came with
+		// the handshake's last are counted with them: the rest of that
+		// request comes within a round trip, unless its client stalls.)
+		lc.stage.CompareAndSwap(stageReceiving, stageFresh)
 	}()
 	return tc, nil
 }
