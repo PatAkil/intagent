@@ -391,9 +391,9 @@ make dist VERSION=v0.1.0    # release archives for Linux, macOS and Windows, wit
 make image VERSION=v0.1.0   # the server's container image
 ```
 
-`make check` needs golangci-lint v2.14 or later: a golangci-lint built with an older Go than the one it runs on
-cannot load the standard library. In a clone, an older Go fetches Go 1.26.0 itself, the oldest that go.mod's go line
-allows, without the security fixes of later releases; build a binary you deploy with a current Go.
+`make check` needs golangci-lint v2.14 or later: golangci-lint must be built with a Go at least as new as go.mod's go
+line and the Go it runs with. In a clone, an older Go fetches Go 1.26.0 itself, the oldest that go.mod's go line allows,
+without the security fixes of later releases; build a binary you deploy with a current Go.
 
 `scripts/loadgen` drives a running server the way a team does, and reports how it held up: agents in their own
 worktrees sending every kind of hook, dashboards reloading the board as the page does and holding their streams, and

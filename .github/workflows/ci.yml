@@ -39,10 +39,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # golangci-lint type-checks the standard library from source, so it must
-      # be built with a Go at least as new as the one it lints with: v2.14 is
-      # built with Go 1.27 (v2.5, built with Go 1.25, stops at "file requires
-      # newer Go version" on 1.26).
+      # golangci-lint must be built with a Go at least as new as go.mod's go
+      # line and as the Go it runs with, whose standard library it type-checks
+      # from source: v2.14 is built with Go 1.27. (v2.5, built with Go 1.25,
+      # stops with "the Go language version (go1.25) used to build
+      # golangci-lint is lower than the targeted Go version (1.26)".)
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
