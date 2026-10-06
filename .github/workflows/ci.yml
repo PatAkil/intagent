@@ -39,17 +39,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # golangci-lint v2.5 is built with Go 1.25 and type-checks the standard
-      # library from source, which it cannot do for Go 1.26 or later ("file
-      # requires newer Go version"), so it runs on go.mod's Go. Later
-      # versions, built with Go 1.27, report new gosec findings to look into
-      # first.
+      # golangci-lint type-checks the standard library from source, so it must
+      # be built with a Go at least as new as the one it lints with: v2.14 is
+      # built with Go 1.27 (v2.5, built with Go 1.25, stops at "file requires
+      # newer Go version" on 1.26).
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - uses: golangci/golangci-lint-action@v8
+      - uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.5
+          version: v2.14
 
   # The server image still builds.
   docker:

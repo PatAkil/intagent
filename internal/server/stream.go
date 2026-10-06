@@ -117,7 +117,9 @@ func (o *streamWriter) flushWithin(d time.Duration) error {
 func (o *streamWriter) write(d time.Duration) {
 	if len(o.buf) > 0 && o.err == nil {
 		if o.err = o.deadline(d); o.err == nil {
-			_, o.err = o.w.Write(o.buf)
+			// G705: an event stream, sent as text/event-stream (handleStream),
+			// whose events are JSON the server encodes.
+			_, o.err = o.w.Write(o.buf) //nolint:gosec // G705: see above.
 			o.unflushed = true
 		}
 	}

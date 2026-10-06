@@ -56,7 +56,9 @@ func cacheDir() string {
 		}
 	}
 	dir = filepath.Join(dir, "intagent")
-	if os.MkdirAll(dir, 0o700) != nil {
+	// G703: XDG_CACHE_HOME is the user's own setting, read by the hook the
+	// user runs, as every XDG tool reads it; it grants nothing the user lacks.
+	if os.MkdirAll(dir, 0o700) != nil { //nolint:gosec // G703: see above.
 		return ""
 	}
 	return dir

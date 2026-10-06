@@ -63,11 +63,14 @@ single-line, length-capped text, framed as *information, not instructions*.
 
 ## Quick start
 
-**Install** (Go 1.24+), on the server and on every member's machine:
+**Install** (Go 1.26+), on the server and on every member's machine:
 
 ```sh
 go install github.com/patakil/intagent/cmd/intagent@latest
 ```
+
+An older Go fetches the newest Go 1.26 release for this by itself, unless `GOTOOLCHAIN=local` is set, as some Linux
+distributions' Go packages set it: then put `GOTOOLCHAIN=auto` in front of the command.
 
 **See it first.** `intagent demo` starts an in-memory server with four simulated agents (Claude Code, Codex,
 Cursor) that collide, get refused, send notes and stall. Open `http://127.0.0.1:7400/` and watch.
@@ -383,6 +386,10 @@ make e2e-gemini    # the real Gemini CLI against a scripted model: offline, free
 make dist VERSION=v0.1.0    # release archives for Linux, macOS and Windows, with SHA256SUMS
 make image VERSION=v0.1.0   # the server's container image
 ```
+
+`make check` needs golangci-lint v2.14 or later: a golangci-lint built with an older Go than the one it runs on
+cannot load the standard library. In a clone, an older Go fetches Go 1.26.0 itself, the oldest that go.mod's go line
+allows, without the security fixes of later releases; build a binary you deploy with a current Go.
 
 `scripts/loadgen` drives a running server the way a team does, and reports how it held up: agents in their own
 worktrees sending every kind of hook, dashboards reloading the board as the page does and holding their streams, and

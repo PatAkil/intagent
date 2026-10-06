@@ -566,20 +566,29 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/?login=failed", http.StatusSeeOther)
 		return
 	}
-	session := s.session(who)
-	// Behind a proxy that terminates TLS, the proxy says so; a client that
-	// claims it can only make its own cookie stricter.
-	secure := r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
-	http.SetCookie(w, &http.Cookie{
-		Name: cookieName, Value: session, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode,
-		Secure: secure, MaxAge: 30 * 24 * 3600,
-	})
+	http.SetCookie(w, sessionCookie(r, s.session(who), 30*24*3600))
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
-	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteStrictMode})
+	http.SetCookie(w, sessionCookie(r, "", -1))
 	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+// sessionCookie is the dashboard's session cookie, kept for maxAge seconds
+// (removed if it is negative). It is Secure when the browser reached the
+// server over HTTPS: a server on plain HTTP in a trusted network, which the
+// README allows, must still be able to sign its members in, and a Secure
+// cookie would never come back to it. Behind a proxy that terminates TLS,
+// the proxy says so; a client that claims it can only make its own cookie
+// stricter.
+func sessionCookie(r *http.Request, value string, maxAge int) *http.Cookie {
+	secure := r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+	//nolint:gosec // G124: Secure follows the scheme the browser used, as said above; HttpOnly and SameSite are set.
+	return &http.Cookie{
+		Name: cookieName, Value: value, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode,
+		Secure: secure, MaxAge: maxAge,
+	}
 }
 
 // --- handlers ---------------------------------------------------------------
@@ -1083,7 +1092,12 @@ func (p progressWriter) Write(b []byte) (int, error) {
 		if err := p.rc.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil && !errors.Is(err, http.ErrNotSupported) {
 			return n, err
 		}
-		m, err := p.w.Write(b[:k])
+		// G705: a progressWriter only cuts up what its callers write, and each
+		// sets the answer's Content-Type first: JSON (writeJSON, writeBoard,
+		// handleRepos), text/plain (writeText), or the dashboard's embedded
+		// files through http.FileServerFS, with nosniff (web.Handler). None is
+		// HTML made from a request.
+		m, err := p.w.Write(b[:k]) //nolint:gosec // G705: see above.
 		n += m
 		if err != nil {
 			return n, err
