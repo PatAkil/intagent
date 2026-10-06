@@ -69,8 +69,8 @@ single-line, length-capped text, framed as *information, not instructions*.
 go install github.com/patakil/intagent/cmd/intagent@latest
 ```
 
-An older Go fetches the newest Go 1.26 release for this by itself, unless `GOTOOLCHAIN=local` is set, as some Linux
-distributions' Go packages set it: then put `GOTOOLCHAIN=auto` in front of the command.
+Go 1.21 to 1.25 fetch the newest Go 1.26 release for this by themselves, unless `GOTOOLCHAIN=local` is set, as some
+Linux distributions' Go packages set it: then put `GOTOOLCHAIN=auto` in front of the command.
 
 **See it first.** `intagent demo` starts an in-memory server with four simulated agents (Claude Code, Codex,
 Cursor) that collide, get refused, send notes and stall. Open `http://127.0.0.1:7400/` and watch.
