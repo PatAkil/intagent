@@ -68,6 +68,12 @@ func (c *resetConn) Write(p []byte) (int, error) {
 	return n, err
 }
 
+// sharedTransport is every Client's: they share its pool of connections, as
+// they shared http.DefaultTransport's, so that the MCP server, which makes a
+// Client for each tool call, does not open a connection for each. Each
+// connection notes its own reset, so sharing them loses nothing.
+var sharedTransport = transport()
+
 // transport is http.DefaultTransport's settings over connections that note
 // a reset.
 func transport() *http.Transport {

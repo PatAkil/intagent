@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -132,5 +134,36 @@ func TestClientSendsItsTimeout(t *testing.T) {
 	ms, err := strconv.Atoi(got[1])
 	if got[0] != "2000" || err != nil || ms > 500 || ms < 100 || got[2] != "" {
 		t.Fatalf("X-Intagent-Timeout sent: %q", got)
+	}
+}
+
+// Clients share one pool of connections, as they shared
+// http.DefaultTransport's: the MCP server makes a Client for every tool
+// call, and each would otherwise open a connection, pay its handshake, and
+// leave it idle for the transport's idle timeout.
+func TestClientsShareConnections(t *testing.T) {
+	var mu sync.Mutex
+	opened := 0
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"member":"alice"}`))
+	}))
+	srv.Config.ConnState = func(_ net.Conn, s http.ConnState) {
+		if s == http.StateNew {
+			mu.Lock()
+			opened++
+			mu.Unlock()
+		}
+	}
+	srv.Start()
+	defer srv.Close()
+	for range 5 {
+		if _, err := New(srv.URL, "ia_tok", time.Second).Whoami(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if opened != 1 {
+		t.Errorf("five clients opened %d connections, want 1", opened)
 	}
 }

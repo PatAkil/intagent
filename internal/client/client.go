@@ -24,7 +24,7 @@ type Client struct {
 
 // New returns a client for the server at base, authenticating with token.
 func New(base, token string, timeout time.Duration) *Client {
-	return &Client{base: NormalizeURL(base), token: token, http: &http.Client{Timeout: timeout, Transport: transport()}}
+	return &Client{base: NormalizeURL(base), token: token, http: &http.Client{Timeout: timeout, Transport: sharedTransport}}
 }
 
 // APIError is an error the server returned.
