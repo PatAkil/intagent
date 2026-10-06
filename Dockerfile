@@ -9,7 +9,9 @@
 # serve command, or put a TLS-terminating proxy in front.
 # The build stage runs on the build machine and cross-compiles, so a
 # multi-platform image needs no emulation.
-FROM --platform=$BUILDPLATFORM golang:1.24-alpine AS build
+# Built with Go 1.27, as the release archives are; go.mod's go line is the
+# oldest Go that builds intagent.
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS build
 WORKDIR /src
 COPY . .
 ARG VERSION=dev TARGETOS TARGETARCH
