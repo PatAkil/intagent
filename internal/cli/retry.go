@@ -21,9 +21,22 @@ import (
 // board for the last time, and until the new process has restored the board
 // and opens the port again. A hook refused then went ahead unchecked,
 // although its agent would wait seconds more. So a hook whose connection is
-// refused tries again, as long as its time allows. Only a refused
-// connection is tried again: a request that was sent may have been
-// decided, and an answer it spent (a bump) must not be asked for twice.
+// refused tries again, as long as its time allows. So does one whose
+// connection was reset before any of its answer came back
+// (client.ResetBeforeAnswer): as the server stops, its kernel resets the
+// connections it had accepted and the server not yet, and the server closes
+// those whose request was still arriving a second later, so none of them
+// reached a handler.
+//
+// A retry can only turn an edit that would go ahead unchecked into one that
+// is checked. Should the server have read and decided the request before
+// the reset, which a server that stops does not do, the retry asks the
+// board about the same edit again, and it answers as it stands: a
+// reservation refuses it again, and a bump or a heads-up the first request
+// spent is not given twice, so the edit goes ahead without it, as it would
+// have gone ahead unchecked. Nothing else is tried again: a request that
+// timed out has spent its time, and one whose answer was cut off once it
+// had begun was decided.
 
 // retryWaits are the pauses between tries: then the last, again and again.
 var retryWaits = []time.Duration{100 * time.Millisecond, 200 * time.Millisecond, 400 * time.Millisecond}
@@ -55,21 +68,26 @@ func refused(err error) bool {
 	return errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, wsaeconnrefused)
 }
 
+// tryAgain reports whether sendRetrying tries err again: a refused
+// connection, or one reset before any of the answer came back.
+func tryAgain(err error) bool { return refused(err) || client.ResetBeforeAnswer(err) }
+
 // answered reports whether the server answered, whatever it said.
 func answered(err error) bool {
 	var ae *client.APIError
 	return err == nil || errors.As(err, &ae)
 }
 
-// sendRetrying calls send, and again while its connection is refused, until
-// less than minTryLeft of ctx's time is left. A server that has refused this
-// machine's hooks for downAfter is taken for down, and tried once, so that
-// every hook does not wait out its time while it is, until it answers one.
-// stamp names the file that keeps when refusals began; "" keeps none.
+// sendRetrying calls send, and again while its connection is refused or
+// reset before an answer (tryAgain), until less than minTryLeft of ctx's
+// time is left. A server that has refused or reset this machine's hooks for
+// downAfter is taken for down, and tried once, so that every hook does not
+// wait out its time while it is, until it answers one. stamp names the file
+// that keeps when refusals began; "" keeps none.
 func sendRetrying(ctx context.Context, stamp string, now func() time.Time, send func() error) error {
 	for i := 0; ; i++ {
 		err := send()
-		if !refused(err) {
+		if !tryAgain(err) {
 			if stamp != "" && answered(err) {
 				_ = os.Remove(stamp)
 			}

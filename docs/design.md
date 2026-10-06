@@ -530,19 +530,25 @@ while degraded), in its log and, if asked, by webhook.
   memory they keep: the builds being sent so, each counted once however many clients read it, may hold 32 MB of JSON, or
   one build larger than that; past it a board answer over 256 KB is refused with 503 and `Retry-After`, and the client
   can ask again, or take gzip.
-- The hook fails open with a short timeout. Only a refused connection is tried again, after 100, 200 and then every
-  400 ms while more than half a second of the request's time is left: a server restarting closes its port for a
-  moment, and nothing of the request reached it, while a request reset or timed out may have been decided, and an
-  answer it spent must not be asked for twice. A name that does not resolve, or a network out of reach, is not tried
-  again: a restart does not cause them. A stamp in the user's cache directory notes when refusals began; after 10
-  seconds of them, hooks on that machine try once, until the server answers one, so a server that is down costs only
-  the first few edits their time. `INTAGENT_FAIL=closed` turns an unreachable server, an answer the server
-  could not check in time or was too busy to check, or a setup intagent cannot read, into a refusal of edits in
-  enrolled repositories, for teams that want it. A whole hook run, git included, has 8 seconds, and at a session's
-  end 4 for Claude Code, Gemini CLI and Cursor and 2 for other agents (less if
-  `CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS` asks), under the timeouts `init` gives the agents, which would otherwise
-  kill it and let the edit through; git gets what the server request leaves of that, and at least half, so a slow git
-  cannot keep the event from the server.
+- The hook fails open with a short timeout. A refused connection is tried again, after 100, 200 and then every 400 ms
+  while more than half a second of the request's time is left: a server restarting closes its port for a moment, and
+  nothing of the request reached it. So is one reset before any byte of the answer came back, which the client tells by
+  tracing the request and watching its connection (`internal/client/reset.go`): as the server stops, its kernel resets
+  the connections it had accepted and the server not yet, and the server closes those whose request was still arriving a
+  second later, none of them having reached a handler. A retry can only turn an edit that would go ahead unchecked into
+  a checked one. Had the server decided the request before the reset, which a clean stop does not do, the retry asks
+  about the same edit again and the board answers as it stands: a reservation refuses it again, while a bump or a
+  heads-up the first one spent is not given twice, so the edit goes ahead without it, as it would have gone ahead
+  unchecked. A request that timed out, or whose answer was cut off once it began, is not tried again: it may have been
+  decided, and an answer it spent must not be asked for twice. A name that does not resolve, or a network out of reach,
+  is not tried again: a restart does not cause them. A stamp in the user's cache directory notes when refusals and
+  resets began; after 10 seconds of them, hooks on that machine try once, until the server answers one, so a server that
+  is down costs only the first few edits their time. `INTAGENT_FAIL=closed` turns an unreachable server, an answer the
+  server could not check in time or was too busy to check, or a setup intagent cannot read, into a refusal of edits in
+  enrolled repositories, for teams that want it. A whole hook run, git included, has 8 seconds, and at a session's end 4
+  for Claude Code, Gemini CLI and Cursor and 2 for other agents (less if `CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS`
+  asks), under the timeouts `init` gives the agents, which would otherwise kill it and let the edit through; git gets
+  what the server request leaves of that, and at least half, so a slow git cannot keep the event from the server.
 
 ## What it deliberately does not do
 

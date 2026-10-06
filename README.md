@@ -363,11 +363,15 @@ note to its agent.
   Paths and patterns containing control, formatting or line-separator characters are rejected; branch, agent and
   tool names are reduced to a single token; webhook messages escape Slack markup. Notes are rate-limited.
 - The hook fails open with a short timeout: intagent never stops an agent because intagent is down, unless a team asks
-  for `INTAGENT_FAIL=closed`. A hook whose connection is refused, as while the server restarts, tries again after 100
-  and 200 ms and then every 400 ms, while its time allows: up to about three and a half seconds. Once a machine's hooks
-  have been refused for 10 seconds, they try once until the server answers one, so against a server that is down only
-  the first few edits wait. Nothing else is tried again: a request that reached the server may have been answered, and a
-  name that does not resolve or a network out of reach is not a restart.
+  for `INTAGENT_FAIL=closed`. A hook whose connection is refused, as while the server restarts, or reset before any of
+  the answer came back, as a stopping server resets the connections it had not taken yet, tries again after 100 and
+  200 ms and then every 400 ms, while its time allows: up to about three and a half seconds. Once a machine's hooks
+  have been refused or reset for 10 seconds, they try once until the server answers one, so against a server that is
+  down only the first few edits wait. A retry can only turn an edit that would go ahead unchecked into a checked one:
+  had the server decided the request before the reset, the board answers the same edit again as it stands, refusing it
+  again if a reservation does, but not giving twice a bump or heads-up the first one spent. Nothing else is tried
+  again: an answer cut off once it began was decided, a request that timed out has spent its time, and a name that does
+  not resolve or a network out of reach is not a restart.
 
 ## What intagent deliberately does not do
 

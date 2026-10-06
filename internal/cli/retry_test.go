@@ -1,15 +1,18 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -37,12 +40,12 @@ func refusedErr() error {
 		Err: &os.SyscallError{Syscall: "connect", Err: syscall.ECONNREFUSED}}}
 }
 
-// Only a connection the server did not take is tried again: a reset or a
-// timeout may come after the server decided the request, and a bump it
-// spent must not be asked for twice. A name that does not resolve and a
-// network that cannot be reached are not tried again either: a restart
-// does not cause them, and a laptop away from the team's network would
-// wait out every hook's time.
+// A refusal is a connection the server did not take. A timeout is not one,
+// nor a reset: a reset is tried again only when the client found it before
+// any of the answer came back (TestHookRetriesAResetConnection). A name that
+// does not resolve and a network that cannot be reached are not tried again
+// either: a restart does not cause them, and a laptop away from the team's
+// network would wait out every hook's time.
 func TestOnlyRefusedConnectionsAreRetried(t *testing.T) {
 	timeout := &url.Error{Op: "Post", URL: "x", Err: &net.OpError{Op: "dial", Net: "tcp", Err: os.ErrDeadlineExceeded}}
 	reset := &url.Error{Op: "Post", URL: "x", Err: &net.OpError{Op: "read", Net: "tcp",
@@ -70,6 +73,12 @@ func TestOnlyRefusedConnectionsAreRetried(t *testing.T) {
 		if got := refused(c.err); got != c.want {
 			t.Errorf("%s: refused = %t", c.name, got)
 		}
+		if got := tryAgain(c.err); got != c.want {
+			t.Errorf("%s: tryAgain = %t", c.name, got)
+		}
+	}
+	if !tryAgain(&client.ResetError{Err: reset}) {
+		t.Error("a reset before any of the answer is not tried again")
 	}
 	// A real refusal, from a port nobody listens on.
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -101,7 +110,8 @@ func fakePauses(t *testing.T) (now func() time.Time, pauses *[]time.Duration) {
 
 // A hook refused by a server that restarts tries again after 100, 200 and
 // then 400 ms, and gets its answer once the server is back; it stops while
-// half a second of its time is left. One that was reset is not tried again.
+// half a second of its time is left. A reset the client did not find before
+// the answer began is not tried again.
 func TestHookRetriesARefusedConnection(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	stamp := downStamp("http://example.test")
@@ -134,6 +144,68 @@ func TestHookRetriesARefusedConnection(t *testing.T) {
 	reset := errors.New("connection reset by peer")
 	if err := sendRetrying(context.Background(), stamp, now, func() error { tries++; return reset }); !errors.Is(err, reset) || tries != 1 {
 		t.Fatalf("a reset was tried %d times", tries)
+	}
+}
+
+// A hook whose connection is reset before any of its answer comes back
+// tries again as a refused one does, and gets its answer. A server that
+// stops resets the connections its kernel had accepted and the server not
+// yet: their hooks let their edits go ahead unchecked. Here the first two
+// connections are reset once their request has arrived, and the third is
+// answered. A reset is noted in the refusals stamp too, so that a server that
+// resets every connection is soon tried only once.
+func TestHookRetriesAResetConnection(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	var accepted atomic.Int32
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer func() { _ = c.Close() }()
+				req, err := http.ReadRequest(bufio.NewReader(c))
+				if err != nil {
+					return
+				}
+				_, _ = io.Copy(io.Discard, req.Body)
+				if accepted.Add(1) <= 2 {
+					_ = c.(*net.TCPConn).SetLinger(0) // the close resets it
+					return
+				}
+				body := `{"decision":"allow","claim_id":"c_1"}`
+				_, _ = fmt.Fprintf(c, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\n"+
+					"Connection: close\r\n\r\n%s", len(body), body)
+			}()
+		}
+	}()
+	url := "http://" + ln.Addr().String()
+	stamp := downStamp(url)
+	now, pauses := fakePauses(t)
+	c := client.New(url, "t", 2*time.Second)
+	tries := 0
+	var res board.HookResult
+	err = sendRetrying(context.Background(), stamp, now, func() error {
+		tries++
+		var err error
+		if _, serr := os.Stat(stamp); tries == 2 && serr != nil {
+			t.Errorf("the first reset is not in the refusals stamp: %v", serr)
+		}
+		res, err = c.Hook(context.Background(), board.HookEvent{Kind: board.KindPreEdit})
+		return err
+	})
+	want := []time.Duration{100 * time.Millisecond, 200 * time.Millisecond}
+	if err != nil || res.ClaimID != "c_1" || tries != 3 || fmt.Sprint(*pauses) != fmt.Sprint(want) {
+		t.Fatalf("%d tries after pauses %v: %+v, %v; want 3 after %v", tries, *pauses, res, err, want)
+	}
+	if _, err := os.Stat(stamp); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the answer left the refusals stamp: %v", err)
 	}
 }
 

@@ -24,7 +24,7 @@ type Client struct {
 
 // New returns a client for the server at base, authenticating with token.
 func New(base, token string, timeout time.Duration) *Client {
-	return &Client{base: NormalizeURL(base), token: token, http: &http.Client{Timeout: timeout}}
+	return &Client{base: NormalizeURL(base), token: token, http: &http.Client{Timeout: timeout, Transport: transport()}}
 }
 
 // APIError is an error the server returned.
@@ -67,9 +67,10 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 	if d := patience(ctx, c.http.Timeout); d >= time.Millisecond {
 		req.Header.Set(timeoutHeader, strconv.FormatInt(d.Milliseconds(), 10))
 	}
-	resp, err := c.http.Do(req)
+	var watch resetWatch
+	resp, err := c.http.Do(req.WithContext(watch.trace(ctx)))
 	if err != nil {
-		return err
+		return watch.mark(err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResponse+1))
